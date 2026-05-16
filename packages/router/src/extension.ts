@@ -42,7 +42,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await sessionManager.initialize(server.port);
   log.appendLine(`[Router] Session file written, env vars set`);
 
-  const statusBar = new StatusBar();
+  const statusBar = new StatusBar(server.port);
 
   // Auto-install script if missing
   const installer = new CodeNotifyScriptInstaller(log);
