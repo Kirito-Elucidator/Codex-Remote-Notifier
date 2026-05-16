@@ -105,8 +105,6 @@ jobs:
           name: remote-notifier-${{ github.ref_name }}
           path: dist
 
-      - run: npm install -g @vscode/vsce
-
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
@@ -120,3 +118,10 @@ jobs:
           npx @vscode/vsce publish -i "$(find dist -name "remote-notifier-router-*.vsix")"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX Registry
+        run: |
+          npx ovsx publish "$(find dist -name "remote-notifier-*.vsix" ! -name "*router*")"
+          npx ovsx publish "$(find dist -name "remote-notifier-router-*.vsix")"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
