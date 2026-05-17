@@ -143,8 +143,14 @@ code-notify -d app "Build" "Done"                # hint presentation as VS Code 
 ### Automatic configuration
 
 This extension comes with a few options to auto-configure your favorite tools
-(e.g. **Claude Code** to trigger notifications automatically whenever it
-finishes processing of your prompt or requires your permission to use a tool).
+to trigger notifications automatically (e.g. whenever they finish processing of
+your prompt or require your permission to use a tool).
+
+Currently supported tools:
+
+- **Claude Code**
+- **Codex**
+- **Gemini CLI**
 
 To automatically configure a tool simply:
 

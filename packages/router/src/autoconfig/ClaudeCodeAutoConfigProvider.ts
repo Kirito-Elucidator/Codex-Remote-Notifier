@@ -1,13 +1,8 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs/promises';
+import { window } from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import { AutoConfigProvider } from './AutoConfigProvider';
+import { BaseAutoConfigProvider, Platform, ProcessResult } from './BaseAutoConfigProvider';
 import { SCRIPT_NAME } from '../installer/CodeNotifyScriptInstaller';
-
-const execFileAsync = promisify(execFile);
 
 interface HookEntry {
   matcher?: string;
@@ -19,44 +14,35 @@ interface ClaudeSettings {
   [key: string]: unknown;
 }
 
-type Platform = 'unix' | 'windows';
-
-export class ClaudeCodeAutoConfigProvider implements AutoConfigProvider {
+export class ClaudeCodeAutoConfigProvider extends BaseAutoConfigProvider {
   readonly id = 'claude-code';
   readonly label = 'Claude Code';
   readonly description =
     'Configure Claude Code hooks to send notifications when finished or needs user input';
 
-  constructor(private readonly log?: vscode.OutputChannel) {}
+  protected getConfigFiles(): string[] {
+    return [path.join(os.homedir(), '.claude', 'settings.json')];
+  }
 
-  async configure(): Promise<void> {
-    const platform: Platform = process.platform === 'win32' ? 'windows' : 'unix';
-
-    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-
-    let raw: string;
-    try {
-      raw = await fs.readFile(settingsPath, 'utf-8');
-    } catch {
-      vscode.window.showErrorMessage(
-        `Could not find Claude Code settings at ${settingsPath}. Please ensure Claude Code is installed and has been run at least once.`,
-      );
-      return;
+  async processConfigs(
+    loaded: Map<string, string>,
+    platform: Platform,
+    useJq: boolean,
+  ): Promise<ProcessResult | null> {
+    const settingsPath = this.getConfigFiles()[0];
+    const raw = loaded.get(settingsPath);
+    if (raw === undefined) {
+      return null;
     }
 
     let settings: ClaudeSettings;
     try {
       settings = JSON.parse(raw);
     } catch {
-      vscode.window.showErrorMessage(
+      window.showErrorMessage(
         `Claude Code settings at ${settingsPath} contains invalid JSON. Please fix it manually before running auto-configure.`,
       );
-      return;
-    }
-
-    const useJq = platform === 'unix' && (await this.checkJqAvailable());
-    if (useJq === null) {
-      return;
+      return null;
     }
 
     const desired = this.buildHooks(platform, useJq);
@@ -101,22 +87,15 @@ export class ClaudeCodeAutoConfigProvider implements AutoConfigProvider {
       }
     }
 
-    if (added === 0 && updated === 0) {
-      vscode.window.showInformationMessage(
-        'Claude Code hooks are already configured. No changes made.',
-      );
-      return;
+    const modifiedFiles = new Map<string, string>();
+    if (added > 0 || updated > 0) {
+      modifiedFiles.set(settingsPath, JSON.stringify(settings, null, 2) + '\n');
     }
 
-    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
-
-    const parts: string[] = [];
-    if (added > 0) parts.push(`${added} added`);
-    if (updated > 0) parts.push(`${updated} updated`);
-    if (skipped > 0) parts.push(`${skipped} unchanged`);
-    vscode.window.showInformationMessage(
-      `Claude Code hooks configured successfully (${parts.join(', ')}).`,
-    );
+    return {
+      modifiedFiles,
+      stats: { added, updated, skipped },
+    };
   }
 
   buildHooks(platform: Platform, useJq: boolean): Record<string, HookEntry[]> {
@@ -126,13 +105,6 @@ export class ClaudeCodeAutoConfigProvider implements AutoConfigProvider {
       return this.buildWindowsHooks(cmdPath);
     }
     return this.buildUnixHooks(cmdPath, useJq);
-  }
-
-  private getCommandPath(platform: Platform): string {
-    if (platform === 'windows') {
-      return `%LOCALAPPDATA%\\RemoteNotifier\\bin\\${SCRIPT_NAME}.cmd`;
-    }
-    return `~/.local/bin/${SCRIPT_NAME}`;
   }
 
   private buildUnixHooks(cmdPath: string, useJq: boolean): Record<string, HookEntry[]> {
@@ -215,25 +187,8 @@ export class ClaudeCodeAutoConfigProvider implements AutoConfigProvider {
     };
   }
 
-  private async checkJqAvailable(): Promise<boolean | null> {
-    try {
-      await execFileAsync('which', ['jq']);
-      return true;
-    } catch {
-      const choice = await vscode.window.showWarningMessage(
-        'jq is not installed. The elicitation hook can extract question text with jq, or use a simpler notification without it. Continue without jq?',
-        'Use simple notification',
-        'Cancel',
-      );
-      if (choice === 'Use simple notification') {
-        return false;
-      }
-      return null;
-    }
-  }
-
   private isCodeNotifyHook(entry: HookEntry): boolean {
-    return entry.hooks?.some((h) => h.command?.includes('code-notify')) ?? false;
+    return entry.hooks?.some((h) => h.command?.includes(SCRIPT_NAME)) ?? false;
   }
 
   private matchesMatcher(a: HookEntry, b: HookEntry): boolean {

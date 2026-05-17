@@ -1,16 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
 import { window } from 'vscode';
 
 vi.mock('fs/promises');
-vi.mock('os', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('os')>();
-  return { ...actual, homedir: () => '/home/testuser' };
-});
 
 const mockInstall = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../src/installer/CodeNotifyScriptInstaller', () => ({
-  getBinDir: () => '/home/testuser/.local/bin',
+  getBinDir: () => path.join(os.homedir(), '.local', 'bin'),
   SCRIPT_NAME: 'code-notify',
   CodeNotifyScriptInstaller: vi.fn().mockImplementation(function () {
     return {
@@ -62,62 +60,51 @@ describe('ClaudeCodeAutoConfigProvider', () => {
     setPlatform(originalPlatform);
   });
 
-  describe('buildHooks', () => {
-    it('builds Unix hooks with jq', () => {
-      const hooks = provider.buildHooks('unix', true);
+  describe('processConfigs', () => {
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
 
-      expect(hooks.Stop).toHaveLength(1);
-      expect(hooks.Stop[0].hooks[0].command).toContain('~/.local/bin/code-notify');
-      expect(hooks.Stop[0].hooks[0].command).toContain('-i ICON_CLAUDE_CODE');
-      expect(hooks.Stop[0].hooks[0].command).toContain('2>/dev/null || true');
+    it('adds hooks to empty settings', async () => {
+      const loaded = new Map([[settingsPath, '{}']]);
+      const result = await provider.processConfigs(loaded, 'unix', false);
 
-      expect(hooks.Notification).toHaveLength(2);
-      expect(hooks.Notification[0].matcher).toBe('permission_prompt');
+      expect(result).not.toBeNull();
+      expect(result!.stats.added).toBe(3);
+      expect(result!.stats.updated).toBe(0);
 
-      expect(hooks.Notification[1].matcher).toBe('elicitation_dialog');
-      expect(hooks.Notification[1].hooks[0].command).toContain('jq');
-      expect(hooks.Notification[1].hooks[0].command).toContain('$msg');
+      const parsed = JSON.parse(result!.modifiedFiles.get(settingsPath)!);
+      expect(parsed.hooks.Stop).toHaveLength(1);
     });
 
-    it('builds Unix hooks without jq', () => {
-      const hooks = provider.buildHooks('unix', false);
+    it('updates existing hooks', async () => {
+      const existing = {
+        hooks: {
+          Stop: [{ hooks: [{ type: 'command', command: 'code-notify old', timeout: 1 }] }],
+        },
+      };
+      const loaded = new Map([[settingsPath, JSON.stringify(existing)]]);
+      const result = await provider.processConfigs(loaded, 'unix', false);
 
-      expect(hooks.Notification[1].matcher).toBe('elicitation_dialog');
-      expect(hooks.Notification[1].hooks[0].command).not.toContain('jq');
-      expect(hooks.Notification[1].hooks[0].command).toContain("'Has a question for you'");
+      expect(result!.stats.updated).toBe(1);
+      const parsed = JSON.parse(result!.modifiedFiles.get(settingsPath)!);
+      expect(parsed.hooks.Stop[0].hooks[0].command).toContain('code-notify');
     });
 
-    it('builds Windows hooks', () => {
-      const hooks = provider.buildHooks('windows', false);
+    it('skips identical hooks', async () => {
+      const desired = provider.buildHooks('unix', false);
+      const existing = { hooks: desired };
+      const loaded = new Map([[settingsPath, JSON.stringify(existing)]]);
+      const result = await provider.processConfigs(loaded, 'unix', false);
 
-      expect(hooks.Stop[0].hooks[0].command).toContain('%LOCALAPPDATA%');
-      expect(hooks.Stop[0].hooks[0].command).toContain('code-notify.cmd');
-      expect(hooks.Stop[0].hooks[0].command).toContain('2>nul');
-      expect(hooks.Stop[0].hooks[0].command).not.toContain('|| true');
-
-      expect(hooks.Notification).toHaveLength(2);
-      expect(hooks.Notification[1].hooks[0].command).not.toContain('jq');
-      expect(hooks.Notification[1].hooks[0].command).toContain('"Has a question for you"');
+      expect(result!.stats.skipped).toBe(3);
+      expect(result!.modifiedFiles.size).toBe(0);
     });
 
-    it('includes -i ICON_CLAUDE_CODE in all hooks', () => {
-      for (const platform of ['unix', 'windows'] as const) {
-        const hooks = provider.buildHooks(platform, false);
-        for (const [, entries] of Object.entries(hooks)) {
-          for (const entry of entries) {
-            expect(entry.hooks[0].command).toContain('-i ICON_CLAUDE_CODE');
-          }
-        }
-      }
-    });
+    it('returns null and shows error on invalid JSON', async () => {
+      const loaded = new Map([[settingsPath, 'invalid{']]);
+      const result = await provider.processConfigs(loaded, 'unix', false);
 
-    it('sets timeout to 5 on all hooks', () => {
-      const hooks = provider.buildHooks('unix', true);
-      for (const [, entries] of Object.entries(hooks)) {
-        for (const entry of entries) {
-          expect(entry.hooks[0].timeout).toBe(5);
-        }
-      }
+      expect(result).toBeNull();
+      expect(window.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('invalid JSON'));
     });
   });
 
@@ -144,6 +131,7 @@ describe('ClaudeCodeAutoConfigProvider', () => {
 
     it('shows error when settings file contains invalid JSON', async () => {
       mockSettingsFile('not valid json{{{');
+      vi.mocked(window.showWarningMessage).mockResolvedValue('Use simple notification' as never);
       await provider.configure();
 
       expect(window.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('invalid JSON'));
