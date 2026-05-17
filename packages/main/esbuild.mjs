@@ -19,6 +19,10 @@ function copyAssets() {
     resolve(__dirname, '../../assets/icon-transparent.png'),
     resolve(__dirname, 'dist/icon-transparent.png'),
   );
+  cpSync(
+    resolve(__dirname, '../../assets/notification.wav'),
+    resolve(__dirname, 'dist/notification.wav'),
+  );
   cpSync(resolve(__dirname, '../../assets/icon-transparent.png'), resolve(__dirname, 'icon.png'));
   cpSync(resolve(__dirname, '../../LICENSE'), resolve(__dirname, 'LICENSE'));
   cpSync(resolve(__dirname, '../../README.md'), resolve(__dirname, 'README.md'));

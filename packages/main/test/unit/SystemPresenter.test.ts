@@ -2,29 +2,74 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as notifier from 'node-notifier';
 import { setMockConfig, clearMockConfig } from 'vscode';
 import { SystemPresenter } from '../../src/presenter/SystemPresenter';
+import { SoundPlayer } from '../../src/presenter/SoundPlayer';
+
+vi.mock('../../src/presenter/SoundPlayer');
 
 describe('SystemPresenter', () => {
   let presenter: SystemPresenter;
+  let playSpy: any;
 
   beforeEach(() => {
     vi.clearAllMocks();
     clearMockConfig();
     presenter = new SystemPresenter();
+    playSpy = vi.spyOn(SoundPlayer.prototype, 'play');
   });
 
-  it('calls notifier.notify with title, message, and icon', async () => {
+  it('calls notifier.notify with sound: true by default on non-linux', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
     await presenter.present({ message: 'Build done', title: 'CI' });
     expect(notifier.notify).toHaveBeenCalledWith(
-      {
-        title: 'CI',
-        message: 'Build done',
-        icon: expect.stringContaining('icon-transparent.png'),
+      expect.objectContaining({
         sound: true,
-        wait: false,
-        appName: 'Remote Notifier',
-      },
+      }),
       expect.any(Function),
     );
+    expect(playSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses SoundPlayer for bundled sound on linux by default', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    await presenter.present({ message: 'Build done', title: 'CI' });
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sound: false,
+      }),
+      expect.any(Function),
+    );
+    expect(playSpy).toHaveBeenCalledWith(expect.stringContaining('notification.wav'), '');
+  });
+
+  it('uses SoundPlayer for custom sound path', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    setMockConfig('remoteNotifier.notificationSoundPath', '/custom/sound.mp3');
+    await presenter.present({ message: 'Build done' });
+
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ sound: false }),
+      expect.any(Function),
+    );
+    expect(playSpy).toHaveBeenCalledWith('/custom/sound.mp3', '');
+  });
+
+  it('passes custom player to SoundPlayer', async () => {
+    setMockConfig('remoteNotifier.notificationSoundPath', '/custom/sound.mp3');
+    setMockConfig('remoteNotifier.notificationSoundPlayer', 'mpg123');
+    await presenter.present({ message: 'Build done' });
+
+    expect(playSpy).toHaveBeenCalledWith('/custom/sound.mp3', 'mpg123');
+  });
+
+  it('disables sound when notificationSound is false', async () => {
+    setMockConfig('remoteNotifier.notificationSound', false);
+    await presenter.present({ message: 'Build done' });
+
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ sound: false }),
+      expect.any(Function),
+    );
+    expect(playSpy).not.toHaveBeenCalled();
   });
 
   it('uses "Remote Notifier" as default title when none provided', async () => {

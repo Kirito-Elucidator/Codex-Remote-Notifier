@@ -249,12 +249,14 @@ If you have any issues you should:
 
 ### Presenter Settings (local machine)
 
-| Setting                              | Default       | Description                                                                                          |
-| ------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------------- |
-| `remoteNotifier.systemNotifications` | `auto`        | `auto` (OS notification when unfocused, VS Code toast when focused), `always`, or `never`            |
-| `remoteNotifier.notificationIcon`    | `transparent` | Default icon style: `transparent` or `dark` (black background)                                       |
-| `remoteNotifier.notificationSound`   | `true`        | Play a sound when showing system-level notifications                                                 |
-| `remoteNotifier.iconMappings`        | `{}`          | Map icon key names to file paths for system notifications (e.g. `{ "claude": "/path/to/icon.png" }`) |
+| Setting                                  | Default       | Description                                                                                                     |
+| ---------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------- |
+| `remoteNotifier.systemNotifications`     | `auto`        | `auto` (OS notification when unfocused, VS Code toast when focused), `always`, or `never`                       |
+| `remoteNotifier.notificationIcon`        | `transparent` | Default icon style: `transparent` or `dark` (black background)                                                  |
+| `remoteNotifier.notificationSound`       | `true`        | Play a sound when showing system-level notifications                                                            |
+| `remoteNotifier.notificationSoundPath`   | `""`          | Path to a custom sound file. If empty, uses default notification cue.                                           |
+| `remoteNotifier.notificationSoundPlayer` | `""`          | Optional: Command to play sound (e.g. `mpg123 ${file}`). If empty, the extension auto-detects available player. |
+| `remoteNotifier.iconMappings`            | `{}`          | Map icon key names to file paths for system notifications (e.g. `{ "claude": "/path/to/icon.png" }`)            |
 
 ## Commands
 

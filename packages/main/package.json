@@ -86,6 +86,16 @@
           "default": true,
           "description": "Play a sound when showing system-level notifications."
         },
+        "remoteNotifier.notificationSoundPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a custom sound file to play. If empty, uses the default notification sound cue."
+        },
+        "remoteNotifier.notificationSoundPlayer": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: Command to use for playing sound. Use ${file} as placeholder for the sound cue path. If empty, the extension auto-detects a player."
+        },
         "remoteNotifier.iconMappings": {
           "type": "object",
           "default": {},
