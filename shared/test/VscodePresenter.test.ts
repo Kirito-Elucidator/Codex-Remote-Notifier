@@ -1,13 +1,18 @@
+import * as vscode from 'vscode';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { window } from 'vscode';
-import { VscodePresenter } from '../../src/presenter/VscodePresenter';
+import { VscodePresenter } from '../presenter/VscodePresenter';
 
-describe('Presenter VscodePresenter', () => {
+describe('VscodePresenter', () => {
   let presenter: VscodePresenter;
+  let mockLog: vscode.OutputChannel;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    presenter = new VscodePresenter();
+    mockLog = {
+      appendLine: vi.fn(),
+    } as unknown as vscode.OutputChannel;
+    presenter = new VscodePresenter(mockLog);
   });
 
   it('calls showInformationMessage for information level', async () => {
@@ -33,6 +38,13 @@ describe('Presenter VscodePresenter', () => {
   it('prepends title', async () => {
     await presenter.present({ message: 'done', title: 'Build' });
     expect(window.showInformationMessage).toHaveBeenCalledWith('[Build] done');
+  });
+
+  it('logs the message to OutputChannel', async () => {
+    await presenter.present({ message: 'hello', level: 'warning', title: 'App' });
+    expect(mockLog.appendLine).toHaveBeenCalledWith(
+      '[VscodePresenter] Showing warning: [App] hello',
+    );
   });
 
   it('returns immediately without waiting for user interaction', async () => {

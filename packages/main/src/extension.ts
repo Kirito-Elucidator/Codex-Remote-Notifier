@@ -4,11 +4,12 @@ import {
   COMMAND_SHOW_NOTIFICATION,
   COMMAND_TEST_VSCODE,
   COMMAND_TEST_SYSTEM,
+  VscodePresenter,
 } from 'remote-notifier-shared';
-import { VscodePresenter } from './presenter/VscodePresenter';
-import { SystemPresenter } from './presenter/SystemPresenter';
 import { FocusAwarePresenter } from './presenter/FocusAwarePresenter';
+import { SystemPresenter } from './presenter/SystemPresenter';
 import { RateLimitedPresenter } from './presenter/RateLimitedPresenter';
+
 import { RouterAutoInstaller } from './RouterAutoInstaller';
 
 let log: vscode.OutputChannel;

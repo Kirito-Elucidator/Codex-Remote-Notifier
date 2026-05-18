@@ -7,5 +7,8 @@
   "scripts": {
     "build": "echo 'shared types - no build needed'",
     "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0"
   }
 }

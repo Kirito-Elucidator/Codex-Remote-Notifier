@@ -1,9 +1,6 @@
 import * as vscode from 'vscode';
-import {
-  NotificationPayload,
-  NotificationLevel,
-  NotificationPresenter,
-} from 'remote-notifier-shared';
+import { NotificationPayload, NotificationLevel } from '../types';
+import { NotificationPresenter } from '../NotificationPresenter';
 
 export class VscodePresenter implements NotificationPresenter {
   constructor(private readonly log?: vscode.OutputChannel) {}

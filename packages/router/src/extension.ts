@@ -6,11 +6,11 @@ import {
   COMMAND_COPY_NOTIFY_COMMAND,
   COMMAND_INSTALL_SCRIPT,
   COMMAND_AUTO_CONFIGURE,
+  VscodePresenter,
 } from 'remote-notifier-shared';
 import { createAutoConfigRegistry } from './autoconfig/Registry';
 import { CodeNotifyScriptInstaller } from './installer/CodeNotifyScriptInstaller';
 import { Configuration } from './config/Configuration';
-import { VscodePresenter } from './presenter/VscodePresenter';
 import { CommandPresenter } from './presenter/CommandPresenter';
 import { NotificationHandler } from './handler/NotificationHandler';
 import { NotificationServer } from './server/NotificationServer';

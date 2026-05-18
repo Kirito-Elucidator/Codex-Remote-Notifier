@@ -13,6 +13,7 @@ export default defineConfig({
     include: [
       'packages/*/test/unit/**/*.test.ts',
       'packages/*/test/integration/**/*.test.ts',
+      'shared/test/**/*.test.ts',
       'test/e2e/**/*.test.ts',
     ],
   },
