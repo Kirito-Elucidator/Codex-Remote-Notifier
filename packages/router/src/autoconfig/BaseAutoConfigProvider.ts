@@ -1,10 +1,12 @@
-import { window, OutputChannel } from 'vscode';
+import { execFile } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { AutoConfigProvider } from './AutoConfigProvider';
+
+import { OutputChannel, window } from 'vscode';
+
 import { SCRIPT_NAME } from '../installer/CodeNotifyScriptInstaller';
+import { AutoConfigProvider } from './AutoConfigProvider';
 
 const execFileAsync = promisify(execFile);
 

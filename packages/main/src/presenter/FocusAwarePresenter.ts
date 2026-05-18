@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+
 import { NotificationPayload, NotificationPresenter } from 'remote-notifier-shared';
 
 export type SystemNotificationMode = 'auto' | 'always' | 'never';

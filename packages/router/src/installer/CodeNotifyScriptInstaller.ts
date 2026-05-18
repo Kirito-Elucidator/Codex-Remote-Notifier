@@ -1,13 +1,15 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import * as os from 'os';
 import { execFile } from 'child_process';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { promisify } from 'util';
+
+import * as vscode from 'vscode';
+
 import { fileExists } from 'remote-notifier-shared';
 
-import unixScript from './code-notify.sh';
 import windowsScript from './code-notify.cmd';
+import unixScript from './code-notify.sh';
 
 const execFileAsync = promisify(execFile);
 

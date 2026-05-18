@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { window } from 'vscode';
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { VscodePresenter } from '../presenter/VscodePresenter';
 
 describe('VscodePresenter', () => {

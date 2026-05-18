@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+
 import { NotificationLevel } from 'remote-notifier-shared';
 
 export class Configuration {

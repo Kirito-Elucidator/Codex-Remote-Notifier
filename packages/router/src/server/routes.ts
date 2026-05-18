@@ -1,7 +1,8 @@
 import { IncomingMessage, ServerResponse } from 'http';
-import { NotificationHandler } from '../handler/NotificationHandler';
-import { validateToken, extractBearerToken } from './auth';
+
 import * as routerPackageJson from '../../package.json';
+import { NotificationHandler } from '../handler/NotificationHandler';
+import { extractBearerToken, validateToken } from './auth';
 
 export class Router {
   constructor(

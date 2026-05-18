@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+
 import { COMMAND_SHOW_SESSION_INFO } from 'remote-notifier-shared';
 
 export class StatusBar implements vscode.Disposable {

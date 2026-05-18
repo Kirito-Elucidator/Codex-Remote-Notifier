@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
-import { NotificationPayload, NotificationLevel } from '../types';
+
 import { NotificationPresenter } from '../NotificationPresenter';
+import { NotificationLevel, NotificationPayload } from '../types';
 
 export class VscodePresenter implements NotificationPresenter {
   constructor(private readonly log?: vscode.OutputChannel) {}

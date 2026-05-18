@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
+
 import {
-  NotificationPayload,
   COMMAND_SHOW_NOTIFICATION,
+  NotificationPayload,
   NotificationPresenter,
 } from 'remote-notifier-shared';
 

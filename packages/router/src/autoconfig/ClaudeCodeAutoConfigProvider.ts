@@ -1,8 +1,10 @@
-import { window } from 'vscode';
-import * as path from 'path';
 import * as os from 'os';
-import { BaseAutoConfigProvider, Platform, ProcessResult } from './BaseAutoConfigProvider';
+import * as path from 'path';
+
+import { window } from 'vscode';
+
 import { SCRIPT_NAME } from '../installer/CodeNotifyScriptInstaller';
+import { BaseAutoConfigProvider, Platform, ProcessResult } from './BaseAutoConfigProvider';
 
 interface HookEntry {
   matcher?: string;

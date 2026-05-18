@@ -1,8 +1,10 @@
 import * as http from 'http';
+
 import * as vscode from 'vscode';
-import { Router } from './routes';
-import { NotificationHandler } from '../handler/NotificationHandler';
+
 import { Configuration } from '../config/Configuration';
+import { NotificationHandler } from '../handler/NotificationHandler';
+import { Router } from './routes';
 
 export class NotificationServer implements vscode.Disposable {
   private server: http.Server | null = null;
