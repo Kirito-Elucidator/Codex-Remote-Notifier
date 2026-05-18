@@ -59,15 +59,17 @@ export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
       hooksConfig.hooks = {};
     }
 
+    const hooks = hooksConfig.hooks;
+
     for (const [category, entries] of Object.entries(desiredHooks)) {
-      if (!hooksConfig.hooks[category]) {
-        hooksConfig.hooks[category] = [];
+      if (!hooks[category]) {
+        hooks[category] = [];
       }
-      const existing = hooksConfig.hooks[category];
+      const existing = hooks[category];
 
       for (const entry of entries) {
         const idx = existing.findIndex(
-          (e) => this.isCodeNotifyHook(e) && this.matchesMatcher(e, entry),
+          (e: HookEntry) => this.isCodeNotifyHook(e) && this.matchesMatcher(e, entry),
         );
 
         if (idx === -1) {

@@ -5,6 +5,7 @@
   "main": "./index.ts",
   "types": "./index.ts",
   "scripts": {
-    "build": "echo 'shared types - no build needed'"
+    "build": "echo 'shared types - no build needed'",
+    "typecheck": "tsc --noEmit"
   }
 }

@@ -51,19 +51,20 @@ export class ClaudeCodeAutoConfigProvider extends BaseAutoConfigProvider {
       settings.hooks = {};
     }
 
+    const hooks = settings.hooks;
     let added = 0;
     let updated = 0;
     let skipped = 0;
 
     for (const [category, entries] of Object.entries(desired)) {
-      if (!settings.hooks[category]) {
-        settings.hooks[category] = [];
+      if (!hooks[category]) {
+        hooks[category] = [];
       }
-      const existing = settings.hooks[category];
+      const existing = hooks[category];
 
       for (const entry of entries) {
         const idx = existing.findIndex(
-          (e) => this.isCodeNotifyHook(e) && this.matchesMatcher(e, entry),
+          (e: HookEntry) => this.isCodeNotifyHook(e) && this.matchesMatcher(e, entry),
         );
 
         if (idx === -1) {
