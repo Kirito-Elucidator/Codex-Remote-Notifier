@@ -83,11 +83,20 @@ jobs:
           mkdir -p dist-vsix
           find packages -name "*.vsix" -exec cp {} dist-vsix/ \;
 
+      - name: Prepare upload artifact name
+        id: prep-artifact-name
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "sha_short=${{ github.event.pull_request.head.sha }}" | cut -c1-17 >> "$GITHUB_OUTPUT"
+          else
+            echo "sha_short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload VSIX
         uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
-          name: remote-notifier-${{ github.ref_name }}
+          name: remote-notifier-${{ github.ref_type == 'tag' && github.ref_name || steps.prep-artifact-name.outputs.sha_short }}
           path: dist-vsix/
           retention-days: 10
 
