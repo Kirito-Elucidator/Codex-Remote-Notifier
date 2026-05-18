@@ -2,8 +2,8 @@
   "name": "remote-notifier-shared",
   "version": "1.0.0",
   "private": true,
-  "main": "./types.ts",
-  "types": "./types.ts",
+  "main": "./index.ts",
+  "types": "./index.ts",
   "scripts": {
     "build": "echo 'shared types - no build needed'"
   }

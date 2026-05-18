@@ -256,6 +256,7 @@ If you have any issues you should:
 | `remoteNotifier.notificationSound`       | `true`        | Play a sound when showing system-level notifications                                                            |
 | `remoteNotifier.notificationSoundPath`   | `""`          | Path to a custom sound file. If empty, uses default notification cue.                                           |
 | `remoteNotifier.notificationSoundPlayer` | `""`          | Optional: Command to play sound (e.g. `mpg123 ${file}`). If empty, the extension auto-detects available player. |
+| `remoteNotifier.soundMappings`           | `{}`          | Map sound key names to file paths for system notifications (e.g. `{ "success": "/path/to/cheer.wav" }`)         |
 | `remoteNotifier.iconMappings`            | `{}`          | Map icon key names to file paths for system notifications (e.g. `{ "claude": "/path/to/icon.png" }`)            |
 
 ## Commands

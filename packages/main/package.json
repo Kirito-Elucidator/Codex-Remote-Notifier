@@ -94,12 +94,20 @@
         "remoteNotifier.notificationSoundPlayer": {
           "type": "string",
           "default": "",
-          "description": "Optional: Command to use for playing sound. Use ${file} as placeholder for the sound cue path. If empty, the extension auto-detects a player."
+          "description": "Optional: Command to use for playing sound. Use ${file} as placeholder for the sound path. If empty, the extension auto-detects a player."
         },
         "remoteNotifier.iconMappings": {
           "type": "object",
           "default": {},
           "description": "Map icon key names to file paths for system notifications. Example: { \"claude\": \"/path/to/icon.png\" }",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "remoteNotifier.soundMappings": {
+          "type": "object",
+          "default": {},
+          "description": "Map sound key names to file paths for system notifications. Example: { \"success\": \"/path/to/cheer.wav\" }",
           "additionalProperties": {
             "type": "string"
           }

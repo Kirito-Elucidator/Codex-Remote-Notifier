@@ -7,6 +7,7 @@ export interface NotificationPayload {
   level?: NotificationLevel;
   display_hint?: DisplayHint;
   icon?: string;
+  sound?: string;
 }
 
 export interface SessionInfo {

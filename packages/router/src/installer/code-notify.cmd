@@ -11,6 +11,7 @@ REM   code-notify -l warning "Title" "Message"
 set "LEVEL=information"
 set "DISPLAY_HINT="
 set "ICON_KEY="
+set "SOUND_KEY="
 set "TITLE="
 set "MESSAGE="
 
@@ -52,6 +53,18 @@ if /i "%~1"=="--icon" (
   shift
   goto :parse_args
 )
+if /i "%~1"=="-s" (
+  set "SOUND_KEY=%~2"
+  shift
+  shift
+  goto :parse_args
+)
+if /i "%~1"=="--sound" (
+  set "SOUND_KEY=%~2"
+  shift
+  shift
+  goto :parse_args
+)
 if /i "%~1"=="-h" goto :show_help
 if /i "%~1"=="--help" goto :show_help
 if "!TITLE!"=="" (
@@ -86,6 +99,7 @@ set "RN_TITLE=!TITLE!"
 set "RN_LEVEL=!LEVEL!"
 set "RN_DISPLAY_HINT=!DISPLAY_HINT!"
 set "RN_ICON_KEY=!ICON_KEY!"
+set "RN_SOUND_KEY=!SOUND_KEY!"
 set "RN_PORT=%REMOTE_NOTIFIER_PORT%"
 set "RN_TOKEN=%REMOTE_NOTIFIER_TOKEN%"
 set "RN_URL=%REMOTE_NOTIFIER_URL%"
@@ -107,6 +121,7 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
   "if ($env:RN_TITLE) { $p.title = $env:RN_TITLE }; " ^
   "if ($env:RN_DISPLAY_HINT) { $p.display_hint = $env:RN_DISPLAY_HINT }; " ^
   "if ($env:RN_ICON_KEY) { $p.icon = $env:RN_ICON_KEY }; " ^
+  "if ($env:RN_SOUND_KEY) { $p.sound = $env:RN_SOUND_KEY }; " ^
   "$json = $p | ConvertTo-Json -Compress; " ^
   "try { " ^
   "  $headers = @{ Authorization = 'Bearer ' + $token }; " ^
@@ -124,12 +139,13 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
 exit /b %errorlevel%
 
 :show_help
-echo Usage: code-notify [-l level] [-d display] [title] ^<message^>
-echo        code-notify [-l level] [-d display] ^<message^>
+echo Usage: code-notify [-l level] [-d display] [-i icon] [-s sound] [title] ^<message^>
+echo        code-notify [-l level] [-d display] [-i icon] [-s sound] ^<message^>
 echo.
 echo   -l, --level    information^|warning^|error (default: information)
 echo   -d, --display  app^|system (hint for notification display mode)
-echo   -i, --icon     icon key name (mapped to a file path in presenter settings)
+echo   -i, --icon     icon key name (mapped to a file path in main extension settings)
+echo   -s, --sound    sound key name (mapped to a file path in main extension settings)
 echo.
 echo If two positional arguments are given, the first is the title.
 exit /b 0

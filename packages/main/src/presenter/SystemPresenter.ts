@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as notifier from 'node-notifier';
-import { NotificationPayload } from 'remote-notifier-shared';
+import { NotificationPayload, fileExists } from 'remote-notifier-shared';
 import { NotificationPresenter } from './VscodePresenter';
 import { SoundPlayer } from './SoundPlayer';
 
@@ -22,27 +22,14 @@ export class SystemPresenter implements NotificationPresenter {
   async present(payload: NotificationPayload): Promise<string | undefined> {
     const title = payload.title ?? 'Remote Notifier';
     const config = vscode.workspace.getConfiguration('remoteNotifier');
-    const iconStyle = config.get<string>('notificationIcon', 'transparent');
     const soundEnabled = config.get<boolean>('notificationSound', true);
-    const customSoundPath = config.get<string>('notificationSoundPath', '');
     const customPlayer = config.get<string>('notificationSoundPlayer', '');
-    const mappings = config.get<Record<string, string>>('iconMappings', {});
-    const iconPath =
-      (payload.icon && mappings[payload.icon]) || ICONS[iconStyle] || ICONS.transparent;
 
-    let useNativeSound = false;
+    const iconPath = await this.resolveIconPath(payload, config);
+    const { soundPath, useNativeSound } = await this.resolveSoundPath(payload, config);
 
-    if (soundEnabled) {
-      if (customSoundPath) {
-        // Play custom sound
-        this.soundPlayer.play(customSoundPath, customPlayer);
-      } else if (process.platform === 'linux') {
-        // On Linux, use bundled sound if enabled and no custom path
-        this.soundPlayer.play(BUNDLED_SOUND, customPlayer);
-      } else {
-        // On Mac/Windows, use native sound via node-notifier
-        useNativeSound = true;
-      }
+    if (soundEnabled && soundPath) {
+      this.soundPlayer.play(soundPath, customPlayer);
     }
 
     this.log?.appendLine(
@@ -71,5 +58,93 @@ export class SystemPresenter implements NotificationPresenter {
     }
 
     return undefined;
+  }
+
+  private async resolveIconPath(
+    payload: NotificationPayload,
+    config: vscode.WorkspaceConfiguration,
+  ): Promise<string> {
+    const iconMappings = config.get<Record<string, string>>('iconMappings', {});
+    const iconStyle = config.get<string>('notificationIcon', 'transparent');
+    const defaultIcon = ICONS[iconStyle] || ICONS.transparent;
+
+    if (payload.icon) {
+      const mappedPath = iconMappings[payload.icon];
+      if (mappedPath) {
+        if (await fileExists(mappedPath)) {
+          this.log?.appendLine(
+            `[SystemPresenter] Using mapped icon: "${payload.icon}" -> "${mappedPath}"`,
+          );
+          return mappedPath;
+        } else {
+          this.log?.appendLine(
+            `[SystemPresenter] Mapped icon path does not exist: "${mappedPath}". Falling back.`,
+          );
+        }
+      } else {
+        this.log?.appendLine(
+          `[SystemPresenter] No icon mapping found for key: "${payload.icon}". Falling back.`,
+        );
+      }
+    }
+
+    this.log?.appendLine(`[SystemPresenter] Using default icon: "${defaultIcon}"`);
+    return defaultIcon;
+  }
+
+  private async resolveSoundPath(
+    payload: NotificationPayload,
+    config: vscode.WorkspaceConfiguration,
+  ): Promise<{ soundPath?: string; useNativeSound: boolean }> {
+    const soundEnabled = config.get<boolean>('notificationSound', true);
+    if (!soundEnabled) {
+      this.log?.appendLine('[SystemPresenter] Sound is disabled in settings.');
+      return { useNativeSound: false };
+    }
+
+    const soundMappings = config.get<Record<string, string>>('soundMappings', {});
+    const globalSoundPath = config.get<string>('notificationSoundPath', '');
+
+    // 1. Check mapped sound
+    if (payload.sound) {
+      const mappedPath = soundMappings[payload.sound];
+      if (mappedPath) {
+        if (await fileExists(mappedPath)) {
+          this.log?.appendLine(
+            `[SystemPresenter] Using mapped sound: "${payload.sound}" -> "${mappedPath}"`,
+          );
+          return { soundPath: mappedPath, useNativeSound: false };
+        } else {
+          this.log?.appendLine(
+            `[SystemPresenter] Mapped sound path does not exist: "${mappedPath}". Falling back.`,
+          );
+        }
+      } else {
+        this.log?.appendLine(
+          `[SystemPresenter] No sound mapping found for key: "${payload.sound}". Falling back.`,
+        );
+      }
+    }
+
+    // 2. Check global custom sound
+    if (globalSoundPath) {
+      if (await fileExists(globalSoundPath)) {
+        this.log?.appendLine(`[SystemPresenter] Using global custom sound: "${globalSoundPath}"`);
+        return { soundPath: globalSoundPath, useNativeSound: false };
+      } else {
+        this.log?.appendLine(
+          `[SystemPresenter] Global custom sound path does not exist: "${globalSoundPath}". Falling back.`,
+        );
+      }
+    }
+
+    // 3. Platform-specific defaults
+    if (process.platform === 'linux') {
+      this.log?.appendLine(`[SystemPresenter] Using bundled Linux sound: "${BUNDLED_SOUND}"`);
+      return { soundPath: BUNDLED_SOUND, useNativeSound: false };
+    }
+
+    this.log?.appendLine('[SystemPresenter] Using OS native notification sound.');
+    return { useNativeSound: true };
   }
 }

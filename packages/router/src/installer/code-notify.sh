@@ -23,6 +23,7 @@ _json_escape() {
 level="information"
 display_hint=""
 icon_key=""
+sound_key=""
 title=""
 message=""
 
@@ -31,13 +32,15 @@ while [[ $# -gt 0 ]]; do
     -l|--level) level="$2"; shift 2 ;;
     -d|--display) display_hint="$2"; shift 2 ;;
     -i|--icon) icon_key="$2"; shift 2 ;;
+    -s|--sound) sound_key="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: code-notify [-l level] [-d display] [title] <message>"
-      echo "       code-notify [-l level] [-d display] <message>"
+      echo "Usage: code-notify [-l level] [-d display] [-i icon] [-s sound] [title] <message>"
+      echo "       code-notify [-l level] [-d display] [-i icon] [-s sound] <message>"
       echo ""
       echo "  -l, --level    information|warning|error (default: information)"
       echo "  -d, --display  app|system (hint for notification display mode)"
-      echo "  -i, --icon     icon key name (mapped to a file path in presenter settings)"
+      echo "  -i, --icon     icon key name (mapped to a file path in main extension settings)"
+      echo "  -s, --sound    sound key name (mapped to a file path in main extension settings)"
       echo ""
       echo "If two positional arguments are given, the first is the title."
       exit 0
@@ -99,6 +102,11 @@ fi
 if [[ -n "$icon_key" ]]; then
   escaped_icon_key=$(_json_escape "$icon_key")
   json+=",\"icon\":\"$escaped_icon_key\""
+fi
+
+if [[ -n "$sound_key" ]]; then
+  escaped_sound_key=$(_json_escape "$sound_key")
+  json+=",\"sound\":\"$escaped_sound_key\""
 fi
 
 json+="}"
