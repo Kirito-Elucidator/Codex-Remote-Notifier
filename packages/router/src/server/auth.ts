@@ -13,6 +13,6 @@ export function extractBearerToken(authHeader: string | undefined): string | nul
   if (!authHeader) {
     return null;
   }
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  const match = authHeader.match(/^Bearer\s+(\S+)\s*$/i);
   return match ? match[1] : null;
 }

@@ -57,7 +57,7 @@ export class NotificationHandler {
     }
 
     if (obj.level !== undefined) {
-      if (!VALID_LEVELS.includes(obj.level as string)) {
+      if (typeof obj.level !== 'string' || !VALID_LEVELS.includes(obj.level)) {
         return `level must be one of: ${VALID_LEVELS.join(', ')}`;
       }
     }
