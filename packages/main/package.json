@@ -2,7 +2,7 @@
   "name": "remote-notifier",
   "displayName": "Remote Notifier",
   "description": "Receive notifications from remote scripts and tools and present them to the user as system or in-app notifications",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",
