@@ -51,12 +51,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     .then(async (installed) => {
       if (!installed) {
         log.appendLine('[Router] code-notify script not found, installing...');
-        return installer.install(true);
+        return installer.install(false);
       } else {
         const needsUpdate = await installer.needsUpdate();
         if (needsUpdate) {
           log.appendLine('[Router] code-notify script is outdated, updating...');
-          return installer.install(true, true);
+          return installer.install(false, true);
         }
       }
     })
