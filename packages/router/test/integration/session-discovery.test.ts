@@ -97,6 +97,48 @@ describe('SessionManager Integration', () => {
       'REMOTE_NOTIFIER_URL',
       'http://127.0.0.1:5000/notify',
     );
+    expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
+      'REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH',
+      '16',
+    );
+    await mgr.dispose();
+  });
+
+  it('persists the configured Codex preview length', async () => {
+    const context = createMockExtensionContext();
+    const mgr = new SessionManager(context as never, {
+      sessionFilePath: path.join(testDir, 'preview.json'),
+      codexPreviewLength: 24,
+    });
+    await mgr.initialize(5000);
+
+    const info: SessionInfo = JSON.parse(
+      await fs.readFile(path.join(testDir, 'preview.json'), 'utf-8'),
+    );
+    expect(info.codexPreviewLength).toBe(24);
+    expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
+      'REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH',
+      '24',
+    );
+    await mgr.dispose();
+  });
+
+  it('updates and clamps the Codex preview length', async () => {
+    const context = createMockExtensionContext();
+    const previewPath = path.join(testDir, 'preview-update.json');
+    const mgr = new SessionManager(context as never, {
+      sessionFilePath: previewPath,
+      codexPreviewLength: 16,
+    });
+    await mgr.initialize(5000);
+    await mgr.updateCodexPreviewLength(500, 5000);
+
+    const info: SessionInfo = JSON.parse(await fs.readFile(previewPath, 'utf-8'));
+    expect(info.codexPreviewLength).toBe(100);
+    expect(context.environmentVariableCollection.replace).toHaveBeenLastCalledWith(
+      'REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH',
+      '100',
+    );
     await mgr.dispose();
   });
 

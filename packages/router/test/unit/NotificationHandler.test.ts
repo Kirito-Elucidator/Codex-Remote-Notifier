@@ -72,6 +72,18 @@ describe('NotificationHandler', () => {
       );
     });
 
+    it('forwards Codex deduplication metadata', async () => {
+      const payload = {
+        message: 'Done',
+        source: 'codex',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+        event_key: 'task-complete',
+      };
+      expect((await handler.handle(payload)).ok).toBe(true);
+      expect(mockPresenter.present).toHaveBeenCalledWith(expect.objectContaining(payload));
+    });
+
     it('defaults level to config value', async () => {
       (mockConfig as { notificationLevel: string }).notificationLevel = 'error';
       handler = new NotificationHandler(mockPresenter, mockConfig);
@@ -174,6 +186,12 @@ describe('NotificationHandler', () => {
       const result = await handler.handle({ message: 'hi', icon: 'x'.repeat(51) });
       expect(result.ok).toBe(false);
       expect(result.details).toContain('icon exceeds maximum length');
+    });
+
+    it('rejects invalid Codex metadata', async () => {
+      const result = await handler.handle({ message: 'hi', session_id: 123 });
+      expect(result.ok).toBe(false);
+      expect(result.details).toContain('session_id must be a string');
     });
   });
 

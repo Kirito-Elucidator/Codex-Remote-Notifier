@@ -11,6 +11,7 @@ import { Configuration } from '../config/Configuration';
 const MAX_MESSAGE_LENGTH = 1000;
 const MAX_TITLE_LENGTH = 100;
 const MAX_ICON_LENGTH = 50;
+const MAX_METADATA_LENGTH = 200;
 const VALID_LEVELS = ['information', 'warning', 'error'];
 const VALID_DISPLAYS = ['app', 'system'];
 
@@ -79,6 +80,16 @@ export class NotificationHandler {
       }
       if (obj.icon.length > MAX_ICON_LENGTH) {
         return `icon exceeds maximum length of ${MAX_ICON_LENGTH} characters`;
+      }
+    }
+
+    for (const field of ['source', 'session_id', 'turn_id', 'event_key'] as const) {
+      const value = obj[field];
+      if (value !== undefined && typeof value !== 'string') {
+        return `${field} must be a string`;
+      }
+      if (typeof value === 'string' && value.length > MAX_METADATA_LENGTH) {
+        return `${field} exceeds maximum length of ${MAX_METADATA_LENGTH} characters`;
       }
     }
 

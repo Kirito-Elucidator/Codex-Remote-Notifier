@@ -10,9 +10,11 @@ export const SESSION_FILE = 'session.json';
 export const COMMAND_INSTALL_SCRIPT = 'remoteNotifier.installScript';
 
 export const COMMAND_AUTO_CONFIGURE = 'remoteNotifier.autoConfigure';
+export const COMMAND_REMOVE_CODEX_CONFIG = 'remoteNotifier.removeCodexConfiguration';
 export const COMMAND_TEST_VSCODE = 'remoteNotifier.testVscodeNotification';
 export const COMMAND_TEST_SYSTEM = 'remoteNotifier.testSystemNotification';
 
 export const ENV_PORT = 'REMOTE_NOTIFIER_PORT';
 export const ENV_TOKEN = 'REMOTE_NOTIFIER_TOKEN';
 export const ENV_URL = 'REMOTE_NOTIFIER_URL';
+export const ENV_CODEX_PREVIEW_LENGTH = 'REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH';

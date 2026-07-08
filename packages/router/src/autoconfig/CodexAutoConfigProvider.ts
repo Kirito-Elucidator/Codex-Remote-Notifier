@@ -1,14 +1,29 @@
+import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
 import { window } from 'vscode';
 
 import { SCRIPT_NAME } from '../installer/CodeNotifyScriptInstaller';
+import {
+  CODEX_ATTENTION_HOOK_NAME,
+  CodexAttentionHookInstaller,
+  getCodexAttentionHookPath,
+  getCodexAttentionHookWindowsPath,
+} from '../installer/CodexAttentionHookInstaller';
 import { BaseAutoConfigProvider, Platform, ProcessResult } from './BaseAutoConfigProvider';
 
 interface HookEntry {
   matcher?: string;
-  hooks: { type: string; command: string; timeout: number }[];
+  hooks: HookCommand[];
+  [key: string]: unknown;
+}
+
+interface HookCommand {
+  type: string;
+  command: string;
+  timeout: number;
+  [key: string]: unknown;
 }
 
 interface CodexHooksConfig {
@@ -16,13 +31,68 @@ interface CodexHooksConfig {
   [key: string]: unknown;
 }
 
-const HOOKS_CONFIG_PATH = path.join(os.homedir(), '.codex', 'hooks.json');
-const TOML_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml');
+export function resolveCodexHome(
+  environment: NodeJS.ProcessEnv = process.env,
+  homeDirectory = os.homedir(),
+): string {
+  const configuredHome = environment.CODEX_HOME?.trim();
+  return configuredHome ? path.resolve(configuredHome) : path.join(homeDirectory, '.codex');
+}
+
+const CODEX_HOME_PATH = resolveCodexHome();
+const HOOKS_CONFIG_PATH = path.join(CODEX_HOME_PATH, 'hooks.json');
+const TOML_CONFIG_PATH = path.join(CODEX_HOME_PATH, 'config.toml');
 
 export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
   readonly id = 'codex';
   readonly label = 'Codex';
   readonly description = 'Configure Codex hooks to send notifications';
+
+  constructor(
+    log?: import('vscode').OutputChannel,
+    private readonly hookInstaller = new CodexAttentionHookInstaller(log),
+  ) {
+    super(log);
+  }
+
+  async configure(): Promise<void> {
+    try {
+      await this.hookInstaller.ensureInstalled();
+    } catch (error) {
+      window.showErrorMessage(`Failed to install the Codex attention helper: ${error}`);
+      return;
+    }
+    await super.configure();
+  }
+
+  async unconfigure(): Promise<void> {
+    let raw = '{}';
+    try {
+      raw = await fs.readFile(HOOKS_CONFIG_PATH, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        window.showErrorMessage(`Failed to read Codex hooks at ${HOOKS_CONFIG_PATH}: ${error}`);
+        return;
+      }
+    }
+
+    const result = this.removeOwnedHooks(raw);
+    if (result === null) return;
+
+    try {
+      if (result.changed) {
+        await fs.writeFile(HOOKS_CONFIG_PATH, result.content, 'utf-8');
+      }
+      await this.hookInstaller.uninstall();
+      window.showInformationMessage(
+        result.changed
+          ? 'Remote Notifier: Removed Codex notification hooks and helper.'
+          : 'Remote Notifier: Codex notification hooks were not installed; helper removed.',
+      );
+    } catch (error) {
+      window.showErrorMessage(`Failed to remove the Codex notification configuration: ${error}`);
+    }
+  }
 
   protected getConfigFiles(): string[] {
     return [HOOKS_CONFIG_PATH, TOML_CONFIG_PATH];
@@ -71,16 +141,19 @@ export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
 
       for (const entry of entries) {
         const idx = existing.findIndex(
-          (e: HookEntry) => this.isCodeNotifyHook(e) && this.matchesMatcher(e, entry),
+          (e: HookEntry) => this.isOwnedHook(e) && this.matchesMatcher(e, entry),
         );
 
         if (idx === -1) {
           existing.push(entry);
           added++;
-        } else if (this.isIdentical(existing[idx], entry)) {
-          skipped++;
         } else {
-          existing[idx] = entry;
+          const merged = this.replaceOwnedCommands(existing[idx], entry);
+          if (this.isIdentical(existing[idx], merged)) {
+            skipped++;
+            continue;
+          }
+          existing[idx] = merged;
           updated++;
         }
       }
@@ -107,6 +180,37 @@ export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
     return {
       modifiedFiles,
       stats: { added, updated, skipped },
+    };
+  }
+
+  removeOwnedHooks(raw: string): { content: string; changed: boolean } | null {
+    let config: CodexHooksConfig;
+    try {
+      config = JSON.parse(raw || '{}');
+    } catch {
+      window.showErrorMessage(
+        `Codex hooks at ${HOOKS_CONFIG_PATH} contains invalid JSON. Please fix it manually.`,
+      );
+      return null;
+    }
+
+    if (!config.hooks) return { content: raw, changed: false };
+    let changed = false;
+
+    for (const [category, entries] of Object.entries(config.hooks)) {
+      const remaining: HookEntry[] = [];
+      for (const entry of entries) {
+        const commands = entry.hooks.filter((hook) => !this.isOwnedCommand(hook));
+        if (commands.length !== entry.hooks.length) changed = true;
+        if (commands.length > 0) remaining.push({ ...entry, hooks: commands });
+      }
+      if (remaining.length > 0) config.hooks[category] = remaining;
+      else if (entries.length > 0 && remaining.length === 0) delete config.hooks[category];
+    }
+
+    return {
+      content: changed ? JSON.stringify(config, null, 2) + '\n' : raw,
+      changed,
     };
   }
 
@@ -148,45 +252,56 @@ export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
   }
 
   private buildHooks(platform: Platform, useJq: boolean): Record<string, HookEntry[]> {
-    const cmdPath = this.getCommandPath(platform);
-
-    const permissionCommand = useJq
-      ? `msg=$(jq -r '.tool_input.description // "Waiting for permission to use a tool"' 2>/dev/null) && ${cmdPath} -i ICON_CODEX -d system 'Codex' "$msg" 2>/dev/null || true`
-      : `${cmdPath} -i ICON_CODEX -d system 'Codex' 'Waiting for permission to use a tool' 2>/dev/null || true`;
-
-    const stopCommand =
+    void useJq;
+    const hookPath = getCodexAttentionHookPath();
+    const command =
       platform === 'windows'
-        ? `${cmdPath} -i ICON_CODEX -d system "Codex" "Finished - waiting for your input" 2>nul`
-        : `${cmdPath} -i ICON_CODEX -d system 'Codex' 'Finished - waiting for your input' 2>/dev/null || true`;
+        ? getCodexAttentionHookWindowsPath().replace(/\\/g, '/')
+        : `${hookPath} 2>/dev/null || true`;
+    const hook = (): HookCommand => ({ type: 'command', command, timeout: 3 });
 
     return {
       Stop: [
         {
-          hooks: [
-            {
-              type: 'command',
-              command: stopCommand,
-              timeout: 5,
-            },
-          ],
+          hooks: [hook()],
+        },
+      ],
+      PreToolUse: [
+        {
+          matcher: '^request_user_input$',
+          hooks: [hook()],
         },
       ],
       PermissionRequest: [
         {
-          hooks: [
-            {
-              type: 'command',
-              command: permissionCommand,
-              timeout: 5,
-            },
-          ],
+          hooks: [hook()],
         },
       ],
     };
   }
 
-  private isCodeNotifyHook(entry: HookEntry): boolean {
-    return entry.hooks?.some((h) => h.command?.includes(SCRIPT_NAME)) ?? false;
+  protected async checkJqAvailable(): Promise<boolean> {
+    return false;
+  }
+
+  private isOwnedHook(entry: HookEntry): boolean {
+    return entry.hooks?.some((hook) => this.isOwnedCommand(hook)) ?? false;
+  }
+
+  private isOwnedCommand(hook: HookCommand): boolean {
+    return (
+      hook.command?.includes(CODEX_ATTENTION_HOOK_NAME) ||
+      (hook.command?.includes(SCRIPT_NAME) && hook.command.includes('ICON_CODEX'))
+    );
+  }
+
+  private replaceOwnedCommands(existing: HookEntry, desired: HookEntry): HookEntry {
+    const userCommands = existing.hooks.filter((hook) => !this.isOwnedCommand(hook));
+    return {
+      ...existing,
+      ...(desired.matcher === undefined ? {} : { matcher: desired.matcher }),
+      hooks: [...userCommands, ...desired.hooks],
+    };
   }
 
   private matchesMatcher(a: HookEntry, b: HookEntry): boolean {

@@ -24,6 +24,7 @@ const buildOptions = {
   loader: {
     '.sh': 'text',
     '.cmd': 'text',
+    '.py': 'text',
   },
 };
 

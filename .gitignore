@@ -3,6 +3,7 @@ dist/
 *.vsix
 .vscode-test/
 coverage/
+__pycache__/
 *.js.map
 .claude/
 packages/*/icon.png

@@ -1,18 +1,22 @@
 import * as vscode from 'vscode';
+
 import {
-  COMMAND_SHOW_SESSION_INFO,
-  COMMAND_ENSURE_ROUTER_STARTED,
-  COMMAND_REGENERATE_TOKEN,
-  COMMAND_COPY_NOTIFY_COMMAND,
-  COMMAND_INSTALL_SCRIPT,
   COMMAND_AUTO_CONFIGURE,
+  COMMAND_COPY_NOTIFY_COMMAND,
+  COMMAND_ENSURE_ROUTER_STARTED,
+  COMMAND_INSTALL_SCRIPT,
+  COMMAND_REGENERATE_TOKEN,
+  COMMAND_REMOVE_CODEX_CONFIG,
+  COMMAND_SHOW_SESSION_INFO,
   VscodePresenter,
 } from 'remote-notifier-shared';
+
+import { CodexAutoConfigProvider } from './autoconfig/CodexAutoConfigProvider';
 import { createAutoConfigRegistry } from './autoconfig/Registry';
-import { CodeNotifyScriptInstaller } from './installer/CodeNotifyScriptInstaller';
 import { Configuration } from './config/Configuration';
-import { CommandPresenter } from './presenter/CommandPresenter';
 import { NotificationHandler } from './handler/NotificationHandler';
+import { CodeNotifyScriptInstaller } from './installer/CodeNotifyScriptInstaller';
+import { CommandPresenter } from './presenter/CommandPresenter';
 import { NotificationServer } from './server/NotificationServer';
 import { SessionManager } from './session/SessionManager';
 import { StatusBar } from './ui/StatusBar';
@@ -33,7 +37,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const vscodePresenter = new VscodePresenter();
   const presenter = new CommandPresenter(vscodePresenter, log);
   const handler = new NotificationHandler(presenter, config);
-  const sessionManager = new SessionManager(context);
+  const sessionManager = new SessionManager(context, {
+    codexPreviewLength: config.codexPreviewLength,
+  });
   const server = new NotificationServer(handler, config);
 
   await server.start(sessionManager.token);
@@ -78,7 +84,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return {
         ok: true,
         port: server.port,
-        version: vscode.extensions.getExtension('ddyndo.remote-notifier-router')?.packageJSON
+        version: vscode.extensions.getExtension('ddyndo.remote-notifier-codex-router')?.packageJSON
           ?.version,
       };
     }),
@@ -128,6 +134,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (selected) {
         await selected.provider.configure();
       }
+    }),
+    vscode.commands.registerCommand(COMMAND_REMOVE_CODEX_CONFIG, async () => {
+      await new CodexAutoConfigProvider(log).unconfigure();
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration('remoteNotifier.codexPreviewLength')) return;
+      sessionManager
+        .updateCodexPreviewLength(config.codexPreviewLength, server.port)
+        .catch((err) => {
+          log.appendLine(`[Router] Failed to update Codex preview length: ${err}`);
+        });
     }),
   );
 

@@ -8,6 +8,10 @@ export interface NotificationPayload {
   display_hint?: DisplayHint;
   icon?: string;
   sound?: string;
+  source?: string;
+  session_id?: string;
+  turn_id?: string;
+  event_key?: string;
 }
 
 export interface SessionInfo {
@@ -16,6 +20,7 @@ export interface SessionInfo {
   pid: number;
   workspaceFolder: string;
   createdAt: string;
+  codexPreviewLength?: number;
 }
 
 export interface NotificationResponse {

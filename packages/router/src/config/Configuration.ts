@@ -26,4 +26,8 @@ export class Configuration {
   get showTimestamp(): boolean {
     return this.config.get('showTimestamp', false);
   }
+
+  get codexPreviewLength(): number {
+    return this.config.get('codexPreviewLength', 16);
+  }
 }
