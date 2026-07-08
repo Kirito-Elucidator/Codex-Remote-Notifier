@@ -123,4 +123,61 @@ describe('RateLimitedPresenter', () => {
     presenter.dispose();
     // Should not throw
   });
+
+  it('bypasses the global limit for distinct Codex events', async () => {
+    presenter = new RateLimitedPresenter(inner, 2, 15_000);
+
+    await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        presenter.present({
+          source: 'codex',
+          session_id: `session-${index}`,
+          turn_id: 'turn-1',
+          event_key: 'task-complete',
+          message: `Codex ${index}`,
+        }),
+      ),
+    );
+
+    expect(inner.present).toHaveBeenCalledTimes(8);
+  });
+
+  it('deduplicates Codex events by session, turn, and event key', async () => {
+    presenter = new RateLimitedPresenter(inner, 1, 15_000);
+    const event = {
+      source: 'codex',
+      session_id: 'session-1',
+      turn_id: 'turn-1',
+      event_key: 'waiting-answer',
+      message: 'Waiting',
+    };
+
+    await Promise.all([
+      presenter.present(event),
+      presenter.present(event),
+      presenter.present(event),
+    ]);
+    await presenter.present({ ...event, turn_id: 'turn-2' });
+    await presenter.present({ ...event, event_key: 'waiting-permission' });
+
+    expect(inner.present).toHaveBeenCalledTimes(3);
+  });
+
+  it('allows a failed Codex event to be retried', async () => {
+    vi.mocked(inner.present)
+      .mockRejectedValueOnce(new Error('temporary'))
+      .mockResolvedValueOnce(undefined);
+    presenter = new RateLimitedPresenter(inner, 1, 15_000);
+    const event = {
+      source: 'codex',
+      session_id: 'session-1',
+      turn_id: 'turn-1',
+      event_key: 'task-complete',
+      message: 'Done',
+    };
+
+    await expect(presenter.present(event)).rejects.toThrow('temporary');
+    await expect(presenter.present(event)).resolves.toBeUndefined();
+    expect(inner.present).toHaveBeenCalledTimes(2);
+  });
 });
