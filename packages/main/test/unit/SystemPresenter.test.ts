@@ -3,9 +3,11 @@ import * as notifier from 'node-notifier';
 import { setMockConfig, clearMockConfig } from 'vscode';
 import { SystemPresenter } from '../../src/presenter/SystemPresenter';
 import { SoundPlayer } from '../../src/presenter/SoundPlayer';
+import { WindowsReminderPresenter } from '../../src/presenter/WindowsReminderPresenter';
 import * as shared from 'remote-notifier-shared';
 
 vi.mock('../../src/presenter/SoundPlayer');
+vi.mock('../../src/presenter/WindowsReminderPresenter');
 vi.mock('remote-notifier-shared', async () => {
   const actual = (await vi.importActual('remote-notifier-shared')) as any;
   return {
@@ -17,13 +19,59 @@ vi.mock('remote-notifier-shared', async () => {
 describe('SystemPresenter', () => {
   let presenter: SystemPresenter;
   let playSpy: any;
+  let reminderSpy: any;
 
   beforeEach(() => {
     vi.clearAllMocks();
     clearMockConfig();
     presenter = new SystemPresenter();
     playSpy = vi.spyOn(SoundPlayer.prototype, 'play');
+    reminderSpy = vi.mocked(WindowsReminderPresenter.prototype.present);
+    reminderSpy.mockResolvedValue(undefined);
     vi.mocked(shared.fileExists).mockResolvedValue(true);
+  });
+
+  it('uses a persistent Windows reminder for Codex notifications by default', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+
+    await presenter.present({ message: 'Task finished', title: '[任务完成]', source: 'codex' });
+
+    expect(reminderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: '[任务完成]',
+        message: 'Task finished',
+        silent: false,
+      }),
+    );
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('keeps non-Codex Windows notifications on node-notifier', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+
+    await presenter.present({ message: 'Build finished', title: 'Build' });
+
+    expect(reminderSpy).not.toHaveBeenCalled();
+    expect(notifier.notify).toHaveBeenCalled();
+  });
+
+  it('can disable persistent Codex notifications', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    setMockConfig('remoteNotifier.codexPersistentNotifications', false);
+
+    await presenter.present({ message: 'Task finished', source: 'codex' });
+
+    expect(reminderSpy).not.toHaveBeenCalled();
+    expect(notifier.notify).toHaveBeenCalled();
+  });
+
+  it('falls back to node-notifier when the Windows reminder fails', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    reminderSpy.mockRejectedValueOnce(new Error('reminder failed'));
+
+    await presenter.present({ message: 'Task finished', source: 'codex' });
+
+    expect(notifier.notify).toHaveBeenCalled();
   });
 
   it('calls notifier.notify with sound: true by default on non-linux', async () => {

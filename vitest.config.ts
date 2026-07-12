@@ -1,7 +1,18 @@
 import { defineConfig } from 'vitest/config';
+import fs from 'fs';
 import path from 'path';
 
 export default defineConfig({
+  plugins: [
+    {
+      name: 'raw-powershell',
+      enforce: 'pre',
+      load(id) {
+        if (!id.endsWith('.ps1')) return null;
+        return `export default ${JSON.stringify(fs.readFileSync(id, 'utf8'))};`;
+      },
+    },
+  ],
   resolve: {
     alias: {
       'remote-notifier-shared': path.resolve(__dirname, 'shared/index.ts'),

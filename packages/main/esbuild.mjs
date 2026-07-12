@@ -60,6 +60,9 @@ const buildOptions = {
   sourcemap: true,
   minify: !isWatch,
   plugins: [vendorPathPlugin],
+  loader: {
+    '.ps1': 'text',
+  },
 };
 
 if (isWatch) {

@@ -20,6 +20,7 @@ export const window = {
   state: { focused: true, active: true },
   onDidChangeWindowState: vi.fn(() => ({ dispose: vi.fn() })),
   onDidChangeActiveTextEditor: vi.fn(() => ({ dispose: vi.fn() })),
+  registerUriHandler: vi.fn(() => ({ dispose: vi.fn() })),
   createOutputChannel: vi.fn(() => ({
     appendLine: vi.fn(),
     append: vi.fn(),

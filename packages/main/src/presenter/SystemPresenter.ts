@@ -7,6 +7,7 @@ import * as notifier from 'node-notifier';
 import { fileExists, NotificationPayload, NotificationPresenter } from 'remote-notifier-shared';
 
 import { SoundPlayer } from './SoundPlayer';
+import { WindowsReminderPresenter } from './WindowsReminderPresenter';
 
 const ICONS: Record<string, string> = {
   transparent: path.join(__dirname, 'icon-transparent.png'),
@@ -17,9 +18,11 @@ const BUNDLED_SOUND = path.join(__dirname, 'notification.wav');
 
 export class SystemPresenter implements NotificationPresenter {
   private readonly soundPlayer: SoundPlayer;
+  private readonly windowsReminder: WindowsReminderPresenter;
 
   constructor(private readonly log?: vscode.OutputChannel) {
     this.soundPlayer = new SoundPlayer(log);
+    this.windowsReminder = new WindowsReminderPresenter();
   }
 
   async present(payload: NotificationPayload): Promise<string | undefined> {
@@ -38,6 +41,27 @@ export class SystemPresenter implements NotificationPresenter {
     this.log?.appendLine(
       `[SystemPresenter] Sending OS notification: title="${title}" message="${payload.message}" icon="${iconPath}" nativeSound=${useNativeSound}`,
     );
+
+    const usePersistentCodexNotification =
+      process.platform === 'win32' &&
+      payload.source === 'codex' &&
+      config.get<boolean>('codexPersistentNotifications', true);
+    if (usePersistentCodexNotification) {
+      try {
+        await this.windowsReminder.present({
+          title,
+          message: payload.message,
+          iconPath,
+          silent: !soundEnabled || Boolean(soundPath),
+        });
+        this.log?.appendLine('[SystemPresenter] Windows reminder notification sent successfully');
+        return undefined;
+      } catch (err) {
+        this.log?.appendLine(
+          `[SystemPresenter] Windows reminder failed: ${err}. Falling back to node-notifier.`,
+        );
+      }
+    }
 
     try {
       notifier.notify(

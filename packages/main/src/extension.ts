@@ -1,15 +1,16 @@
 import * as vscode from 'vscode';
+
 import {
-  NotificationPayload,
   COMMAND_SHOW_NOTIFICATION,
-  COMMAND_TEST_VSCODE,
   COMMAND_TEST_SYSTEM,
+  COMMAND_TEST_VSCODE,
+  NotificationPayload,
   VscodePresenter,
 } from 'remote-notifier-shared';
-import { FocusAwarePresenter } from './presenter/FocusAwarePresenter';
-import { SystemPresenter } from './presenter/SystemPresenter';
-import { RateLimitedPresenter } from './presenter/RateLimitedPresenter';
 
+import { FocusAwarePresenter } from './presenter/FocusAwarePresenter';
+import { RateLimitedPresenter } from './presenter/RateLimitedPresenter';
+import { SystemPresenter } from './presenter/SystemPresenter';
 import { RouterAutoInstaller } from './RouterAutoInstaller';
 
 let log: vscode.OutputChannel;
@@ -53,6 +54,13 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showInformationMessage(
           'Remote Notifier: Ignored workspaces have been reset.',
         );
+      }),
+      vscode.window.registerUriHandler({
+        handleUri: async (uri) => {
+          if (uri.path !== '/notification') return;
+          log.appendLine('[Main] Windows reminder notification activated');
+          await vscode.commands.executeCommand('workbench.action.focusWindow');
+        },
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => autoInstaller.debouncedCheck()),
     );
