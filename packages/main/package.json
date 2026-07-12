@@ -1,8 +1,8 @@
 {
-  "name": "remote-notifier",
-  "displayName": "Remote Notifier",
+  "name": "remote-notifier-codex",
+  "displayName": "Remote Notifier Codex",
   "description": "Receive notifications from remote scripts and tools and present them to the user as system or in-app notifications",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",
@@ -69,7 +69,7 @@
             "always",
             "never"
           ],
-          "default": "auto",
+          "default": "always",
           "description": "When to show OS-level system notifications. 'auto' shows them only when VS Code is unfocused, 'always' always uses OS notifications, 'never' uses only VS Code toasts."
         },
         "remoteNotifier.notificationIcon": {
@@ -85,6 +85,11 @@
           "type": "boolean",
           "default": true,
           "description": "Play a sound when showing system-level notifications."
+        },
+        "remoteNotifier.codexPersistentNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep Codex notifications visible on Windows until they are opened or dismissed."
         },
         "remoteNotifier.notificationSoundPath": {
           "type": "string",

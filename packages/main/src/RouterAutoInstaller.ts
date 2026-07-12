@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 export class RouterAutoInstaller {
-  private static readonly TARGET_EXTENSION_ID = 'ddyndo.remote-notifier-router';
+  private static readonly TARGET_EXTENSION_ID = 'ddyndo.remote-notifier-codex-router';
   private static readonly ENSURE_STARTED_COMMAND = 'remoteNotifier.ensureRouterStarted';
 
   private static readonly DEBOUNCE_DELAY_MS = 3000;
@@ -111,7 +111,7 @@ export class RouterAutoInstaller {
           `[RouterAutoInstaller] Phase 2: Command executed successfully. Extension is active.`,
         );
         return true;
-      } catch (err) {
+      } catch {
         this.log.appendLine(
           `[RouterAutoInstaller] Phase 2: Command execution failed (likely missing).`,
         );

@@ -35,7 +35,9 @@ describe('RouterAutoInstaller', () => {
 
     await autoInstaller.checkAndInstall();
 
-    expect(vscode.extensions.getExtension).toHaveBeenCalledWith('ddyndo.remote-notifier-router');
+    expect(vscode.extensions.getExtension).toHaveBeenCalledWith(
+      'ddyndo.remote-notifier-codex-router',
+    );
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
 
@@ -74,11 +76,11 @@ describe('RouterAutoInstaller', () => {
 
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'extension.open',
-      'ddyndo.remote-notifier-router',
+      'ddyndo.remote-notifier-codex-router',
     );
     expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
       'workbench.extensions.installExtension',
-      'ddyndo.remote-notifier-router',
+      'ddyndo.remote-notifier-codex-router',
     );
   });
 
