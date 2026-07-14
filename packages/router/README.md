@@ -1,4 +1,4 @@
-# Remote Notifier (Router)
+# Remote Notifier Codex (Router)
 
 > ### Stay informed about progress of your work without having to babysit it!
 
@@ -16,12 +16,21 @@ anything.
 
 ## Remote Notifier (Router)
 
-This is a helper extension ("router") to the main one -
-[Remote Notifier](https://marketplace.visualstudio.com/items?itemName=ddyndo.remote-notifier) -
-that needs to be installed in a given workspace to allow scripts and tools to
-trigger notifications from within that workspace. Triggered notifications are
-received by this extension and they are passed to the main extension for
-presentation via system (or in-app) notifications to the user.
+This is the Router component of the unofficial Codex-focused fork of
+[ripper37/remote-notifier v1.0.1](https://github.com/ripper37/remote-notifier/tree/v1.0.1).
+It installs attention hooks for task completion,
+questions, ongoing or completed plans, and permission requests. Run the
+auto-configure command and select Codex; the helper is installed at
+`~/.local/bin/codex-attention-hook`. Use
+`Remote Notifier: Remove Codex notification hooks` to remove only the hooks and
+helper owned by this extension. Completed-turn notifications show both the
+renamed session and answer preview when both are available.
+
+This is a helper extension ("router") for the enhanced main extension built
+from the same source tree. It needs to be installed in a given workspace to
+allow scripts and tools to trigger notifications from within that workspace.
+Triggered notifications are passed to the main extension for presentation via
+system or in-app notifications.
 
 This extension can be installed manually, but the main extension will also
 prompt user to install it whenever new workspace is opened which doesn't have it
@@ -39,14 +48,13 @@ to your PATH to allow triggering notifications from that workspace.
 
 ## How To Use
 
-1. Install the [main Remote Notifier extension](https://marketplace.visualstudio.com/items?itemName=ddyndo.remote-notifier)
-2. Install this helper extension manually or when prompted by the main extension
+1. Install the `remote-notifier-codex` VSIX built from this source tree
+2. Install this Router VSIX manually or when prompted by the main extension
 3. Execute `code-notify` helper script to trigger user notifications! 🎉
 
-You can also find latest version of the extensions on the
-[GitHub project page](github.com/RippeR37/remote-notifier/releases) and manually
-install VSIX extensions via `Extensions: Install from VSIX...` command available
-from the Command Palette (<kbd>F1</kbd>).
+The original releases remain available on the
+[upstream GitHub project](https://github.com/ripper37/remote-notifier/releases).
+This fork uses independent extension IDs and must be packaged separately.
 
 > [!IMPORTANT]
 > To use Remote Notifier extension in remote workspaces (e.g. via SSH) you need

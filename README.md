@@ -1,4 +1,4 @@
-# Remote Notifier
+# Remote Notifier Codex
 
 > ### Stay informed about progress of your work without having to babysit it!
 
@@ -9,6 +9,46 @@
 **Remote Notifier** lets you trigger notifications from remote environments like
 SSH, Docker or WSL and receive them instantly on your local machine through VS
 Code.
+
+## Codex-enhanced fork
+
+This is an unofficial Codex-focused fork of
+[ripper37/remote-notifier v1.0.1](https://github.com/ripper37/remote-notifier/tree/v1.0.1).
+It keeps the upstream Presenter + SSH Router design and MIT license, and adds
+user-level Codex hooks without modifying Codex itself.
+
+After installing both locally built VSIX files, run
+`Remote Notifier: Auto-configure notifications in current workspace for...`
+and select `Codex`. The Router installs
+`~/.local/bin/codex-attention-hook` and configures these notifications:
+
+- `[任务完成]` when a non-Plan Codex turn stops
+- `[等待回答]` before `request_user_input`
+- `[计划继续]` when a Plan mode turn stops without a finalized plan
+- `[计划完成]` when Codex completes a structured Plan item
+- `[等待授权]` when Codex requests tool permission
+
+Notification bodies contain the remote hostname, the renamed Codex session when
+available, and the final answer preview. Without a rename, the answer preview is
+shown directly. Configure the length used for each preview with
+`remoteNotifier.codexPreviewLength` (default: 16 visible characters). Codex
+notifications are deduplicated per session, turn, and event and bypass the
+general burst rate limit. System notifications default to `always` in this
+build so Windows toasts remain visible when another application covers VS Code.
+On Windows, Codex notifications use the native reminder scenario and stay on
+screen until opened or dismissed. Set
+`remoteNotifier.codexPersistentNotifications` to `false` to restore normal
+toast behavior.
+
+Use `Remote Notifier: Remove Codex notification hooks` for a clean hook/helper
+uninstall. The enhanced packages use the independent extension IDs
+`ddyndo.remote-notifier-codex` and `ddyndo.remote-notifier-codex-router`, so the
+Marketplace originals cannot replace them during automatic updates.
+
+Windows notification clicks currently restore focus to VS Code. Selecting the
+exact existing integrated terminal is planned but not implemented. Remote SSH
+uses the upstream routing architecture but should be considered experimental
+until it has completed manual multi-window validation.
 
 Whether you're building your code, running tests, using some tools, or working
 with an AI agents, you no longer need to keep checking back or risk missing
