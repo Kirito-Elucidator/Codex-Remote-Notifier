@@ -1,389 +1,416 @@
 # Remote Notifier Codex
 
-> ### Stay informed about progress of your work without having to babysit it!
+[简体中文](#简体中文) | [English](#english)
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ripper37/remote-notifier/master/assets/example_notification.png" height="146">
+  <img src="https://raw.githubusercontent.com/ripper37/remote-notifier/master/assets/example_notification.png" height="146" alt="Remote Notifier notification example">
 </p>
 
-**Remote Notifier** lets you trigger notifications from remote environments like
-SSH, Docker or WSL and receive them instantly on your local machine through VS
-Code.
+## 简体中文
 
-## Codex-enhanced fork
+> 一个面向 Codex CLI 工作流的 Remote Notifier 非官方增强分支。
 
-This is an unofficial Codex-focused fork of
-[ripper37/remote-notifier v1.0.1](https://github.com/ripper37/remote-notifier/tree/v1.0.1).
-It keeps the upstream Presenter + SSH Router design and MIT license, and adds
-user-level Codex hooks without modifying Codex itself.
+> **核心使用场景：Codex 可以运行在 Remote SSH 连接的 Linux 服务器上，但“任务完成”、
+> “等待回答”、“计划完成”和“等待授权”等提醒会通过 VS Code Router 回传，并显示在你正在使用的
+> 本机 Windows 10/11 上。即使 VS Code 被浏览器或其他窗口遮挡，也能收到持续显示的 Windows
+> 系统通知，不需要一直盯着远端终端。同时也支持完全在本机使用：Codex、Router 和通知扩展
+> 都运行在同一台 Windows 电脑上，无需配置 SSH。**
 
-After installing both locally built VSIX files, run
-`Remote Notifier: Auto-configure notifications in current workspace for...`
-and select `Codex`. The Router installs
-`~/.local/bin/codex-attention-hook` and configures these notifications:
+### Fork 与致谢
 
-- `[任务完成]` when a non-Plan Codex turn stops
-- `[等待回答]` before `request_user_input`
-- `[计划继续]` when a Plan mode turn stops without a finalized plan
-- `[计划完成]` when Codex completes a structured Plan item
-- `[等待授权]` when Codex requests tool permission
+本项目 fork 自 [ripper37/remote-notifier](https://github.com/ripper37/remote-notifier)，
+当前增强工作基于上游 `v1.0.1`。项目保留了上游的 MIT 许可证、完整 Git 历史，
+以及本机 Presenter + 工作区 Router 的核心架构。
 
-Notification bodies contain the remote hostname, the renamed Codex session when
-available, and the final answer preview. Without a rename, the answer preview is
-shown directly. Configure the length used for each preview with
-`remoteNotifier.codexPreviewLength` (default: 16 visible characters). Codex
-notifications are deduplicated per session, turn, and event and bypass the
-general burst rate limit. System notifications default to `always` in this
-build so Windows toasts remain visible when another application covers VS Code.
-On Windows, Codex notifications use the native reminder scenario and stay on
-screen until opened or dismissed. Set
-`remoteNotifier.codexPersistentNotifications` to `false` to restore normal
-toast behavior.
+特别感谢原作者 [Damian Dyńdo (@ripper37)](https://github.com/ripper37) 创建并开源
+Remote Notifier。其跨本机、Remote SSH、WSL 和容器的通知路由设计，为本 fork 的
+Codex 特化提供了可靠基础。
 
-Use `Remote Notifier: Remove Codex notification hooks` for a clean hook/helper
-uninstall. The enhanced packages use the independent extension IDs
-`ddyndo.remote-notifier-codex` and `ddyndo.remote-notifier-codex-router`, so the
-Marketplace originals cannot replace them during automatic updates.
+本 fork 由社区独立维护，与原作者及 OpenAI 均无隶属关系。上游项目的原始功能和
+完整说明请参阅[原仓库](https://github.com/ripper37/remote-notifier)。
 
-Windows notification clicks currently restore focus to VS Code. Selecting the
-exact existing integrated terminal is planned but not implemented. Remote SSH
-uses the upstream routing architecture but should be considered experimental
-until it has completed manual multi-window validation.
+### 本 Fork 的 Codex 特化增强
 
-Whether you're building your code, running tests, using some tools, or working
-with an AI agents, you no longer need to keep checking back or risk missing
-anything.
+本 fork 不修改 Codex 本体，而是在用户级安装 Hook，将需要注意的生命周期事件通过
+Remote Notifier 显示为本机系统通知。
 
-### Why Remote Notifier?
+| Codex 场景        | 通知标题     | 触发条件                                    |
+| ----------------- | ------------ | ------------------------------------------- |
+| 普通回答结束      | `[任务完成]` | Default 模式中的 `Stop`                     |
+| 等待用户回答      | `[等待回答]` | `PreToolUse(request_user_input)`            |
+| Plan 模式暂时停止 | `[计划继续]` | Plan 模式停止，但尚未产生完整结构化计划     |
+| 完整计划生成      | `[计划完成]` | 检测到结构化 Plan item 或 `<proposed_plan>` |
+| 等待工具授权      | `[等待授权]` | `PermissionRequest`                         |
 
-Working in remote environments often means losing visibility. \
-You start a long-running task and then either:
+此外还增加了以下能力：
 
-- have to keep checking if it’s done already
-- forget about it and come back way too late
-- miss that it failed early, did nothing useful and wasted your time
+- 根据 `session_id` 从 Codex 状态数据库或 `session_index.jsonl` 读取重命名后的会话名。
+- 通知正文显示主机名、会话名和回答摘要；未重命名时直接显示回答摘要。
+- 可配置摘要长度，默认截取前 16 个可见字符，并正确处理中文和组合字符。
+- 从 transcript 中识别结构化计划，避免把完整计划误判成普通任务完成。
+- Codex 事件按 session、turn 和事件类型去重，不受通用突发通知限流影响。
+- Hook 最多运行 3 秒；任何通知失败都以成功状态退出，不阻塞 Codex，也不改变授权结果。
+- Windows 上使用原生 reminder 场景，通知会保留到用户点击或关闭为止。
+- 点击通知可以唤回并聚焦 VS Code。
+- 主扩展和 Router 使用独立扩展 ID，避免被 Marketplace 上游版本自动覆盖。
+- Hook 仅执行本地脚本和本地路由，不增加模型上下文，也不消耗额外模型 token。
 
-This extension fixes that by allowing you to get instant notifications about
-progress of your work regardless of where the work is done.
+### 当前状态
 
-**No extra dependencies, no complex configuration, just pure productivity!**
+- Windows 10/11 本机工作流已经完成自动化测试和手动验证。
+- 通知点击目前会唤回 VS Code，但尚不会精确选中产生通知的既有集成终端。
+- 精确终端跳转已列入后续计划，并且不会通过创建新对话来实现。
+- Remote SSH 沿用上游 Router 架构，目前应视为实验性能力，仍需完成多窗口人工验证。
 
-## How It Works
+### 工作原理
 
-**Remote Notifier** consists of two VS Code extensions:
+Remote Notifier Codex 包含两个 VS Code 扩展和一个轻量 Hook：
 
-### 🔔 [Remote Notifier](https://marketplace.visualstudio.com/items?itemName=ddyndo.remote-notifier)
+```text
+Codex CLI
+  -> ~/.local/bin/codex-attention-hook
+  -> 工作区侧 Remote Notifier Codex Router
+  -> 本机侧 Remote Notifier Codex
+  -> Windows 系统通知
+```
 
-- Main extension
-- Runs on your local machine (UI side of the VS Code)
-- Checks if the Router helper extension is installed in current workspace and
-  suggests installing it if it's missing
-- Receives notifications from the Router extension
-- Displays them as either in-app or system level notifications
+- **Remote Notifier Codex**：UI 扩展，在本机显示 VS Code 或系统通知。
+- **Remote Notifier Codex (Router)**：工作区扩展，在本地或远端接收 Hook 请求并路由通知。
+- **codex-attention-hook**：Python helper，读取 Codex Hook JSON、解析会话信息并发送通知。
 
-### 🔀 [Remote Notifier (Router)](https://marketplace.visualstudio.com/items?itemName=ddyndo.remote-notifier-router)
+上游提供的 `code-notify` CLI、HTTP 通知接口、图标映射、自定义声音以及
+Claude Code/Gemini CLI 自动配置仍然保留。
 
-- Helper extension
-- Runs where your workspace is (local or remote: SSH, WSL, Docker, ...)
-- Exposes a simple local HTTP endpoint and installs a `code-notify` convenience
-  script to simplify using it
-- Allows scripts, tools, or terminal commands to trigger notifications
+### 环境要求
 
-Neither of them require any external dependencies, 3rd party binaries or manual
-configuration to work!
+- Windows 10/11 用于本机系统通知。
+- VS Code `1.85.0` 或更高版本。
+- Node.js 20+ 与 npm 10+，仅在参与项目开发时需要。
+- Codex CLI `0.144.3` 或更高版本。
+- Remote SSH 场景中的远端 Linux 需要 Python 3。
 
-### Platform Support
+### 用户安装
 
-| Component                    | Windows 10/11 |       macOS       |             Linux             |
-| ---------------------------- | :-----------: | :---------------: | :---------------------------: |
-| Main extension (UI)          |      Yes      |        Yes        |              Yes              |
-| Router extension (workspace) |      Yes      |        Yes        |              Yes              |
-| `code-notify` CLI            | `.cmd` script |    Bash script    |          Bash script          |
-| OS notifications             |  SnoreToast   | terminal-notifier |          notify-send          |
-| Notification sound           |      Yes      |        Yes        | Desktop environment dependent |
+本项目是 **VS Code 扩展**，不是 npm 命令行包。目前尚未发布到 VS Code Marketplace，
+因此其他用户应安装构建好的 VSIX，而不是执行 `npm install`：
 
-## How To Use
+1. 从本仓库的 [GitHub Releases](https://github.com/Kirito-Elucidator/codex-remote-notifier/releases)
+   下载同一版本中的两个文件：
+   - `remote-notifier-codex-*.vsix`
+   - `remote-notifier-codex-router-*.vsix`
+2. 在 VS Code 命令面板中执行 `Extensions: Install from VSIX...`，依次安装两个文件。
+3. 执行 `Developer: Reload Window`。
 
-### Install extensions
+也可以在 Windows 终端中安装本地 VSIX。请先进入两个 VSIX 文件所在的下载目录，
+再运行以下命令：
 
-1. Install the [**Remote Notifier**](https://marketplace.visualstudio.com/items?itemName=ddyndo.remote-notifier)
-   extension.
-2. The extension will detect if the
-   [**Remote Notifier (Router)**](https://marketplace.visualstudio.com/items?itemName=ddyndo.remote-notifier-router)
-   helper extension is missing in your current workspace and suggest to install
-   it - simply click <kbd>Install in ...</kbd> button to install it.
+```powershell
+code --install-extension .\remote-notifier-codex-1.0.2.vsix
+code --install-extension .\remote-notifier-codex-router-1.0.8.vsix
+```
 
-Once installed, you are ready to configure your scripts and tools manually with
-the [`code-notify` helper script](#code-notify-cli) or use built-in
-[automatic configuration](#automatic-configuration) for supported tools! 🎉
+安装位置取决于使用场景：
 
-> [!IMPORTANT]
-> The Router helper extension needs to be installed on your current workspace
-> (either local or remote) to be able to use it. If you use multiple separate
-> workspaces (remote machines, WSL systems, containers) you will have to install
-> it on each of them separately to use it there.
->
-> It is recommended to watch for suggestions from the main extension and install
-> the Router extension whenever prompted.
+| 场景       | Remote Notifier Codex（Presenter） | Codex Router                    |
+| ---------- | ---------------------------------- | ------------------------------- |
+| 纯本机使用 | 安装在 `Local`                     | 安装在 `Local`                  |
+| Remote SSH | 安装在本机 Windows 的 `Local`      | 安装在 `SSH: <服务器名>` 的远端 |
 
-### Manual installation
+Remote SSH 场景下，Router 和 Hook 在服务器侧接收 Codex 事件；Presenter 留在本机 Windows，
+负责显示系统通知。两端缺少任意一个扩展都无法完成服务器到 Windows 的通知链路。
 
-Alternatively, you can also download latest version of both extensions from the
-[GitHub project page](https://github.com/RippeR37/remote-notifier/releases)
-and install them manually by:
+### 配置 Codex 通知
 
-1. Opening Command Palette (e.g. <kbd>F1</kbd>)
-2. Choosing the `Extensions: Install from VSIX...` command and selecting the
-   downloaded files
+1. 执行 `Remote Notifier: Auto-configure notifications in current workspace for...`。
+2. 选择 `Codex`。
+3. Codex 首次检测到新 Hook 时，核对命令路径后进行一次信任审核。
 
-### `code-notify` CLI
+Router 会把 helper 安装到：
 
-The easiest way to send notifications is through the **`code-notify` CLI**
-convenience script.
+```text
+~/.local/bin/codex-attention-hook
+```
 
-The script should be installed automatically (if it's not already present in the
-workspace) whenever you open a workspace with the Router extension installed.
+并在 `$CODEX_HOME/hooks.json` 中幂等添加 `Stop`、`PreToolUse` 和
+`PermissionRequest` Hook。默认 `CODEX_HOME` 为 `~/.codex`。
 
-If for some reason the convenience script is not present in your workspace you
-can also manually trigger its installation:
+### 通知正文
 
-1. Open command palette (e.g. <kbd>F1</kbd>)
-2. Find and choose:
-   `Remote Notifier: Install code-notify command in current workspace`
-3. Restart terminal, if you had it open
+已重命名的会话：
 
-This will copy over the `code-notify.sh`/`code-notify.cmd` script and ensure its
-on PATH. Once this is done you can trigger notifications manually or configure
-your tools to call it when needed:
+```text
+主机名 · 会话名 · 回答前 16 个可见字符
+```
+
+未重命名的会话：
+
+```text
+主机名 · 回答前 16 个可见字符
+```
+
+### 主要设置
+
+| 设置                                          | 默认值   | 说明                                   |
+| --------------------------------------------- | -------- | -------------------------------------- |
+| `remoteNotifier.systemNotifications`          | `always` | Codex 增强构建默认始终使用系统通知     |
+| `remoteNotifier.codexPersistentNotifications` | `true`   | Windows Codex 通知持续显示到点击或关闭 |
+| `remoteNotifier.codexPreviewLength`           | `16`     | 会话名和回答摘要的最大可见字符数       |
+| `remoteNotifier.notificationSound`            | `true`   | 是否播放系统通知声音                   |
+| `remoteNotifier.notificationSoundPath`        | `""`     | 可选的自定义声音路径                   |
+| `remoteNotifier.iconMappings`                 | `{}`     | 将通知图标键映射到本地图片路径         |
+
+### 常用命令
+
+| 命令                                                                        | 用途                                  |
+| --------------------------------------------------------------------------- | ------------------------------------- |
+| `Remote Notifier: Auto-configure notifications in current workspace for...` | 安装或更新 Codex Hook                 |
+| `Remote Notifier: Remove Codex notification hooks`                          | 干净移除本 fork 管理的 Hook 和 helper |
+| `Remote Notifier: Test system notifications`                                | 测试系统通知                          |
+| `Remote Notifier: Test VS Code notifications`                               | 测试 VS Code 内通知                   |
+| `Remote Notifier: Show Session Info`                                        | 查看 Router 地址和脱敏 token          |
+
+### 通用通知功能
+
+仍可使用上游的 `code-notify` 命令发送任意通知：
 
 ```bash
-code-notify "Build completed"                    # message only
-code-notify "Build" "Completed successfully"     # title + message
-code-notify -i my_build_icon "Build" "Done"      # use custom icon key
-code-notify -d system "Build" "Done"             # hint presentation as system notification
-code-notify -d app "Build" "Done"                # hint presentation as VS Code toast
+code-notify "Build completed"
+code-notify "Build" "Completed successfully"
+code-notify -i ICON_CI -d system "CI" "Pipeline passed"
 ```
 
-> [!NOTE]
-> By default, to reduce distractions, Remote Notifier shows notifications as
-> VS Code toasts when the editor has focus and system level notifications when
-> it doesn't. You can configure this behavior.
+Router 只监听 `127.0.0.1`，使用随机 bearer token 验证请求。会话信息保存在
+`~/.remote-notifier/session.json`，不会经过外部通知服务。
 
-> [!TIP]
-> You can use this script from any context in your workspace, it doesn't have to
-> be from VS Code integrated terminal! You can connect to your remote machine
-> separately from VS Code instance and still use it to trigger notifications
-> for your local machine.
->
-> As long as the workspace is opened in VS Code, the local HTTP endpoint is open
-> and VS Code will route notifications from your workspace to your local
-> machine!
-
-### Automatic configuration
-
-This extension comes with a few options to auto-configure your favorite tools
-to trigger notifications automatically (e.g. whenever they finish processing of
-your prompt or require your permission to use a tool).
-
-Currently supported tools:
-
-- **Claude Code**
-- **Codex**
-- **Gemini CLI**
-
-To automatically configure a tool simply:
-
-1. Open Command Palette (e.g. <kbd>F1</kbd>)
-2. Select
-   `Remote Notifier: Auto-configure notifications in current workspace for...`
-3. Select tool you want to auto-configure
-
-These auto-configurations simply update your tool's config files and specify
-hooks that invoke `code-notify` script with proper messages for given events.
-
-> [!IMPORTANT]
-> This will configure your tool only in the current workspace. If you switch to
-> a different one (e.g. different remote machine) you will have to configure it
-> separately.
-
-### Triggering notifications manually (not recommended)
-
-If you don't want to use provided `code-notify` script, you can simply make a
-HTTP POST requests to `127.0.0.1` on a specific port.
-
-In VS Code's integrated terminal, environment variables are set automatically:
+### 开发与验证
 
 ```bash
-curl -s -X POST $REMOTE_NOTIFIER_URL \
-  -H "Authorization: Bearer $REMOTE_NOTIFIER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Done!", "level": "information"}'
+npm run format:check
+npm run lint
+npm run typecheck
+npm test
+npm run package
 ```
 
-Outside of VS Code integrated terminal you can retrieve port and authentication
-token from `~/.remote-notifier/session.json`.
+当前测试基线为 214 项通过、1 项跳过。
 
-### Custom icons
+### 许可证
 
-System notifications use a built-in icon by default. You can configure custom
-icons per notification source by mapping icon keys to file paths in your
-settings:
+本项目遵循 [MIT License](LICENSE)。再次感谢
+[ripper37/remote-notifier](https://github.com/ripper37/remote-notifier) 原作者及贡献者的工作。
 
-```json
-{
-  "remoteNotifier.iconMappings": {
-    "ICON_CLAUDE_CODE": "/path/to/claude-icon.png",
-    "ICON_CI": "/path/to/ci-icon.png"
-  }
-}
+---
+
+## English
+
+> An unofficial Remote Notifier fork specialized for Codex CLI workflows.
+
+> **Primary use case: Codex may run on a Linux server through VS Code Remote
+> SSH, while task-completed, answer-needed, plan-completed, and permission
+> notifications are routed back to the local Windows 10/11 desktop. Persistent
+> Windows notifications remain visible even when a browser or another window
+> covers VS Code, so the remote terminal does not require constant attention.
+> The extension also supports a fully local setup, with Codex, the Router, and
+> notifications all running on the same Windows machine without SSH.**
+
+### Fork and Acknowledgements
+
+This project is forked from
+[ripper37/remote-notifier](https://github.com/ripper37/remote-notifier), with the
+current enhancements based on upstream `v1.0.1`. It preserves the upstream MIT
+license, complete Git history, and the local Presenter + workspace Router
+architecture.
+
+Special thanks to
+[Damian Dyńdo (@ripper37)](https://github.com/ripper37) for creating and
+open-sourcing Remote Notifier. Its routing design across local workspaces,
+Remote SSH, WSL, and containers provides the foundation for the Codex-specific
+features in this fork.
+
+This is an independently maintained community fork and is not affiliated with
+the upstream author or OpenAI. See the
+[upstream repository](https://github.com/ripper37/remote-notifier) for the
+original project and documentation.
+
+### Codex-Specific Features Added by This Fork
+
+This fork does not modify Codex. It installs user-level hooks that route
+attention-worthy lifecycle events through Remote Notifier.
+
+| Codex scenario                   | Notification | Trigger                                            |
+| -------------------------------- | ------------ | -------------------------------------------------- |
+| Normal response completed        | `[任务完成]` | `Stop` in Default mode                             |
+| Waiting for an answer            | `[等待回答]` | `PreToolUse(request_user_input)`                   |
+| Plan paused without a final plan | `[计划继续]` | `Stop` in Plan mode without a structured plan      |
+| Complete plan produced           | `[计划完成]` | Structured Plan item or `<proposed_plan>` detected |
+| Waiting for tool permission      | `[等待授权]` | `PermissionRequest`                                |
+
+Additional enhancements include:
+
+- Resolving renamed Codex sessions from the state database or
+  `session_index.jsonl` using `session_id`.
+- Showing the host, renamed session, and final-answer preview in each
+  notification, with a direct answer preview for unnamed sessions.
+- Configurable Unicode-aware preview truncation, defaulting to 16 visible
+  characters.
+- Transcript-based structured Plan detection.
+- Deduplication by session, turn, and event without the generic burst limit.
+- A three-second hook timeout with fail-open behavior so notification failures
+  never block Codex or affect permission decisions.
+- Persistent Windows reminder notifications that remain until opened or
+  dismissed.
+- Notification clicks that restore and focus VS Code.
+- Independent extension IDs that cannot be overwritten by the Marketplace
+  versions.
+- Local-only hook processing with no additional model context or token usage.
+
+### Current Status
+
+- The Windows 10/11 local workflow has automated coverage and manual testing.
+- Notification clicks currently focus VS Code but do not yet select the exact
+  existing integrated terminal that produced the event.
+- Exact terminal navigation is planned and will not create a new conversation.
+- Remote SSH retains the upstream Router architecture but remains experimental
+  until multi-window manual validation is complete.
+
+### Architecture
+
+```text
+Codex CLI
+  -> ~/.local/bin/codex-attention-hook
+  -> Remote Notifier Codex Router in the workspace
+  -> Remote Notifier Codex on the local UI side
+  -> Windows system notification
 ```
 
-and then passing the icon key when sending a notification:
+- **Remote Notifier Codex** is the local UI extension that presents VS Code or
+  operating-system notifications.
+- **Remote Notifier Codex (Router)** runs with the workspace, locally or
+  remotely, and routes hook requests.
+- **codex-attention-hook** is a Python helper that parses Codex hook JSON,
+  resolves session metadata, and sends the notification.
+
+The upstream `code-notify` CLI, HTTP endpoint, icon mappings, custom sounds,
+and Claude Code/Gemini CLI auto-configuration remain available.
+
+### Requirements
+
+- Windows 10/11 for local system notifications.
+- VS Code 1.85.0 or later.
+- Node.js 20+ and npm 10+ only for project development.
+- Codex CLI 0.144.3 or later.
+- Python 3 on a remote Linux host when using Remote SSH.
+
+### User Installation
+
+This project contains **VS Code extensions**, not npm command-line packages.
+It has not yet been published to the VS Code Marketplace, so users should
+install built VSIX packages rather than run `npm install`:
+
+1. Download both files from the same entry under
+   [GitHub Releases](https://github.com/Kirito-Elucidator/codex-remote-notifier/releases):
+   - `remote-notifier-codex-*.vsix`
+   - `remote-notifier-codex-router-*.vsix`
+2. Run `Extensions: Install from VSIX...` in VS Code for each file.
+3. Run `Developer: Reload Window`.
+
+The local VSIX files can also be installed from a Windows terminal. First,
+change to the download directory containing both VSIX files, then run:
+
+```powershell
+code --install-extension .\remote-notifier-codex-1.0.2.vsix
+code --install-extension .\remote-notifier-codex-router-1.0.8.vsix
+```
+
+Install each extension in the appropriate location:
+
+| Scenario   | Remote Notifier Codex (Presenter) | Codex Router                |
+| ---------- | --------------------------------- | --------------------------- |
+| Local only | Install under `Local`             | Install under `Local`       |
+| Remote SSH | Install under Windows `Local`     | Install under `SSH: <host>` |
+
+With Remote SSH, the Router and hook receive Codex events on the server, while
+the Presenter remains on the Windows machine and displays the system
+notification. Both sides are required for the server-to-Windows path.
+
+### Configure Codex Notifications
+
+1. Run `Remote Notifier: Auto-configure notifications in current workspace for...`.
+2. Select `Codex`.
+3. Review and trust the hook once when Codex first detects it.
+
+The Router installs the helper at:
+
+```text
+~/.local/bin/codex-attention-hook
+```
+
+It idempotently adds `Stop`, `PreToolUse`, and `PermissionRequest` hooks to
+`$CODEX_HOME/hooks.json`. `CODEX_HOME` defaults to `~/.codex`.
+
+### Notification Body
+
+Renamed session:
+
+```text
+host · session name · first 16 visible characters of the answer
+```
+
+Unnamed session:
+
+```text
+host · first 16 visible characters of the answer
+```
+
+### Main Settings
+
+| Setting                                       | Default  | Description                                                        |
+| --------------------------------------------- | -------- | ------------------------------------------------------------------ |
+| `remoteNotifier.systemNotifications`          | `always` | Always use system notifications in this enhanced build             |
+| `remoteNotifier.codexPersistentNotifications` | `true`   | Keep Windows Codex notifications visible until opened or dismissed |
+| `remoteNotifier.codexPreviewLength`           | `16`     | Maximum visible characters for session names and answer previews   |
+| `remoteNotifier.notificationSound`            | `true`   | Play the system notification sound                                 |
+| `remoteNotifier.notificationSoundPath`        | `""`     | Optional custom sound path                                         |
+| `remoteNotifier.iconMappings`                 | `{}`     | Map notification icon keys to local image paths                    |
+
+### Commands
+
+| Command                                                                     | Purpose                                        |
+| --------------------------------------------------------------------------- | ---------------------------------------------- |
+| `Remote Notifier: Auto-configure notifications in current workspace for...` | Install or update Codex hooks                  |
+| `Remote Notifier: Remove Codex notification hooks`                          | Remove hooks and the helper owned by this fork |
+| `Remote Notifier: Test system notifications`                                | Test operating-system notifications            |
+| `Remote Notifier: Test VS Code notifications`                               | Test in-app notifications                      |
+| `Remote Notifier: Show Session Info`                                        | Show the Router URL and masked token           |
+
+### Generic Notifications
+
+The upstream `code-notify` command remains available:
 
 ```bash
-code-notify -i ICON_CI "CI" "Pipeline passed"
+code-notify "Build completed"
+code-notify "Build" "Completed successfully"
+code-notify -i ICON_CI -d system "CI" "Pipeline passed"
 ```
 
-If the key isn't found in the mappings, the default icon will be used.
+The Router binds only to `127.0.0.1` and authenticates requests with a random
+bearer token. Session information remains in `~/.remote-notifier/session.json`
+and is not sent through an external notification service.
 
-> [!CAUTION]
-> Support for this feature is OS-dependent and may not work on some systems.
-
-### Custom sounds
-
-By default system notifications use default bell sound (OS-specific) for
-every notification. You can disable or specify a custom sound cue in the
-[extension settings](#configuration).
-
-Furthermore, you can also specify a mapping between sound cue keys and paths
-(similarly to icons above) and trigger a specific sound cue for by a specific
-notification with `-s <CUE_KEY>` like that:
+### Development and Verification
 
 ```bash
-code-notify -s CUE_SUCCESS "CI" "Tests passed"
+npm run format:check
+npm run lint
+npm run typecheck
+npm test
+npm run package
 ```
 
-### Display hints
+The current test baseline is 214 passing and 1 skipped.
 
-Scripts can suggest how a notification should be displayed by passing
-a `display_hint`:
+### License
 
-```bash
-code-notify -d system "Deploy" "Started"    # suggest OS notification
-code-notify -d app "Build" "Done"           # suggest VS Code toast
-```
-
-This is only a hint, not a guarantee. It is respected only when the
-`systemNotifications` configuration is set to `auto` mode (the default), where
-it overrides the focus-based routing.
-
-In both `always` or `never` modes the hint is ignored and the user's configured
-preference takes precedence.
-
-### Troubleshooting
-
-If you have any issues you should:
-
-1. Verify that **both** extensions are installed in current workspace
-2. Use `Remote Notifier: Test <...> notifications` helper commands to check if
-   one or both of the presentation systems work or not
-3. Check configuration of app notifications in your system settings
-4. Open `Output` panel (`View` -> `Output`), select `Remote Notifier` log
-   sources and see if there are any errors there that may narrow it down
-   - Each extension will have its own log source, so be sure to check both
-
-## Configuration
-
-### Router Settings (workspace host)
-
-| Setting                            | Default       | Description                                 |
-| ---------------------------------- | ------------- | ------------------------------------------- |
-| `remoteNotifier.enabled`           | `true`        | Enable/disable the notification server      |
-| `remoteNotifier.port`              | `0`           | Fixed port for the server (0 = auto-assign) |
-| `remoteNotifier.maxBodySize`       | `65536`       | Maximum request body size in bytes          |
-| `remoteNotifier.notificationLevel` | `information` | Default level when not specified in request |
-| `remoteNotifier.showTimestamp`     | `false`       | Prepend timestamp to notification messages  |
-
-### Presenter Settings (local machine)
-
-| Setting                                  | Default       | Description                                                                                                     |
-| ---------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------- |
-| `remoteNotifier.systemNotifications`     | `auto`        | `auto` (OS notification when unfocused, VS Code toast when focused), `always`, or `never`                       |
-| `remoteNotifier.notificationIcon`        | `transparent` | Default icon style: `transparent` or `dark` (black background)                                                  |
-| `remoteNotifier.notificationSound`       | `true`        | Play a sound when showing system-level notifications                                                            |
-| `remoteNotifier.notificationSoundPath`   | `""`          | Path to a custom sound file. If empty, uses default notification cue.                                           |
-| `remoteNotifier.notificationSoundPlayer` | `""`          | Optional: Command to play sound (e.g. `mpg123 ${file}`). If empty, the extension auto-detects available player. |
-| `remoteNotifier.soundMappings`           | `{}`          | Map sound key names to file paths for system notifications (e.g. `{ "success": "/path/to/cheer.wav" }`)         |
-| `remoteNotifier.iconMappings`            | `{}`          | Map icon key names to file paths for system notifications (e.g. `{ "claude": "/path/to/icon.png" }`)            |
-
-## Commands
-
-| Command                                                                   | Extension | Description                                                        |
-| ------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------ |
-| Remote Notifier: Test VS Code notifications                               | Main      | Triggers a in-app test notification (toast)                        |
-| Remote Notifier: Test system notifications                                | Main      | Triggers a system-level test notification                          |
-| Remote Notifier: Reset auto-install router extension ignored workspaces   | Main      | Resets all saved 'Do not ask me again' router installation answers |
-| Remote Notifier: Auto-configure notifications in current workspace for... | Router    | Set up notification hooks for supported tools (e.g. Claude Code)   |
-| Remote Notifier: Install code-notify command in current workspace         | Router    | Install the `code-notify` CLI to your PATH                         |
-| Remote Notifier: Show Session Info                                        | Router    | Display URL and masked token                                       |
-| Remote Notifier: Copy Notify Command                                      | Router    | Copy a curl example to clipboard                                   |
-| Remote Notifier: Regenerate Token                                         | Router    | Generate a new auth token                                          |
-
-## Security
-
-- HTTP server binds to `127.0.0.1` only (loopback, not network-accessible)
-- 256-bit random bearer token for authentication
-- Session file created with `0600` permissions (Unix)
-- Request body size limited to prevent memory exhaustion
-- Rate limiting: max 5 notifications per 15 seconds
-
-## Development
-
-### Prerequisites
-
-- Node.js 20+
-- npm 10+
-- VS Code 1.85+
-
-### Setup
-
-```bash
-git clone https://github.com/ripper37/remote-notifier.git
-cd remote-notifier
-npm install
-```
-
-### Build
-
-```bash
-npm run format      # format code
-npm run lint        # eslint
-npm run build       # build all packages
-npm test            # unit + integration + e2e
-```
-
-### Package
-
-```bash
-npm run package     # builds + packages .vsix for both extensions
-```
-
-Output:
-
-- `packages/main/remote-notifier-x.y.z.vsix`
-- `packages/router/remote-notifier-router-x.y.z.vsix`
-
-### Project Structure
-
-```
-packages/
-  main/       Main extension (notification display, OS notifications, Router extension installation, rate limiting)
-  router/     Workspace extension (HTTP server, auth, session management, script & configs installer)
-shared/       Shared TypeScript types and constants
-test/e2e/     End-to-end tests (e.g. for the code-notify helper)
-assets/       Extension icons, bundled sound cue
-```
-
-## License
-
-[MIT](LICENSE)
+This project is distributed under the [MIT License](LICENSE). Thanks again to
+the authors and contributors of
+[ripper37/remote-notifier](https://github.com/ripper37/remote-notifier).
