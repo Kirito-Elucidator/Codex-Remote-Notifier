@@ -1,9 +1,13 @@
+import { randomBytes } from 'crypto';
+
 import * as vscode from 'vscode';
 
 import {
   COMMAND_AUTO_CONFIGURE,
   COMMAND_COPY_NOTIFY_COMMAND,
   COMMAND_ENSURE_ROUTER_STARTED,
+  COMMAND_FOCUS_CODEX_SESSION,
+  COMMAND_FOCUS_CODEX_SESSION_PREFIX,
   COMMAND_INSTALL_SCRIPT,
   COMMAND_REGENERATE_TOKEN,
   COMMAND_REMOVE_CODEX_CONFIG,
@@ -20,6 +24,7 @@ import { CodexAttentionHookInstaller } from './installer/CodexAttentionHookInsta
 import { CommandPresenter } from './presenter/CommandPresenter';
 import { NotificationServer } from './server/NotificationServer';
 import { SessionManager } from './session/SessionManager';
+import { CodexTerminalFocusRegistry } from './terminal/CodexTerminalFocusRegistry';
 import { StatusBar } from './ui/StatusBar';
 
 let log: vscode.OutputChannel;
@@ -37,7 +42,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const vscodePresenter = new VscodePresenter();
   const presenter = new CommandPresenter(vscodePresenter, log);
-  const handler = new NotificationHandler(presenter, config);
+  const terminalFocus = new CodexTerminalFocusRegistry(context.workspaceState, log);
+  const codexFocusCommand = `${COMMAND_FOCUS_CODEX_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
+  const handler = new NotificationHandler(presenter, config, terminalFocus, codexFocusCommand);
   const sessionManager = new SessionManager(context, {
     codexPreviewLength: config.codexPreviewLength,
   });
@@ -88,6 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       },
     },
     statusBar,
+    terminalFocus,
     vscode.commands.registerCommand(COMMAND_ENSURE_ROUTER_STARTED, () => {
       log.appendLine('[Router] ensureRouterStarted triggered');
       return {
@@ -97,6 +105,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           ?.version,
       };
     }),
+    vscode.commands.registerCommand(COMMAND_FOCUS_CODEX_SESSION, (request) =>
+      terminalFocus.focus(request),
+    ),
+    vscode.commands.registerCommand(codexFocusCommand, (request) => terminalFocus.focus(request)),
     vscode.commands.registerCommand(COMMAND_SHOW_SESSION_INFO, () => {
       const url = `http://127.0.0.1:${server.port}/notify`;
       const maskedToken = sessionManager.token.slice(0, 8) + '...';

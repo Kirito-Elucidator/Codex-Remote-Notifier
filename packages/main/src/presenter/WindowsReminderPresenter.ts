@@ -7,10 +7,10 @@ export interface WindowsReminderOptions {
   message: string;
   iconPath: string;
   silent: boolean;
+  launchUri: string;
 }
 
 const APP_ID = 'Remote Notifier';
-const LAUNCH_URI = 'vscode://ddyndo.remote-notifier-codex/notification';
 
 export class WindowsReminderPresenter {
   async present(options: WindowsReminderOptions): Promise<void> {
@@ -22,7 +22,7 @@ export class WindowsReminderPresenter {
       RN_REMINDER_ICON: options.iconPath,
       RN_REMINDER_SILENT: options.silent ? '1' : '0',
       RN_REMINDER_APP_ID: APP_ID,
-      RN_REMINDER_LAUNCH_URI: LAUNCH_URI,
+      RN_REMINDER_LAUNCH_URI: options.launchUri,
     };
 
     await new Promise<void>((resolve, reject) => {

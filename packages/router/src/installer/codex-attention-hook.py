@@ -8,11 +8,13 @@ can never block a Codex turn or influence an approval decision.
 from __future__ import annotations
 
 import glob
+import ctypes
 import json
 import os
 import re
 import socket
 import sqlite3
+import subprocess
 import sys
 import unicodedata
 import urllib.request
@@ -24,10 +26,125 @@ DEFAULT_PREVIEW_LENGTH = 16
 MAX_INPUT_BYTES = 1024 * 1024
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
+MAX_PROCESS_ANCESTRY = 24
 
 
 def _codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+
+
+def _windows_parent_processes() -> dict[int, int]:
+    if os.name != "nt":
+        return {}
+
+    from ctypes import wintypes
+
+    toolhelp_snapshot = 0x00000002
+    invalid_handle_value = ctypes.c_void_p(-1).value
+
+    class ProcessEntry32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32)]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    snapshot = kernel32.CreateToolhelp32Snapshot(toolhelp_snapshot, 0)
+    if snapshot == invalid_handle_value:
+        return {}
+
+    parents: dict[int, int] = {}
+    entry = ProcessEntry32()
+    entry.dwSize = ctypes.sizeof(ProcessEntry32)
+    try:
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return {}
+        while True:
+            parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return parents
+
+
+def _linux_parent_process(process_id: int) -> int | None:
+    try:
+        stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8")
+        fields = stat[stat.rfind(")") + 2 :].split()
+        return int(fields[1]) if len(fields) > 1 else None
+    except (OSError, ValueError):
+        return None
+
+
+def _posix_parent_processes() -> dict[int, int]:
+    if os.name != "posix" or Path("/proc/self/stat").exists():
+        return {}
+
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=0.5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+
+    parents: dict[int, int] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            parents[int(fields[0])] = int(fields[1])
+        except ValueError:
+            continue
+    return parents
+
+
+def _process_ancestry() -> list[int]:
+    ancestry: list[int] = []
+    seen = {os.getpid()}
+    process_id = os.getpid()
+    windows_parents = _windows_parent_processes()
+    posix_parents = _posix_parent_processes()
+
+    for _ in range(MAX_PROCESS_ANCESTRY):
+        if windows_parents:
+            parent_id = windows_parents.get(process_id)
+        elif posix_parents:
+            parent_id = posix_parents.get(process_id)
+        elif os.name == "posix":
+            parent_id = _linux_parent_process(process_id)
+        elif process_id == os.getpid():
+            parent_id = os.getppid()
+        else:
+            parent_id = None
+
+        if not parent_id or parent_id <= 1 or parent_id in seen:
+            break
+        ancestry.append(parent_id)
+        seen.add(parent_id)
+        process_id = parent_id
+    return ancestry
 
 
 def _clean_visible_text(value: str) -> str:
@@ -356,6 +473,7 @@ def _send(
         "session_id": str(event.get("session_id") or ""),
         "turn_id": str(event.get("turn_id") or ""),
         "event_key": event_key,
+        "process_ancestry": _process_ancestry(),
     }
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     for url, token in endpoints:

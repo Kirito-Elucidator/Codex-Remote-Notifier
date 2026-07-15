@@ -7,11 +7,13 @@ import {
 } from 'remote-notifier-shared';
 
 import { Configuration } from '../config/Configuration';
+import { CodexTerminalFocusRegistry } from '../terminal/CodexTerminalFocusRegistry';
 
 const MAX_MESSAGE_LENGTH = 1000;
 const MAX_TITLE_LENGTH = 100;
 const MAX_ICON_LENGTH = 50;
 const MAX_METADATA_LENGTH = 200;
+const MAX_PROCESS_ANCESTRY = 24;
 const VALID_LEVELS = ['information', 'warning', 'error'];
 const VALID_DISPLAYS = ['app', 'system'];
 
@@ -19,6 +21,8 @@ export class NotificationHandler {
   constructor(
     private readonly presenter: NotificationPresenter,
     private readonly config: Configuration,
+    private readonly terminalFocus?: Pick<CodexTerminalFocusRegistry, 'track'>,
+    private readonly codexFocusCommand?: string,
   ) {}
 
   async handle(payload: unknown): Promise<NotificationResponse> {
@@ -27,7 +31,19 @@ export class NotificationHandler {
       return { ok: false, error: 'validation_error', details: validationError };
     }
 
-    const formatted = this.format(payload as NotificationPayload);
+    const notificationPayload = payload as NotificationPayload;
+    if (
+      notificationPayload.source === 'codex' &&
+      notificationPayload.session_id &&
+      notificationPayload.process_ancestry
+    ) {
+      await this.terminalFocus?.track(
+        notificationPayload.session_id,
+        notificationPayload.process_ancestry,
+      );
+    }
+
+    const formatted = this.format(notificationPayload);
 
     try {
       await this.presenter.present(formatted);
@@ -93,10 +109,29 @@ export class NotificationHandler {
       }
     }
 
+    if (obj.process_ancestry !== undefined) {
+      if (!Array.isArray(obj.process_ancestry)) {
+        return 'process_ancestry must be an array';
+      }
+      if (obj.process_ancestry.length > MAX_PROCESS_ANCESTRY) {
+        return `process_ancestry exceeds maximum length of ${MAX_PROCESS_ANCESTRY}`;
+      }
+      if (
+        obj.process_ancestry.some(
+          (processId) => !Number.isSafeInteger(processId) || Number(processId) <= 0,
+        )
+      ) {
+        return 'process_ancestry must contain positive integers';
+      }
+    }
+
     return null;
   }
 
   private format(payload: NotificationPayload): NotificationPayload {
+    const forwardedPayload = { ...payload };
+    delete forwardedPayload.process_ancestry;
+    delete forwardedPayload.codex_focus_command;
     let message = payload.message;
 
     if (this.config.showTimestamp) {
@@ -105,9 +140,12 @@ export class NotificationHandler {
     }
 
     return {
-      ...payload,
+      ...forwardedPayload,
       message,
       level: payload.level ?? this.config.notificationLevel,
+      ...(payload.source === 'codex' && payload.session_id && this.codexFocusCommand
+        ? { codex_focus_command: this.codexFocusCommand }
+        : {}),
     };
   }
 }

@@ -37,7 +37,8 @@
     "workspace"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:remoteNotifier.focusCodexSession"
   ],
   "main": "./dist/extension.js",
   "contributes": {

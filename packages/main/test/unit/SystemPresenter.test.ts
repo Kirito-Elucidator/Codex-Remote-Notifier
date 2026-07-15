@@ -46,6 +46,17 @@ describe('SystemPresenter', () => {
     expect(notifier.notify).not.toHaveBeenCalled();
   });
 
+  it('passes a session-specific activation URI to the Windows reminder', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    presenter = new SystemPresenter(undefined, (payload) => `vscode://focus/${payload.session_id}`);
+
+    await presenter.present({ message: 'Done', source: 'codex', session_id: 'session-1' });
+
+    expect(reminderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ launchUri: 'vscode://focus/session-1' }),
+    );
+  });
+
   it('keeps non-Codex Windows notifications on node-notifier', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
 

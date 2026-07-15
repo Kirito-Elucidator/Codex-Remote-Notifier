@@ -4,8 +4,10 @@ import { NotificationHandler } from '../../src/handler/NotificationHandler';
 import { Configuration } from '../../src/config/Configuration';
 
 describe('NotificationHandler', () => {
+  const focusCommand = `remoteNotifier.focusCodexSession.${'a'.repeat(32)}`;
   let mockPresenter: NotificationPresenter;
   let mockConfig: Configuration;
+  let terminalFocus: { track: ReturnType<typeof vi.fn> };
   let handler: NotificationHandler;
 
   beforeEach(() => {
@@ -19,7 +21,13 @@ describe('NotificationHandler', () => {
       notificationLevel: 'information',
       showTimestamp: false,
     } as unknown as Configuration;
-    handler = new NotificationHandler(mockPresenter, mockConfig);
+    terminalFocus = { track: vi.fn().mockResolvedValue(undefined) };
+    handler = new NotificationHandler(
+      mockPresenter,
+      mockConfig,
+      terminalFocus as never,
+      focusCommand,
+    );
   });
 
   describe('valid payloads', () => {
@@ -82,6 +90,41 @@ describe('NotificationHandler', () => {
       };
       expect((await handler.handle(payload)).ok).toBe(true);
       expect(mockPresenter.present).toHaveBeenCalledWith(expect.objectContaining(payload));
+    });
+
+    it('tracks Codex process ancestry without forwarding process IDs to the UI extension', async () => {
+      const payload = {
+        message: 'Done',
+        source: 'codex',
+        session_id: 'session-1',
+        turn_id: 'turn-1',
+        event_key: 'task-complete',
+        process_ancestry: [9000, 8000, 7000],
+      };
+
+      expect((await handler.handle(payload)).ok).toBe(true);
+      expect(terminalFocus.track).toHaveBeenCalledWith('session-1', [9000, 8000, 7000]);
+      expect(mockPresenter.present).toHaveBeenCalledWith(
+        expect.objectContaining({
+          codex_focus_command: focusCommand,
+        }),
+      );
+      expect(mockPresenter.present).toHaveBeenCalledWith(
+        expect.not.objectContaining({ process_ancestry: expect.anything() }),
+      );
+    });
+
+    it('overwrites an untrusted focus command with the Router instance command', async () => {
+      await handler.handle({
+        message: 'Done',
+        source: 'codex',
+        session_id: 'session-1',
+        codex_focus_command: 'workbench.action.closeWindow',
+      });
+
+      expect(mockPresenter.present).toHaveBeenCalledWith(
+        expect.objectContaining({ codex_focus_command: focusCommand }),
+      );
     });
 
     it('defaults level to config value', async () => {
@@ -192,6 +235,20 @@ describe('NotificationHandler', () => {
       const result = await handler.handle({ message: 'hi', session_id: 123 });
       expect(result.ok).toBe(false);
       expect(result.details).toContain('session_id must be a string');
+    });
+
+    it('rejects malformed process ancestry', async () => {
+      const notAnArray = await handler.handle({ message: 'hi', process_ancestry: '123' });
+      expect(notAnArray.details).toContain('process_ancestry must be an array');
+
+      const invalidPid = await handler.handle({ message: 'hi', process_ancestry: [123, -1] });
+      expect(invalidPid.details).toContain('positive integers');
+
+      const tooLong = await handler.handle({
+        message: 'hi',
+        process_ancestry: Array.from({ length: 25 }, (_, index) => index + 1),
+      });
+      expect(tooLong.details).toContain('maximum length');
     });
   });
 

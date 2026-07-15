@@ -12,6 +12,18 @@ export interface NotificationPayload {
   session_id?: string;
   turn_id?: string;
   event_key?: string;
+  process_ancestry?: number[];
+  codex_focus_command?: string;
+}
+
+export interface CodexFocusRequest {
+  session_id: string;
+}
+
+export interface CodexFocusResult {
+  ok: boolean;
+  reason: 'focused' | 'session-not-mapped' | 'terminal-not-found' | 'invalid-request';
+  terminal_name?: string;
 }
 
 export interface SessionInfo {

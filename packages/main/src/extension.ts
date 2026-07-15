@@ -8,6 +8,7 @@ import {
   VscodePresenter,
 } from 'remote-notifier-shared';
 
+import { NotificationFocusBroker } from './NotificationFocusBroker';
 import { FocusAwarePresenter } from './presenter/FocusAwarePresenter';
 import { RateLimitedPresenter } from './presenter/RateLimitedPresenter';
 import { SystemPresenter } from './presenter/SystemPresenter';
@@ -15,14 +16,22 @@ import { RouterAutoInstaller } from './RouterAutoInstaller';
 
 let log: vscode.OutputChannel;
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   log = vscode.window.createOutputChannel('Remote Notifier');
   log.appendLine('[Main] activate() called');
   log.appendLine(`[Main] Extension path: ${context.extensionPath}`);
 
   try {
     const vscodePresenter = new VscodePresenter(log);
-    const systemPresenter = new SystemPresenter(log);
+    const focusBroker = new NotificationFocusBroker(log);
+    try {
+      await focusBroker.start();
+    } catch (error) {
+      log.appendLine(`[Main] Notification focus broker failed to start: ${error}`);
+    }
+    const systemPresenter = new SystemPresenter(log, (payload) =>
+      focusBroker.createLaunchUri(payload),
+    );
     const focusAware = new FocusAwarePresenter(vscodePresenter, systemPresenter, log);
     const presenter = new RateLimitedPresenter(focusAware);
     const autoInstaller = new RouterAutoInstaller(context, log);
@@ -35,6 +44,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(
       log,
+      focusBroker,
       { dispose: () => presenter.dispose() },
       vscode.commands.registerCommand(COMMAND_SHOW_NOTIFICATION, (payload: NotificationPayload) => {
         log.appendLine(`[Main] Received notification command: ${JSON.stringify(payload)}`);
@@ -56,11 +66,7 @@ export function activate(context: vscode.ExtensionContext): void {
         );
       }),
       vscode.window.registerUriHandler({
-        handleUri: async (uri) => {
-          if (uri.path !== '/notification') return;
-          log.appendLine('[Main] Windows reminder notification activated');
-          await vscode.commands.executeCommand('workbench.action.focusWindow');
-        },
+        handleUri: (uri) => focusBroker.handleUri(uri),
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => autoInstaller.debouncedCheck()),
     );

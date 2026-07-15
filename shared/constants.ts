@@ -1,5 +1,7 @@
 export const COMMAND_ENSURE_ROUTER_STARTED = 'remoteNotifier.ensureRouterStarted';
 export const COMMAND_SHOW_NOTIFICATION = 'remoteNotifier.showNotification';
+export const COMMAND_FOCUS_CODEX_SESSION = 'remoteNotifier.focusCodexSession';
+export const COMMAND_FOCUS_CODEX_SESSION_PREFIX = `${COMMAND_FOCUS_CODEX_SESSION}.`;
 export const COMMAND_SHOW_SESSION_INFO = 'remoteNotifier.showSessionInfo';
 export const COMMAND_REGENERATE_TOKEN = 'remoteNotifier.regenerateToken';
 export const COMMAND_COPY_NOTIFY_COMMAND = 'remoteNotifier.copyNotifyCommand';

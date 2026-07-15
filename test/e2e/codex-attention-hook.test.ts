@@ -143,6 +143,16 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
       'waiting-permission',
     ]);
     expect(received.every((payload) => payload.source === 'codex')).toBe(true);
+    expect(received.every((payload) => Array.isArray(payload.process_ancestry))).toBe(true);
+    expect(
+      received.every(
+        (payload) =>
+          (payload.process_ancestry as number[]).length > 0 &&
+          (payload.process_ancestry as number[]).every(
+            (processId) => Number.isSafeInteger(processId) && processId > 0,
+          ),
+      ),
+    ).toBe(true);
     expect(received[0].message).toMatch(/ · 重命名后的会话 · Implemented and$/);
   });
 

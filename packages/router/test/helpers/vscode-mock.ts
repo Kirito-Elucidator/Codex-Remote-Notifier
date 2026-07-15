@@ -1,6 +1,7 @@
 import { vi } from 'vitest';
 
 export const window = {
+  terminals: [] as any[],
   showInformationMessage: vi.fn().mockResolvedValue(undefined),
   showWarningMessage: vi.fn().mockResolvedValue(undefined),
   showErrorMessage: vi.fn().mockResolvedValue(undefined),
@@ -20,6 +21,7 @@ export const window = {
   state: { focused: true, active: true },
   onDidChangeWindowState: vi.fn(() => ({ dispose: vi.fn() })),
   onDidChangeActiveTextEditor: vi.fn(() => ({ dispose: vi.fn() })),
+  onDidCloseTerminal: vi.fn(() => ({ dispose: vi.fn() })),
   registerUriHandler: vi.fn(() => ({ dispose: vi.fn() })),
   createOutputChannel: vi.fn(() => ({
     appendLine: vi.fn(),
@@ -69,6 +71,7 @@ export function clearMockConfig(): void {
 }
 
 export const env = {
+  uriScheme: 'vscode',
   clipboard: {
     writeText: vi.fn().mockResolvedValue(undefined),
     readText: vi.fn().mockResolvedValue(''),
