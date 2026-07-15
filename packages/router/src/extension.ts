@@ -16,6 +16,7 @@ import { createAutoConfigRegistry } from './autoconfig/Registry';
 import { Configuration } from './config/Configuration';
 import { NotificationHandler } from './handler/NotificationHandler';
 import { CodeNotifyScriptInstaller } from './installer/CodeNotifyScriptInstaller';
+import { CodexAttentionHookInstaller } from './installer/CodexAttentionHookInstaller';
 import { CommandPresenter } from './presenter/CommandPresenter';
 import { NotificationServer } from './server/NotificationServer';
 import { SessionManager } from './session/SessionManager';
@@ -68,6 +69,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
     .catch((err) => {
       log.appendLine(`[Router] Failed to auto-install or update script: ${err}`);
+    });
+
+  const codexHookInstaller = new CodexAttentionHookInstaller(log);
+  codexHookInstaller
+    .isInstalled()
+    .then((installed) => (installed ? codexHookInstaller.ensureInstalled() : undefined))
+    .catch((err) => {
+      log.appendLine(`[Router] Failed to auto-update Codex attention helper: ${err}`);
     });
 
   context.subscriptions.push(

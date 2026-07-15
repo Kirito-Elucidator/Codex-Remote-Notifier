@@ -55,9 +55,12 @@ export class CodeNotifyScriptInstaller {
       const bundledContent = isWindows ? windowsScript : unixScript;
 
       // Normalize line endings for comparison
-      const normalize = (str: string) => str.replace(/\r\n/g, '\n').trim();
+      const normalize = (str: string) => this.withUnixLineEndings(str).trim();
 
-      return normalize(installedContent) !== normalize(bundledContent);
+      return (
+        (!isWindows && installedContent.includes('\r')) ||
+        normalize(installedContent) !== normalize(bundledContent)
+      );
     } catch {
       // If we can't read it, assume it needs "installation" (which is an update)
       return true;
@@ -75,7 +78,7 @@ export class CodeNotifyScriptInstaller {
 
     const fileName = isWindows ? `${SCRIPT_NAME}.cmd` : SCRIPT_NAME;
     const scriptPath = path.join(this.binDir, fileName);
-    const content = isWindows ? windowsScript : unixScript;
+    const content = isWindows ? windowsScript : this.withUnixLineEndings(unixScript);
 
     await fs.writeFile(scriptPath, content, { mode: 0o755 });
     this.log?.appendLine(`[CodeNotifyScriptInstaller] Wrote script to ${scriptPath}`);
@@ -167,5 +170,9 @@ export class CodeNotifyScriptInstaller {
     }
 
     return files;
+  }
+
+  private withUnixLineEndings(value: string): string {
+    return value.replace(/\r\n?/g, '\n');
   }
 }

@@ -28,12 +28,29 @@ describe('CodexAttentionHookInstaller', () => {
     await expect(installer.isInstalled()).resolves.toBe(true);
   });
 
-  it('does not rewrite an identical installed helper', async () => {
+  it('rewrites a CRLF Python helper so its shebang works on Unix', async () => {
     vi.mocked(shared.fileExists).mockResolvedValue(true);
     vi.mocked(fs.readFile).mockImplementation(async (filePath) =>
       String(filePath).endsWith('.cmd')
         ? '@echo off\r\nexit /b 0\r\n'
         : '#!/usr/bin/env python3\r\nprint("bundled")\r\n',
+    );
+
+    await installer.ensureInstalled();
+
+    expect(fs.writeFile).toHaveBeenCalledWith(
+      expect.stringMatching(/codex-attention-hook$/),
+      '#!/usr/bin/env python3\nprint("bundled")\n',
+      { mode: 0o755 },
+    );
+  });
+
+  it('does not rewrite an identical LF Python helper', async () => {
+    vi.mocked(shared.fileExists).mockResolvedValue(true);
+    vi.mocked(fs.readFile).mockImplementation(async (filePath) =>
+      String(filePath).endsWith('.cmd')
+        ? '@echo off\r\nexit /b 0\r\n'
+        : '#!/usr/bin/env python3\nprint("bundled")\n',
     );
 
     await installer.ensureInstalled();

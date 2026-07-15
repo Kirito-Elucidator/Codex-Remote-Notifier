@@ -13,7 +13,9 @@ vi.mock('vscode', () => ({
 }));
 
 // Mock the script imports
-vi.mock('../../src/installer/code-notify.sh', () => ({ default: 'unix content' }));
+vi.mock('../../src/installer/code-notify.sh', () => ({
+  default: '#!/usr/bin/env bash\r\nunix content\r\n',
+}));
 vi.mock('../../src/installer/code-notify.cmd', () => ({ default: 'windows content' }));
 
 describe('CodeNotifyScriptInstaller', () => {
@@ -66,11 +68,28 @@ describe('CodeNotifyScriptInstaller', () => {
       expect(await installer.needsUpdate()).toBe(true);
     });
 
-    it('returns false if content matches (after normalization)', async () => {
-      // The mock above for scripts returns 'unix content' or 'windows content'
-      const content = process.platform === 'win32' ? 'windows content' : 'unix content';
-      vi.mocked(fs.readFile).mockResolvedValue(content + '\r\n');
+    it('repairs CRLF in an otherwise matching Unix executable', async () => {
+      const content =
+        process.platform === 'win32'
+          ? 'windows content\r\n'
+          : '#!/usr/bin/env bash\r\nunix content\r\n';
+      vi.mocked(fs.readFile).mockResolvedValue(content);
+      expect(await installer.needsUpdate()).toBe(process.platform !== 'win32');
+    });
+
+    it('returns false if normalized content matches exactly', async () => {
+      const content =
+        process.platform === 'win32' ? 'windows content' : '#!/usr/bin/env bash\nunix content\n';
+      vi.mocked(fs.readFile).mockResolvedValue(content);
       expect(await installer.needsUpdate()).toBe(false);
     });
+  });
+
+  it('writes Unix executables with an LF shebang', async () => {
+    await installer.install(true);
+
+    const expectedContent =
+      process.platform === 'win32' ? 'windows content' : '#!/usr/bin/env bash\nunix content\n';
+    expect(fs.writeFile).toHaveBeenCalledWith(expect.any(String), expectedContent, { mode: 0o755 });
   });
 });

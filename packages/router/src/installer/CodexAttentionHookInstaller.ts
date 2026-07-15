@@ -38,6 +38,7 @@ export class CodexAttentionHookInstaller {
         fs.readFile(getCodexAttentionHookWindowsPath(), 'utf-8'),
       ]);
       return (
+        installedHook.includes('\r') ||
         this.normalize(installedHook) !== this.normalize(hookScript) ||
         this.normalize(installedWindowsHook) !== this.normalize(windowsHookScript)
       );
@@ -51,7 +52,8 @@ export class CodexAttentionHookInstaller {
     const windowsScriptPath = getCodexAttentionHookWindowsPath();
     await fs.mkdir(path.dirname(scriptPath), { recursive: true });
     await Promise.all([
-      fs.writeFile(scriptPath, hookScript, { mode: 0o755 }),
+      // A CR in the shebang makes Linux look for an executable named "python3\r".
+      fs.writeFile(scriptPath, this.withUnixLineEndings(hookScript), { mode: 0o755 }),
       fs.writeFile(windowsScriptPath, windowsHookScript, { mode: 0o755 }),
     ]);
     await Promise.all([
@@ -87,6 +89,10 @@ export class CodexAttentionHookInstaller {
   }
 
   private normalize(value: string): string {
-    return value.replace(/\r\n/g, '\n').trim();
+    return this.withUnixLineEndings(value).trim();
+  }
+
+  private withUnixLineEndings(value: string): string {
+    return value.replace(/\r\n?/g, '\n');
   }
 }
