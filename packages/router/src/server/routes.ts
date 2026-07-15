@@ -18,17 +18,21 @@ export class Router {
       return this.sendJson(res, 200, { ok: true, version: routerPackageJson.version });
     }
 
-    if (url === '/notify') {
+    if (url === '/notify' || url === '/notify/async') {
       if (method !== 'POST') {
         return this.sendJson(res, 405, { ok: false, error: 'method_not_allowed' });
       }
-      return this.handleNotify(req, res);
+      return this.handleNotify(req, res, url === '/notify/async');
     }
 
     this.sendJson(res, 404, { ok: false, error: 'not_found' });
   }
 
-  private async handleNotify(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  private async handleNotify(
+    req: IncomingMessage,
+    res: ServerResponse,
+    respondBeforePresentation: boolean,
+  ): Promise<void> {
     const bearerToken = extractBearerToken(req.headers.authorization);
     if (!bearerToken || !validateToken(bearerToken, this.token)) {
       return this.sendJson(res, 401, { ok: false, error: 'unauthorized' });
@@ -66,6 +70,12 @@ export class Router {
         error: 'validation_error',
         details: 'invalid JSON',
       });
+    }
+
+    if (respondBeforePresentation) {
+      this.sendJson(res, 202, { ok: true, queued: true });
+      void this.handler.handle(payload).catch(() => {});
+      return;
     }
 
     const result = await this.handler.handle(payload);

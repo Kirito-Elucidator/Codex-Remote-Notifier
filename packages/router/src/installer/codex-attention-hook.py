@@ -239,21 +239,78 @@ def _notification_kind(
     return None
 
 
-def _read_session_info() -> dict[str, Any]:
+def _read_json_object(path: Path) -> dict[str, Any]:
     try:
-        path = Path("~/.remote-notifier/session.json").expanduser()
         value = json.loads(path.read_text(encoding="utf-8"))
         return value if isinstance(value, dict) else {}
     except (OSError, json.JSONDecodeError, TypeError):
         return {}
 
 
+def _normalized_path(value: str) -> str | None:
+    try:
+        return os.path.normcase(os.path.abspath(os.path.normpath(value)))
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _workspace_match_length(session_info: dict[str, Any], cwd: str) -> int:
+    normalized_cwd = _normalized_path(cwd)
+    if not normalized_cwd:
+        return -1
+
+    folders = session_info.get("workspaceFolders")
+    if not isinstance(folders, list):
+        folders = [session_info.get("workspaceFolder")]
+
+    best = -1
+    for folder in folders:
+        if not isinstance(folder, str) or not folder:
+            continue
+        normalized_folder = _normalized_path(folder)
+        if not normalized_folder:
+            continue
+        try:
+            if os.path.commonpath([normalized_cwd, normalized_folder]) == normalized_folder:
+                best = max(best, len(normalized_folder))
+        except ValueError:
+            continue
+    return best
+
+
+def _read_session_info(event: dict[str, Any]) -> dict[str, Any]:
+    env_session_file = os.environ.get("REMOTE_NOTIFIER_SESSION_FILE")
+    if env_session_file:
+        env_info = _read_json_object(Path(env_session_file).expanduser())
+        if env_info:
+            return env_info
+
+    session_directory = Path("~/.remote-notifier").expanduser()
+    cwd = event.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        matches: list[tuple[int, str, dict[str, Any]]] = []
+        for session_path in (session_directory / "sessions").glob("*.json"):
+            session_info = _read_json_object(session_path)
+            match_length = _workspace_match_length(session_info, cwd)
+            if match_length >= 0:
+                created_at = session_info.get("createdAt")
+                matches.append(
+                    (
+                        match_length,
+                        created_at if isinstance(created_at, str) else "",
+                        session_info,
+                    )
+                )
+        if matches:
+            return max(matches, key=lambda match: (match[0], match[1]))[2]
+
+    return _read_json_object(session_directory / "session.json")
+
+
 def _preview_length(session_info: dict[str, Any]) -> int:
-    raw = os.environ.get("REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH")
-    if session_info.get("token") == os.environ.get("REMOTE_NOTIFIER_TOKEN"):
-        raw = session_info.get("codexPreviewLength", raw)
-    elif raw is None:
-        raw = session_info.get("codexPreviewLength")
+    raw = session_info.get(
+        "codexPreviewLength", os.environ.get("REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH")
+    )
     try:
         return max(1, min(100, int(raw)))
     except (TypeError, ValueError):
@@ -266,16 +323,21 @@ def _send(
     event_key: str,
     transcript_message: str | None = None,
 ) -> None:
-    session_info = _read_session_info()
-    url = os.environ.get("REMOTE_NOTIFIER_URL")
-    token = os.environ.get("REMOTE_NOTIFIER_TOKEN")
-    if not url:
-        port = session_info.get("port")
-        if port:
-            url = f"http://127.0.0.1:{port}/notify"
-    if not token:
-        token = session_info.get("token")
-    if not url or not token:
+    session_info = _read_session_info(event)
+    endpoints: list[tuple[str, str]] = []
+    env_url = os.environ.get("REMOTE_NOTIFIER_URL")
+    env_token = os.environ.get("REMOTE_NOTIFIER_TOKEN")
+    if env_url and env_token:
+        endpoints.append((env_url, env_token))
+
+    session_port = session_info.get("port")
+    session_token = session_info.get("token")
+    if session_port and isinstance(session_token, str) and session_token:
+        session_endpoint = (f"http://127.0.0.1:{session_port}/notify", session_token)
+        if session_endpoint not in endpoints:
+            endpoints.append(session_endpoint)
+
+    if not endpoints:
         return
 
     preview_length = _preview_length(session_info)
@@ -295,17 +357,24 @@ def _send(
         "turn_id": str(event.get("turn_id") or ""),
         "event_key": event_key,
     }
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=1.5) as response:
-        response.read(1024)
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    for url, token in endpoints:
+        async_url = f"{url}/async" if url.endswith("/notify") else url
+        request = urllib.request.Request(
+            async_url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=0.6) as response:
+                response.read(1024)
+            return
+        except Exception:
+            continue
 
 
 def main() -> int:

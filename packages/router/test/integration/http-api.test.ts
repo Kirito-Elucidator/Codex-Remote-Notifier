@@ -169,6 +169,48 @@ describe('HTTP API Integration', () => {
     });
   });
 
+  describe('POST /notify/async', () => {
+    it('acknowledges a valid hook request before presentation completes', async () => {
+      let finishPresentation: (() => void) | undefined;
+      vi.mocked(mockPresenter.present).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishPresentation = resolve;
+          }),
+      );
+
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/notify/async',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        JSON.stringify({ message: 'Async hook notification' }),
+      );
+
+      expect(response.status).toBe(202);
+      expect(JSON.parse(response.body)).toMatchObject({ ok: true, queued: true });
+      expect(mockPresenter.present).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Async hook notification' }),
+      );
+      finishPresentation?.();
+    });
+
+    it('still authenticates asynchronous hook requests', async () => {
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/notify/async',
+        { 'Content-Type': 'application/json' },
+        JSON.stringify({ message: 'Unauthorized' }),
+      );
+
+      expect(response.status).toBe(401);
+    });
+  });
+
   describe('unknown paths', () => {
     it('returns 404 for unknown path', async () => {
       const res = await sendRaw(port, 'GET', '/unknown', {});

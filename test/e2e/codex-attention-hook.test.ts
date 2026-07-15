@@ -369,6 +369,102 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it('retries the current session file after a VS Code reload invalidates terminal env vars', async () => {
+    const sessionDirectory = path.join(testHome, '.remote-notifier');
+    await fs.mkdir(sessionDirectory, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionDirectory, 'session.json'),
+      JSON.stringify({ port, token, codexPreviewLength: 16 }),
+      'utf-8',
+    );
+
+    const result = await runHook(
+      {
+        session_id: 'session-sqlite',
+        turn_id: 'turn-reloaded-window',
+        hook_event_name: 'Stop',
+        last_assistant_message: 'Reload recovery',
+        cwd: '/work/repo',
+      },
+      {
+        REMOTE_NOTIFIER_URL: 'http://127.0.0.1:1/notify',
+        REMOTE_NOTIFIER_TOKEN: 'stale-token',
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0].turn_id).toBe('turn-reloaded-window');
+  });
+
+  it('routes a stale terminal to the Router matching its workspace', async () => {
+    const workspaceRoot = path.join(testHome, 'workspaces', 'VUDG');
+    const scopedReceived: Array<Record<string, unknown>> = [];
+    const scopedServer = http.createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk) => chunks.push(chunk));
+      request.on('end', () => {
+        scopedReceived.push(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+        response.writeHead(202, { 'Content-Type': 'application/json' });
+        response.end('{"ok":true,"queued":true}');
+      });
+    });
+    const scopedPort = await new Promise<number>((resolve) => {
+      scopedServer.listen(0, '127.0.0.1', () =>
+        resolve((scopedServer.address() as net.AddressInfo).port),
+      );
+    });
+
+    try {
+      const sessionDirectory = path.join(testHome, '.remote-notifier');
+      const scopedDirectory = path.join(sessionDirectory, 'sessions');
+      await fs.mkdir(scopedDirectory, { recursive: true });
+      await fs.writeFile(
+        path.join(sessionDirectory, 'session.json'),
+        JSON.stringify({
+          port,
+          token,
+          workspaceFolder: path.join(testHome, 'workspaces', 'RTL'),
+          createdAt: '2026-07-15T10:00:00.000Z',
+        }),
+        'utf-8',
+      );
+      await fs.writeFile(
+        path.join(scopedDirectory, 'vudg.json'),
+        JSON.stringify({
+          port: scopedPort,
+          token: 'vudg-token',
+          workspaceFolder: workspaceRoot,
+          workspaceFolders: [workspaceRoot],
+          createdAt: '2026-07-15T11:00:00.000Z',
+          codexPreviewLength: 16,
+        }),
+        'utf-8',
+      );
+
+      const result = await runHook(
+        {
+          session_id: 'session-sqlite',
+          turn_id: 'turn-vudg-window',
+          hook_event_name: 'Stop',
+          last_assistant_message: 'Workspace routing',
+          cwd: path.join(workspaceRoot, 'src'),
+        },
+        {
+          REMOTE_NOTIFIER_URL: 'http://127.0.0.1:1/notify',
+          REMOTE_NOTIFIER_TOKEN: 'stale-token',
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(received).toHaveLength(0);
+      expect(scopedReceived).toHaveLength(1);
+      expect(scopedReceived[0].turn_id).toBe('turn-vudg-window');
+    } finally {
+      await new Promise<void>((resolve) => scopedServer.close(() => resolve()));
+    }
+  });
+
   async function writeTranscript(
     name: string,
     records: Array<Record<string, unknown>>,
@@ -393,6 +489,7 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
       CODEX_HOME: codexHome,
       REMOTE_NOTIFIER_URL: `http://127.0.0.1:${port}/notify`,
       REMOTE_NOTIFIER_TOKEN: token,
+      REMOTE_NOTIFIER_SESSION_FILE: '',
       REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH: '16',
       ...env,
     });

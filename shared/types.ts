@@ -19,6 +19,8 @@ export interface SessionInfo {
   token: string;
   pid: number;
   workspaceFolder: string;
+  workspaceFolders?: string[];
+  workspaceKey?: string;
   createdAt: string;
   codexPreviewLength?: number;
 }

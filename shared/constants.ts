@@ -6,6 +6,7 @@ export const COMMAND_COPY_NOTIFY_COMMAND = 'remoteNotifier.copyNotifyCommand';
 
 export const SESSION_DIR = '.remote-notifier';
 export const SESSION_FILE = 'session.json';
+export const SESSION_SCOPES_DIR = 'sessions';
 
 export const COMMAND_INSTALL_SCRIPT = 'remoteNotifier.installScript';
 
@@ -17,4 +18,5 @@ export const COMMAND_TEST_SYSTEM = 'remoteNotifier.testSystemNotification';
 export const ENV_PORT = 'REMOTE_NOTIFIER_PORT';
 export const ENV_TOKEN = 'REMOTE_NOTIFIER_TOKEN';
 export const ENV_URL = 'REMOTE_NOTIFIER_URL';
+export const ENV_SESSION_FILE = 'REMOTE_NOTIFIER_SESSION_FILE';
 export const ENV_CODEX_PREVIEW_LENGTH = 'REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH';

@@ -43,6 +43,8 @@ describe('SessionManager Integration', () => {
     expect(info.token).toBe(sessionManager.token);
     expect(info.pid).toBe(process.pid);
     expect(info.createdAt).toBeDefined();
+    expect(info.workspaceFolders).toEqual(['/test/workspace']);
+    expect(info.workspaceKey).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it.skipIf(process.platform === 'win32')('sets correct file permissions (0600)', async () => {
@@ -96,6 +98,10 @@ describe('SessionManager Integration', () => {
     expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
       'REMOTE_NOTIFIER_URL',
       'http://127.0.0.1:5000/notify',
+    );
+    expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
+      'REMOTE_NOTIFIER_SESSION_FILE',
+      path.join(testDir, 'env-test.json'),
     );
     expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
       'REMOTE_NOTIFIER_CODEX_PREVIEW_LENGTH',
@@ -178,5 +184,54 @@ describe('SessionManager Integration', () => {
     const info: SessionInfo = JSON.parse(content);
     // File should be overwritten with new data
     expect(info.port).toBe(4000);
+  });
+
+  it('writes both scoped and legacy session files when their paths differ', async () => {
+    const scopedPath = path.join(testDir, 'sessions', 'workspace.json');
+    const legacyPath = path.join(testDir, 'session.json');
+    const context = createMockExtensionContext();
+    const mgr = new SessionManager(context as never, {
+      sessionFilePath: scopedPath,
+      legacySessionFilePath: legacyPath,
+    });
+
+    await mgr.initialize(5000);
+
+    const scoped: SessionInfo = JSON.parse(await fs.readFile(scopedPath, 'utf-8'));
+    const legacy: SessionInfo = JSON.parse(await fs.readFile(legacyPath, 'utf-8'));
+    expect(scoped).toEqual(legacy);
+    expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
+      'REMOTE_NOTIFIER_SESSION_FILE',
+      scopedPath,
+    );
+    await mgr.dispose();
+  });
+
+  it('does not remove a legacy session file that another window has replaced', async () => {
+    const scopedPath = path.join(testDir, 'sessions', 'workspace.json');
+    const legacyPath = path.join(testDir, 'session.json');
+    const context = createMockExtensionContext();
+    const mgr = new SessionManager(context as never, {
+      sessionFilePath: scopedPath,
+      legacySessionFilePath: legacyPath,
+    });
+    await mgr.initialize(5000);
+    await fs.writeFile(
+      legacyPath,
+      JSON.stringify({
+        port: 6000,
+        token: 'another-window',
+        pid: process.pid,
+        workspaceFolder: '/another/workspace',
+        createdAt: new Date().toISOString(),
+      } satisfies SessionInfo),
+      'utf-8',
+    );
+
+    await mgr.dispose();
+
+    await expect(fs.access(scopedPath)).rejects.toThrow();
+    const legacy: SessionInfo = JSON.parse(await fs.readFile(legacyPath, 'utf-8'));
+    expect(legacy.token).toBe('another-window');
   });
 });
