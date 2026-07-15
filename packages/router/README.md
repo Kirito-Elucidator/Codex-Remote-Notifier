@@ -26,11 +26,29 @@ auto-configure command and select Codex; the helper is installed at
 helper owned by this extension. Completed-turn notifications show both the
 renamed session and answer preview when both are available.
 
+For Codex notifications, the Router also matches the hook process ancestry to
+the VS Code terminal process and stores a `session_id` mapping. Clicking the
+Windows notification routes the activation back to the originating VS Code
+window and invokes a unique command registered by that Router instance. This
+reveals the existing terminal without starting a new conversation or selecting
+a different workspace's Router in multi-window setups.
+
+Each Router writes a workspace-scoped discovery record under
+`~/.remote-notifier/sessions/`. Existing terminals whose inherited port became
+stale after a window reload can therefore select the Router whose workspace
+contains the hook `cwd`. The legacy `~/.remote-notifier/session.json` record is
+still written for compatibility with earlier helpers.
+
 This is a helper extension ("router") for the enhanced main extension built
 from the same source tree. It needs to be installed in a given workspace to
 allow scripts and tools to trigger notifications from within that workspace.
 Triggered notifications are passed to the main extension for presentation via
 system or in-app notifications.
+
+Codex hooks use the authenticated `/notify/async` endpoint. The Router returns
+`202 Accepted` after validating and queueing the payload, while terminal mapping
+and Windows notification presentation continue without consuming the hook's
+three-second timeout.
 
 This extension can be installed manually, but the main extension will also
 prompt user to install it whenever new workspace is opened which doesn't have it
