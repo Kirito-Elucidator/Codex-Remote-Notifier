@@ -243,7 +243,7 @@ npm test
 npm run package
 ```
 
-当前测试基线为 214 项通过、1 项跳过。
+当前测试基线为 243 项全部通过。
 
 ### 许可证
 
@@ -524,7 +524,7 @@ npm test
 npm run package
 ```
 
-The current test baseline is 214 passing and 1 skipped.
+The current test baseline is 243 passing.
 
 ### License
 

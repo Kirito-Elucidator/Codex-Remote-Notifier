@@ -2,7 +2,7 @@
   "name": "remote-notifier-codex-router",
   "displayName": "Remote Notifier Codex (Router)",
   "description": "Receive notifications from remote scripts and route them to the main Remote Notifier extension to trigger notification for the user",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",

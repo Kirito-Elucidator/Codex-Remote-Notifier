@@ -2,7 +2,7 @@
   "name": "remote-notifier-codex",
   "displayName": "Remote Notifier Codex",
   "description": "Receive notifications from remote scripts and tools and present them to the user as system or in-app notifications",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",
