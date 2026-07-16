@@ -66,9 +66,27 @@ to your PATH to allow triggering notifications from that workspace.
 
 ## How To Use
 
-1. Install the `remote-notifier-codex` VSIX built from this source tree
-2. Install this Router VSIX manually or when prompted by the main extension
-3. Execute `code-notify` helper script to trigger user notifications! 🎉
+From the VSIX download directory in Windows PowerShell, the quickest Remote SSH
+installation is:
+
+```powershell
+code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
+code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
+  .\remote-notifier-codex-router-1.0.9.vsix --force
+```
+
+Replace `YOUR_SSH_HOST` with the `Host` alias from the Windows SSH config. Then
+open the Remote SSH window, press `Ctrl+Shift+P`, run
+`Developer: Reload Window`, and create a new terminal.
+
+Alternatively, press `Ctrl+Shift+P` and run `Extensions: Install from VSIX...`:
+
+1. Install the main `remote-notifier-codex` VSIX under `Local`.
+2. Install this Router VSIX in the intended `Local` or `SSH: <host>` workspace.
+3. Run `Developer: Reload Window` and wait for Remote SSH to reconnect.
+4. Run `Terminal: Create New Terminal` before starting Codex or `code-notify`.
+5. Run `Remote Notifier: Auto-configure notifications in current workspace for...`
+   and select `Codex` when Codex lifecycle notifications are required.
 
 The original releases remain available on the
 [upstream GitHub project](https://github.com/ripper37/remote-notifier/releases).

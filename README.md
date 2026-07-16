@@ -107,20 +107,10 @@ Claude Code/Gemini CLI 自动配置仍然保留。
 本项目是 **VS Code 扩展**，不是 npm 命令行包。目前尚未发布到 VS Code Marketplace，
 因此其他用户应安装构建好的 VSIX，而不是执行 `npm install`：
 
-1. 从本仓库的 [GitHub Releases](https://github.com/Kirito-Elucidator/codex-remote-notifier/releases)
+1. 从本仓库的 [Releases](../../releases)
    下载同一版本中的两个文件：
    - `remote-notifier-codex-*.vsix`
    - `remote-notifier-codex-router-*.vsix`
-2. 在 VS Code 命令面板中执行 `Extensions: Install from VSIX...`，依次安装两个文件。
-3. 执行 `Developer: Reload Window`。
-
-也可以在 Windows 终端中安装本地 VSIX。请先进入两个 VSIX 文件所在的下载目录，
-再运行以下命令：
-
-```powershell
-code --install-extension .\remote-notifier-codex-1.0.2.vsix
-code --install-extension .\remote-notifier-codex-router-1.0.8.vsix
-```
 
 安装位置取决于使用场景：
 
@@ -132,11 +122,58 @@ code --install-extension .\remote-notifier-codex-router-1.0.8.vsix
 Remote SSH 场景下，Router 和 Hook 在服务器侧接收 Codex 事件；Presenter 留在本机 Windows，
 负责显示系统通知。两端缺少任意一个扩展都无法完成服务器到 Windows 的通知链路。
 
+#### 推荐：使用 Windows PowerShell 快速安装
+
+先在 PowerShell 中进入两个 VSIX 文件所在的下载目录。纯本机场景只需执行：
+
+```powershell
+code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.9.vsix --force
+```
+
+Remote SSH 场景使用下面两条命令。将 `YOUR_SSH_HOST` 替换为 Windows
+`%USERPROFILE%\.ssh\config` 中的 `Host` 别名，例如 `public_jclou_4090_server`：
+
+```powershell
+# Presenter 安装到 Windows 本机
+code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
+
+# Router 安装到指定 SSH 主机
+code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
+  .\remote-notifier-codex-router-1.0.9.vsix --force
+```
+
+普通的 `code --install-extension` 安装到本机；增加
+`--remote ssh-remote+YOUR_SSH_HOST` 后，扩展才会安装到对应服务器。`--force` 可以覆盖已经安装的
+同版本 VSIX，适合安装修复后但版本号未变化的构建。第一次使用某个 SSH 主机时，请先在 VS Code
+中成功连接一次，再执行远端安装命令。
+
+两条命令执行成功后：
+
+1. 打开对应的本机或 Remote SSH 窗口。
+2. 按 `Ctrl+Shift+P`，执行 `Developer: Reload Window`
+   （中文界面为 `开发人员: 重新加载窗口`）。Remote SSH 窗口需要等待重新连接服务器；不要刷新
+   浏览器页面。
+3. 关闭安装前打开的旧终端，执行 `Terminal: Create New Terminal`，再从新终端启动 Codex。
+
+#### 备选：通过 VS Code 界面安装
+
+不方便使用命令行时，可以按以下简化流程安装：
+
+1. 按 `Ctrl+Shift+P`，执行 `Extensions: Install from VSIX...`。纯本机使用时在本机窗口安装两个
+   VSIX；Remote SSH 使用时在本机窗口安装 Presenter，再在 `SSH: <服务器名>` 窗口安装 Router。
+2. 检查扩展位置：Presenter 应为 `Local`，Router 应为 `Local` 或当前的 `SSH: <服务器名>`。
+3. 在最终使用的窗口中按 `Ctrl+Shift+P`，执行 `Developer: Reload Window`。
+4. 窗口重新打开后新建集成终端，再继续配置 Codex 通知。
+
 ### 配置 Codex 通知
 
-1. 执行 `Remote Notifier: Auto-configure notifications in current workspace for...`。
-2. 选择 `Codex`。
-3. Codex 首次检测到新 Hook 时，核对命令路径后进行一次信任审核。
+1. 确认已经按上一节重新加载 VS Code 窗口，并在重新加载后新建了集成终端。
+2. 按 `Ctrl+Shift+P` 打开命令面板，输入并执行
+   `Remote Notifier: Auto-configure notifications in current workspace for...`。
+3. 选择 `Codex`。
+4. 如果 Codex 是在配置 Hook 之前启动的，请退出并从新终端重新启动或恢复 Codex session。
+5. Codex 首次检测到新 Hook 时，核对命令路径后进行一次信任审核。
 
 Router 会把 helper 安装到：
 
@@ -339,20 +376,10 @@ This project contains **VS Code extensions**, not npm command-line packages.
 It has not yet been published to the VS Code Marketplace, so users should
 install built VSIX packages rather than run `npm install`:
 
-1. Download both files from the same entry under
-   [GitHub Releases](https://github.com/Kirito-Elucidator/codex-remote-notifier/releases):
+1. Download both files from the same entry under this repository's
+   [Releases](../../releases):
    - `remote-notifier-codex-*.vsix`
    - `remote-notifier-codex-router-*.vsix`
-2. Run `Extensions: Install from VSIX...` in VS Code for each file.
-3. Run `Developer: Reload Window`.
-
-The local VSIX files can also be installed from a Windows terminal. First,
-change to the download directory containing both VSIX files, then run:
-
-```powershell
-code --install-extension .\remote-notifier-codex-1.0.2.vsix
-code --install-extension .\remote-notifier-codex-router-1.0.8.vsix
-```
 
 Install each extension in the appropriate location:
 
@@ -365,11 +392,67 @@ With Remote SSH, the Router and hook receive Codex events on the server, while
 the Presenter remains on the Windows machine and displays the system
 notification. Both sides are required for the server-to-Windows path.
 
+#### Recommended: quick installation from Windows PowerShell
+
+First, change to the download directory containing both VSIX files. For a
+local-only setup, run:
+
+```powershell
+code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.9.vsix --force
+```
+
+For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
+`%USERPROFILE%\.ssh\config` file, such as `public_jclou_4090_server`:
+
+```powershell
+# Install the Presenter on Windows
+code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
+
+# Install the Router on the specified SSH host
+code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
+  .\remote-notifier-codex-router-1.0.9.vsix --force
+```
+
+Plain `code --install-extension` installs locally. The
+`--remote ssh-remote+YOUR_SSH_HOST` argument is what installs the Router on the
+server. `--force` replaces an already installed VSIX with the same version,
+which is useful for patched builds that do not change their version number. If
+this is the first time the host is used, connect to it successfully from VS
+Code once before running the remote installation command.
+
+After both commands succeed:
+
+1. Open the relevant local or Remote SSH window.
+2. Press `Ctrl+Shift+P` and run `Developer: Reload Window`. Wait for a Remote SSH
+   window to reconnect; do not refresh a browser page.
+3. Close terminals opened before installation, run
+   `Terminal: Create New Terminal`, and start Codex from the new terminal.
+
+#### Alternative: install through the VS Code interface
+
+If the command line is unavailable, use this shorter interface workflow:
+
+1. Press `Ctrl+Shift+P` and run `Extensions: Install from VSIX...`. For local
+   use, install both files in the local window. For Remote SSH, install the
+   Presenter in a local window and the Router in the `SSH: <host>` window.
+2. Verify that the Presenter is under `Local` and that the Router is under
+   either `Local` or the intended `SSH: <host>`.
+3. In the window that will be used, press `Ctrl+Shift+P` and run
+   `Developer: Reload Window`.
+4. Create a new integrated terminal after the window reloads, then configure
+   Codex notifications.
+
 ### Configure Codex Notifications
 
-1. Run `Remote Notifier: Auto-configure notifications in current workspace for...`.
-2. Select `Codex`.
-3. Review and trust the hook once when Codex first detects it.
+1. Confirm that the VS Code window has been reloaded and that a new integrated
+   terminal was created after the reload.
+2. Press `Ctrl+Shift+P` and run
+   `Remote Notifier: Auto-configure notifications in current workspace for...`.
+3. Select `Codex`.
+4. If Codex was running before the hook was configured, exit it and start or
+   resume the session from the new terminal.
+5. Review and trust the hook once when Codex first detects it.
 
 The Router installs the helper at:
 
