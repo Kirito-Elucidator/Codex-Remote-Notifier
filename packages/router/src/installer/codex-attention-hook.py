@@ -442,17 +442,20 @@ def _send(
 ) -> None:
     session_info = _read_session_info(event)
     endpoints: list[tuple[str, str]] = []
-    env_url = os.environ.get("REMOTE_NOTIFIER_URL")
-    env_token = os.environ.get("REMOTE_NOTIFIER_TOKEN")
-    if env_url and env_token:
-        endpoints.append((env_url, env_token))
-
     session_port = session_info.get("port")
     session_token = session_info.get("token")
     if session_port and isinstance(session_token, str) and session_token:
-        session_endpoint = (f"http://127.0.0.1:{session_port}/notify", session_token)
-        if session_endpoint not in endpoints:
-            endpoints.append(session_endpoint)
+        endpoints.append((f"http://127.0.0.1:{session_port}/notify", session_token))
+
+    # A stable workspace session file is refreshed when VS Code reloads, while
+    # existing terminals keep the old environment. Try the refreshed Router
+    # first so a stale inherited port cannot consume most of the hook timeout.
+    env_url = os.environ.get("REMOTE_NOTIFIER_URL")
+    env_token = os.environ.get("REMOTE_NOTIFIER_TOKEN")
+    if env_url and env_token:
+        env_endpoint = (env_url, env_token)
+        if env_endpoint not in endpoints:
+            endpoints.append(env_endpoint)
 
     if not endpoints:
         return

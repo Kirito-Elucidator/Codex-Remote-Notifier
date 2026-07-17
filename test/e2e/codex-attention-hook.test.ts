@@ -410,6 +410,17 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
   it('routes a stale terminal to the Router matching its workspace', async () => {
     const workspaceRoot = path.join(testHome, 'workspaces', 'VUDG');
     const scopedReceived: Array<Record<string, unknown>> = [];
+    const staleRequests: string[] = [];
+    const staleServer = http.createServer((request, response) => {
+      staleRequests.push(request.url ?? '');
+      response.writeHead(500, { 'Content-Type': 'application/json' });
+      response.end('{"ok":false}');
+    });
+    const stalePort = await new Promise<number>((resolve) => {
+      staleServer.listen(0, '127.0.0.1', () =>
+        resolve((staleServer.address() as net.AddressInfo).port),
+      );
+    });
     const scopedServer = http.createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on('data', (chunk) => chunks.push(chunk));
@@ -461,17 +472,22 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
           cwd: path.join(workspaceRoot, 'src'),
         },
         {
-          REMOTE_NOTIFIER_URL: 'http://127.0.0.1:1/notify',
+          REMOTE_NOTIFIER_URL: `http://127.0.0.1:${stalePort}/notify`,
           REMOTE_NOTIFIER_TOKEN: 'stale-token',
         },
       );
 
       expect(result.exitCode).toBe(0);
+      expect(staleRequests).toHaveLength(0);
       expect(received).toHaveLength(0);
       expect(scopedReceived).toHaveLength(1);
       expect(scopedReceived[0].turn_id).toBe('turn-vudg-window');
     } finally {
-      await new Promise<void>((resolve) => scopedServer.close(() => resolve()));
+      await Promise.all(
+        [staleServer, scopedServer].map(
+          (serverToClose) => new Promise<void>((resolve) => serverToClose.close(() => resolve())),
+        ),
+      );
     }
   });
 
