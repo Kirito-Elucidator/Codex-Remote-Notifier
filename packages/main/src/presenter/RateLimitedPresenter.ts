@@ -4,6 +4,7 @@ import { NotificationPayload, NotificationPresenter } from 'remote-notifier-shar
 
 const DEFAULT_MAX_NOTIFICATIONS = 5;
 const DEFAULT_WINDOW_MS = 15_000;
+const CODEX_DEDUP_WINDOW_MS = 2_000;
 const MAX_CODEX_EVENT_KEYS = 1024;
 
 export class RateLimitedPresenter implements NotificationPresenter {
@@ -11,7 +12,7 @@ export class RateLimitedPresenter implements NotificationPresenter {
   private suppressedCount = 0;
   private suppressedMessage: vscode.Disposable | null = null;
   private resetTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly codexEventKeys = new Set<string>();
+  private readonly codexEventKeys = new Map<string, number>();
 
   constructor(
     private readonly inner: NotificationPresenter,
@@ -41,16 +42,24 @@ export class RateLimitedPresenter implements NotificationPresenter {
     if (!eventKey) {
       return this.inner.present(payload);
     }
-    if (this.codexEventKeys.has(eventKey)) {
+    const now = Date.now();
+    const lastSeenAt = this.codexEventKeys.get(eventKey);
+    if (lastSeenAt !== undefined && now - lastSeenAt < CODEX_DEDUP_WINDOW_MS) {
       return undefined;
     }
 
-    this.codexEventKeys.add(eventKey);
+    // A turn can legitimately request input or permission more than once. Keep
+    // duplicate suppression short-lived so immediate retries collapse without
+    // hiding a later attention event from the same turn.
+    this.codexEventKeys.delete(eventKey);
+    this.codexEventKeys.set(eventKey, now);
     this.trimCodexEventKeys();
     try {
       return await this.inner.present(payload);
     } catch (error) {
-      this.codexEventKeys.delete(eventKey);
+      if (this.codexEventKeys.get(eventKey) === now) {
+        this.codexEventKeys.delete(eventKey);
+      }
       throw error;
     }
   }
@@ -62,9 +71,9 @@ export class RateLimitedPresenter implements NotificationPresenter {
 
   private trimCodexEventKeys(): void {
     while (this.codexEventKeys.size > MAX_CODEX_EVENT_KEYS) {
-      const oldest = this.codexEventKeys.values().next().value;
-      if (oldest === undefined) return;
-      this.codexEventKeys.delete(oldest);
+      const oldestKey = this.codexEventKeys.keys().next().value;
+      if (oldestKey === undefined) return;
+      this.codexEventKeys.delete(oldestKey);
     }
   }
 

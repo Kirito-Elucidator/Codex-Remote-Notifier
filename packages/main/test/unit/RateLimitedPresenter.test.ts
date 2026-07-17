@@ -142,7 +142,7 @@ describe('RateLimitedPresenter', () => {
     expect(inner.present).toHaveBeenCalledTimes(8);
   });
 
-  it('deduplicates Codex events by session, turn, and event key', async () => {
+  it('deduplicates immediate Codex retries but allows later events in the same turn', async () => {
     presenter = new RateLimitedPresenter(inner, 1, 15_000);
     const event = {
       source: 'codex',
@@ -159,8 +159,10 @@ describe('RateLimitedPresenter', () => {
     ]);
     await presenter.present({ ...event, turn_id: 'turn-2' });
     await presenter.present({ ...event, event_key: 'waiting-permission' });
+    vi.advanceTimersByTime(2_000);
+    await presenter.present(event);
 
-    expect(inner.present).toHaveBeenCalledTimes(3);
+    expect(inner.present).toHaveBeenCalledTimes(4);
   });
 
   it('allows a failed Codex event to be retried', async () => {
