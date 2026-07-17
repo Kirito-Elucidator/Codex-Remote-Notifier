@@ -1,14 +1,18 @@
 {
   "name": "remote-notifier-codex",
   "displayName": "Remote Notifier Codex",
-  "description": "Receive notifications from remote scripts and tools and present them to the user as system or in-app notifications",
-  "version": "1.0.3",
+  "description": "Persistent Windows notifications for OpenAI Codex CLI with click-to-focus session routing across local VS Code and Remote SSH",
+  "version": "1.0.4",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ripper37/remote-notifier"
+    "url": "https://github.com/Kirito-Elucidator/Codex-Remote-Notifier"
+  },
+  "homepage": "https://github.com/Kirito-Elucidator/Codex-Remote-Notifier#readme",
+  "bugs": {
+    "url": "https://github.com/Kirito-Elucidator/Codex-Remote-Notifier/issues"
   },
   "icon": "icon.png",
   "engines": {
@@ -19,12 +23,18 @@
   ],
   "keywords": [
     "notifications",
+    "openai-codex",
+    "codex-cli",
+    "ai-agent",
+    "vscode-extension",
     "system",
     "native",
     "app",
     "remote",
     "ssh",
-    "remote",
+    "remote-ssh",
+    "windows-notifications",
+    "productivity",
     "container",
     "docker",
     "notification",

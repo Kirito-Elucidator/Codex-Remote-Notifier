@@ -33,6 +33,11 @@ window and invokes a unique command registered by that Router instance. This
 reveals the existing terminal without starting a new conversation or selecting
 a different workspace's Router in multi-window setups.
 
+**The notification is therefore an actionable return path, not just a status
+message:** the local and Remote SSH workflows both bring the originating VS
+Code window forward and focus the existing terminal for that Codex session.
+This path has been validated end to end against a live Linux Remote SSH host.
+
 Each Router writes a workspace-scoped discovery record under
 `~/.remote-notifier/sessions/`. Existing terminals whose inherited port became
 stale after a window reload can therefore select the Router whose workspace
@@ -70,9 +75,9 @@ From the VSIX download directory in Windows PowerShell, the quickest Remote SSH
 installation is:
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.4.vsix --force
 code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.9.vsix --force
+  .\remote-notifier-codex-router-1.0.10.vsix --force
 ```
 
 Replace `YOUR_SSH_HOST` with the `Host` alias from the Windows SSH config. Then

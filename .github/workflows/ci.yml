@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches:
-      - master
+      - main
     tags:
       - 'v*'
   pull_request:
@@ -113,7 +113,7 @@ jobs:
           retention-days: 10
 
   release:
-    name: Release & Publish
+    name: Create GitHub Release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -132,17 +132,3 @@ jobs:
           files: dist/**/*.vsix
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish to VS Code Marketplace
-        run: |
-          npx @vscode/vsce publish -i "$(find dist -name "remote-notifier-*.vsix" ! -name "*router*")"
-          npx @vscode/vsce publish -i "$(find dist -name "remote-notifier-router-*.vsix")"
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-
-      - name: Publish to Open VSX Registry
-        run: |
-          npx ovsx publish "$(find dist -name "remote-notifier-*.vsix" ! -name "*router*")"
-          npx ovsx publish "$(find dist -name "remote-notifier-router-*.vsix")"
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}

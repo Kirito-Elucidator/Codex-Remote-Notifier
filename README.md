@@ -14,7 +14,8 @@
 > “等待回答”、“计划完成”和“等待授权”等提醒会通过 VS Code Router 回传，并显示在你正在使用的
 > 本机 Windows 10/11 上。即使 VS Code 被浏览器或其他窗口遮挡，也能收到持续显示的 Windows
 > 系统通知，不需要一直盯着远端终端。同时也支持完全在本机使用：Codex、Router 和通知扩展
-> 都运行在同一台 Windows 电脑上，无需配置 SSH。**
+> 都运行在同一台 Windows 电脑上，无需配置 SSH。通知不只是提醒：点击后会返回产生通知的
+> VS Code 窗口，并聚焦原本已经存在的 Codex session，不会另开一个对话。**
 
 ### Fork 与致谢
 
@@ -59,15 +60,33 @@ Remote Notifier 显示为本机系统通知。
 - 主扩展和 Router 使用独立扩展 ID，避免被 Marketplace 上游版本自动覆盖。
 - Hook 仅执行本地脚本和本地路由，不增加模型上下文，也不消耗额外模型 token。
 
+### 点击通知，返回原 Codex 会话
+
+**这是本 fork 的核心增强之一。** Windows 通知不仅告诉你 Codex 已经停下来，还保存了产生通知的
+VS Code 窗口、工作区、`session_id` 和集成终端映射。无论 Codex 在本机 Windows 运行，还是在
+VS Code Remote SSH 连接的 Linux 服务器运行，点击通知都会尝试：
+
+1. 将产生通知的 VS Code 窗口切回前台。
+2. 找到该 `session_id` 原本所在的集成终端。
+3. 显示并聚焦这个已有终端，不启动新的 Codex 对话。
+
+会话 rename 只影响通知中的显示名称，不影响跳转依据。多个 VS Code 窗口使用独立 Focus Broker
+和 Router 命令；窗口重载后，Helper 还会通过工作区会话文件恢复到新的 Router 端口，避免把点击
+送到最近打开但不相关的窗口。如果原窗口或终端已经真正关闭，扩展会明确提示无法定位，不会静默
+打开错误的 session。
+
 ### 当前状态
 
-- Windows 10/11 本机工作流已经完成自动化测试和手动验证。
+- Windows 10/11 本机工作流已经完成自动化测试和手动端到端验证。
+- Linux Remote SSH 到本机 Windows 的通知、三秒 Hook、已有终端映射和点击聚焦已经完成实机
+  端到端验证；点击后服务器 Router 日志确认聚焦到通知对应的命名 Codex 终端。
 - 精确终端跳转已经实现：Hook 采集父进程链，Router 将 `session_id` 映射到对应终端，
   每个 VS Code 窗口使用独立的本机回环 broker 接收点击事件；每个 Router 实例还会生成
   唯一的聚焦命令，避免多窗口中的同名命令被路由到错误工作区。
 - 原窗口或终端已经关闭且无法恢复映射时，会聚焦当前 VS Code 并明确提示无法定位，
   不会静默跳到错误终端。
-- Remote SSH 沿用上游 Router 架构，目前应视为实验性能力，仍需完成多窗口人工验证。
+- 不同 SSH 主机和复杂多窗口组合仍建议在首次安装后各做一次点击验证；核心 Remote SSH 链路
+  已不再只是自动化测试状态。
 
 ### 工作原理
 
@@ -127,8 +146,8 @@ Remote SSH 场景下，Router 和 Hook 在服务器侧接收 Codex 事件；Pres
 先在 PowerShell 中进入两个 VSIX 文件所在的下载目录。纯本机场景只需执行：
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.9.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.4.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.10.vsix --force
 ```
 
 Remote SSH 场景使用下面两条命令。将 `YOUR_SSH_HOST` 替换为 Windows
@@ -136,11 +155,11 @@ Remote SSH 场景使用下面两条命令。将 `YOUR_SSH_HOST` 替换为 Window
 
 ```powershell
 # Presenter 安装到 Windows 本机
-code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.4.vsix --force
 
 # Router 安装到指定 SSH 主机
 code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.9.vsix --force
+  .\remote-notifier-codex-router-1.0.10.vsix --force
 ```
 
 普通的 `code --install-extension` 安装到本机；增加
@@ -264,6 +283,10 @@ npm run package
 > The extension also supports a fully local setup, with Codex, the Router, and
 > notifications all running on the same Windows machine without SSH.**
 
+> **Notifications are actionable, not display-only: clicking one returns to
+> the VS Code window that produced it and focuses the existing Codex session
+> instead of opening a new conversation.**
+
 ### Fork and Acknowledgements
 
 This project is forked from
@@ -322,9 +345,32 @@ Additional enhancements include:
   versions.
 - Local-only hook processing with no additional model context or token usage.
 
+### Click a Notification, Return to the Original Codex Session
+
+**This is a core enhancement in this fork.** A Windows notification retains
+the originating VS Code window, workspace, `session_id`, and integrated
+terminal mapping. Whether Codex runs locally on Windows or on Linux through VS
+Code Remote SSH, clicking the notification attempts to:
+
+1. Bring the originating VS Code window to the foreground.
+2. Locate the integrated terminal that already owns the `session_id`.
+3. Reveal and focus that terminal without starting a new Codex conversation.
+
+Renaming a session changes only its displayed label, not its routing identity.
+Per-window focus brokers and unique Router commands prevent another VS Code
+window from claiming the click. After a window reload, workspace-scoped session
+files lead existing terminals to the refreshed Router port. If the originating
+window or terminal is genuinely closed, the extension reports that it cannot
+be located instead of silently opening the wrong session.
+
 ### Current Status
 
-- The Windows 10/11 local workflow has automated coverage and manual testing.
+- The Windows 10/11 local workflow has automated coverage and manual
+  end-to-end testing.
+- The Linux Remote SSH to local Windows path has completed live end-to-end
+  validation, including the three-second hook, existing-terminal mapping, and
+  a notification click confirmed by the server Router to focus the matching
+  named Codex terminal.
 - Exact terminal navigation is implemented by matching the hook's process
   ancestry to a VS Code terminal process and mapping it to `session_id`. A
   per-window loopback broker routes clicks back to the originating window, and
@@ -333,8 +379,9 @@ Additional enhancements include:
 - If the original window or terminal is already closed and its mapping cannot
   be restored, the extension focuses the current VS Code window and reports
   that the terminal could not be located instead of selecting the wrong one.
-- Remote SSH retains the upstream Router architecture but remains experimental
-  until multi-window manual validation is complete.
+- New SSH hosts and complex multi-window combinations should still receive one
+  click-through check after installation, but the core Remote SSH path is no
+  longer validated only by automated tests.
 
 ### Architecture
 
@@ -398,8 +445,8 @@ First, change to the download directory containing both VSIX files. For a
 local-only setup, run:
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.9.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.4.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.10.vsix --force
 ```
 
 For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
@@ -407,11 +454,11 @@ For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
 
 ```powershell
 # Install the Presenter on Windows
-code --install-extension .\remote-notifier-codex-1.0.3.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.4.vsix --force
 
 # Install the Router on the specified SSH host
 code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.9.vsix --force
+  .\remote-notifier-codex-router-1.0.10.vsix --force
 ```
 
 Plain `code --install-extension` installs locally. The
