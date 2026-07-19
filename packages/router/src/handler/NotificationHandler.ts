@@ -37,7 +37,7 @@ export class NotificationHandler {
       notificationPayload.session_id &&
       notificationPayload.process_ancestry
     ) {
-      await this.terminalFocus?.track(
+      await this.trackCodexSession(
         notificationPayload.session_id,
         notificationPayload.process_ancestry,
       );
@@ -53,6 +53,10 @@ export class NotificationHandler {
       const message = err instanceof Error ? err.message : 'unknown error';
       return { ok: false, error: 'presenter_error', details: message };
     }
+  }
+
+  async trackCodexSession(sessionId: string, processAncestry: number[]): Promise<void> {
+    await this.terminalFocus?.track(sessionId, processAncestry);
   }
 
   private validate(payload: unknown): string | null {

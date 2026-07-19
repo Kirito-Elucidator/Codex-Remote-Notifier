@@ -2,6 +2,7 @@ import * as http from 'http';
 
 import * as vscode from 'vscode';
 
+import { CodexEventHandler } from '../codex/CodexEventHandler';
 import { Configuration } from '../config/Configuration';
 import { NotificationHandler } from '../handler/NotificationHandler';
 import { Router } from './routes';
@@ -18,10 +19,11 @@ export class NotificationServer implements vscode.Disposable {
   constructor(
     private readonly handler: NotificationHandler,
     private readonly config: Configuration,
+    private readonly codexEvents?: CodexEventHandler,
   ) {}
 
   async start(token: string): Promise<void> {
-    this.router = new Router(this.handler, token, this.config.maxBodySize);
+    this.router = new Router(this.handler, token, this.config.maxBodySize, this.codexEvents);
     this.server = http.createServer(this.handleRequest.bind(this));
 
     const configuredPort = this.config.port;
@@ -54,7 +56,7 @@ export class NotificationServer implements vscode.Disposable {
   }
 
   updateToken(token: string): void {
-    this.router = new Router(this.handler, token, this.config.maxBodySize);
+    this.router = new Router(this.handler, token, this.config.maxBodySize, this.codexEvents);
   }
 
   dispose(): void {

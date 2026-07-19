@@ -3,12 +3,14 @@ import { NotificationPresenter } from 'remote-notifier-shared';
 import { NotificationServer } from '../../src/server/NotificationServer';
 import { NotificationHandler } from '../../src/handler/NotificationHandler';
 import { Configuration } from '../../src/config/Configuration';
+import { CodexEventHandler } from '../../src/codex/CodexEventHandler';
 import { sendNotification, checkHealth, sendRaw } from '../helpers/http-client';
 import * as routerPackageJson from '../../package.json';
 
 describe('HTTP API Integration', () => {
   let server: NotificationServer;
   let mockPresenter: NotificationPresenter;
+  let mockCodexEvents: Pick<CodexEventHandler, 'handle'>;
   const token = 'test_token_' + 'a'.repeat(53);
   let port: number;
 
@@ -22,7 +24,8 @@ describe('HTTP API Integration', () => {
       showTimestamp: false,
     } as unknown as Configuration;
     const handler = new NotificationHandler(mockPresenter, config);
-    server = new NotificationServer(handler, config);
+    mockCodexEvents = { handle: vi.fn().mockResolvedValue(undefined) };
+    server = new NotificationServer(handler, config, mockCodexEvents as CodexEventHandler);
     await server.start(token);
     port = server.port;
   });
@@ -208,6 +211,144 @@ describe('HTTP API Integration', () => {
       );
 
       expect(response.status).toBe(401);
+    });
+  });
+
+  describe('POST /codex/events', () => {
+    const validEvent = {
+      version: 1,
+      kind: 'protocol',
+      method: 'turn/started',
+      instance_id: 'instance-1',
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      process_ancestry: [42],
+    };
+
+    it('authenticates, validates, and immediately accepts a protocol event', async () => {
+      let finishHandling: (() => void) | undefined;
+      vi.mocked(mockCodexEvents.handle).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishHandling = resolve;
+          }),
+      );
+
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        JSON.stringify(validEvent),
+      );
+
+      expect(response.status).toBe(202);
+      expect(JSON.parse(response.body)).toMatchObject({ ok: true, queued: true });
+      expect(mockCodexEvents.handle).toHaveBeenCalledWith(validEvent);
+      finishHandling?.();
+    });
+
+    it('accepts a bounded error occurrence id and rejects an oversized one', async () => {
+      const errorEvent = {
+        ...validEvent,
+        method: 'error',
+        occurrence_id: 'error-42',
+        will_retry: true,
+        error: {
+          message: 'temporary disconnect',
+          code: 'responseStreamDisconnected',
+        },
+      };
+      const accepted = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        JSON.stringify(errorEvent),
+      );
+      expect(accepted.status).toBe(202);
+
+      const rejected = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        JSON.stringify({ ...errorEvent, occurrence_id: 'x'.repeat(201) }),
+      );
+      expect(rejected.status).toBe(400);
+    });
+
+    it('rejects unauthenticated event requests', async () => {
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        { 'Content-Type': 'application/json' },
+        JSON.stringify(validEvent),
+      );
+
+      expect(response.status).toBe(401);
+    });
+
+    it('rejects malformed or non-whitelisted protocol events', async () => {
+      vi.mocked(mockCodexEvents.handle).mockClear();
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        JSON.stringify({ ...validEvent, method: 'item/agentMessage/delta' }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(mockCodexEvents.handle).not.toHaveBeenCalled();
+    });
+
+    it('rejects raw protocol fields outside the sanitized event contract', async () => {
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        JSON.stringify({ ...validEvent, prompt: 'must never enter the Router' }),
+      );
+
+      expect(response.status).toBe(400);
+    });
+
+    it('enforces the shared request size limit', async () => {
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        JSON.stringify({ ...validEvent, preview: 'x'.repeat(2000) }),
+      );
+
+      expect(response.status).toBe(413);
+    });
+
+    it('rejects non-POST methods', async () => {
+      const response = await sendRaw(port, 'GET', '/codex/events', {});
+      expect(response.status).toBe(405);
     });
   });
 
