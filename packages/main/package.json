@@ -2,7 +2,7 @@
   "name": "remote-notifier-codex",
   "displayName": "Remote Notifier Codex",
   "description": "Persistent Windows notifications for OpenAI Codex CLI with click-to-focus session routing across local VS Code and Remote SSH",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",
@@ -101,6 +101,11 @@
           "type": "boolean",
           "default": true,
           "description": "Keep Codex notifications visible on Windows until they are opened or dismissed."
+        },
+        "remoteNotifier.codexFullscreenUrgentNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use Windows important notifications for Codex while a full-screen or presentation session is active, when supported."
         },
         "remoteNotifier.notificationSoundPath": {
           "type": "string",

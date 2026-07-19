@@ -26,7 +26,7 @@ export class SystemPresenter implements NotificationPresenter {
       'vscode://ddyndo.remote-notifier-codex/notification',
   ) {
     this.soundPlayer = new SoundPlayer(log);
-    this.windowsReminder = new WindowsReminderPresenter();
+    this.windowsReminder = new WindowsReminderPresenter(log);
   }
 
   async present(payload: NotificationPayload): Promise<string | undefined> {
@@ -58,6 +58,7 @@ export class SystemPresenter implements NotificationPresenter {
           iconPath,
           silent: !soundEnabled || Boolean(soundPath),
           launchUri: this.launchUriFactory(payload),
+          urgentWhenFullscreen: config.get<boolean>('codexFullscreenUrgentNotifications', true),
         });
         this.log?.appendLine('[SystemPresenter] Windows reminder notification sent successfully');
         return undefined;

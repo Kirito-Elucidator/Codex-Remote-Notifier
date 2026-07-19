@@ -41,6 +41,7 @@ describe('SystemPresenter', () => {
         title: '[任务完成]',
         message: 'Task finished',
         silent: false,
+        urgentWhenFullscreen: true,
       }),
     );
     expect(notifier.notify).not.toHaveBeenCalled();
@@ -74,6 +75,17 @@ describe('SystemPresenter', () => {
 
     expect(reminderSpy).not.toHaveBeenCalled();
     expect(notifier.notify).toHaveBeenCalled();
+  });
+
+  it('can disable fullscreen urgency without disabling persistent notifications', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    setMockConfig('remoteNotifier.codexFullscreenUrgentNotifications', false);
+
+    await presenter.present({ message: 'Task finished', source: 'codex' });
+
+    expect(reminderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ urgentWhenFullscreen: false }),
+    );
   });
 
   it('falls back to node-notifier when the Windows reminder fails', async () => {
