@@ -124,8 +124,12 @@ export function createMockEnvCollection() {
     replace: vi.fn((variable: string, value: string) => {
       store.set(variable, value);
     }),
-    append: vi.fn(),
-    prepend: vi.fn(),
+    append: vi.fn((variable: string, value: string) => {
+      store.set(variable, `${store.get(variable) ?? ''}${value}`);
+    }),
+    prepend: vi.fn((variable: string, value: string) => {
+      store.set(variable, `${value}${store.get(variable) ?? ''}`);
+    }),
     get: vi.fn((variable: string) => store.get(variable)),
     delete: vi.fn((variable: string) => store.delete(variable)),
     clear: vi.fn(() => store.clear()),

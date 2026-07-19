@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild';
-import { cpSync } from 'fs';
+import { cpSync, readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -11,10 +11,20 @@ function copyAssets() {
   cpSync(resolve(__dirname, '../../LICENSE'), resolve(__dirname, 'LICENSE'));
 }
 
+function verifySidecarBundle() {
+  const bundle = readFileSync(resolve(__dirname, 'dist/codex-notifier-sidecar.js'), 'utf8');
+  if (/require\((['"])vscode\1\)/.test(bundle)) {
+    throw new Error('Codex sidecar bundle must not depend on the VS Code extension host');
+  }
+}
+
 const buildOptions = {
-  entryPoints: ['src/extension.ts'],
+  entryPoints: {
+    extension: 'src/extension.ts',
+    'codex-notifier-sidecar': 'src/sidecar/codex-notifier-sidecar.ts',
+  },
   bundle: true,
-  outfile: 'dist/extension.js',
+  outdir: 'dist',
   external: ['vscode'],
   format: 'cjs',
   platform: 'node',
@@ -35,6 +45,7 @@ if (isWatch) {
   console.log('Watching for changes...');
 } else {
   await esbuild.build(buildOptions);
+  verifySidecarBundle();
   copyAssets();
   console.log('Router extension built.');
 }

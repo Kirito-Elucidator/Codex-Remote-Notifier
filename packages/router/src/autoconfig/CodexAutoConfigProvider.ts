@@ -31,6 +31,11 @@ interface CodexHooksConfig {
   [key: string]: unknown;
 }
 
+export interface CodexAutoConfigLifecycle {
+  onConfigured?(): Promise<void>;
+  onUnconfigured?(): Promise<void>;
+}
+
 export function resolveCodexHome(
   environment: NodeJS.ProcessEnv = process.env,
   homeDirectory = os.homedir(),
@@ -46,11 +51,12 @@ const TOML_CONFIG_PATH = path.join(CODEX_HOME_PATH, 'config.toml');
 export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
   readonly id = 'codex';
   readonly label = 'Codex';
-  readonly description = 'Configure Codex hooks to send notifications';
+  readonly description = 'Configure exact Codex monitoring with Hook fallback';
 
   constructor(
     log?: import('vscode').OutputChannel,
     private readonly hookInstaller = new CodexAttentionHookInstaller(log),
+    private readonly lifecycle: CodexAutoConfigLifecycle = {},
   ) {
     super(log);
   }
@@ -63,6 +69,16 @@ export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
       return;
     }
     await super.configure();
+    if (await this.isConfigured()) {
+      try {
+        await this.lifecycle.onConfigured?.();
+      } catch (error) {
+        this.log?.appendLine(`[codex] Exact protocol monitoring setup failed: ${error}`);
+        window.showWarningMessage(
+          'Remote Notifier configured the Codex Hook fallback, but exact protocol monitoring could not be enabled. Codex commands will continue normally.',
+        );
+      }
+    }
   }
 
   async unconfigure(): Promise<void> {
@@ -84,13 +100,60 @@ export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
         await fs.writeFile(HOOKS_CONFIG_PATH, result.content, 'utf-8');
       }
       await this.hookInstaller.uninstall();
+      await this.lifecycle.onUnconfigured?.();
       window.showInformationMessage(
         result.changed
-          ? 'Remote Notifier: Removed Codex notification hooks and helper.'
-          : 'Remote Notifier: Codex notification hooks were not installed; helper removed.',
+          ? 'Remote Notifier: Removed the Codex notification configuration and helper.'
+          : 'Remote Notifier: Codex notification hooks were not installed; helper and shim removed.',
       );
     } catch (error) {
       window.showErrorMessage(`Failed to remove the Codex notification configuration: ${error}`);
+    }
+  }
+
+  async isConfigured(): Promise<boolean> {
+    try {
+      const raw = await fs.readFile(HOOKS_CONFIG_PATH, 'utf-8');
+      const config = JSON.parse(raw) as CodexHooksConfig;
+      return Object.values(config.hooks ?? {}).some((entries) =>
+        entries.some((entry) => this.isOwnedHook(entry)),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async upgradeOwnedHooks(): Promise<boolean> {
+    if (!(await this.isConfigured())) return false;
+
+    const loaded = new Map<string, string>();
+    for (const filePath of [HOOKS_CONFIG_PATH, TOML_CONFIG_PATH]) {
+      try {
+        loaded.set(filePath, await fs.readFile(filePath, 'utf-8'));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          this.log?.appendLine(`[codex] Failed to read ${filePath} during Hook upgrade: ${error}`);
+          return false;
+        }
+      }
+    }
+
+    const platform: Platform = process.platform === 'win32' ? 'windows' : 'unix';
+    const result = await this.processConfigs(loaded, platform, false);
+    const upgradedHooks = result?.modifiedFiles.get(HOOKS_CONFIG_PATH);
+    if (!upgradedHooks) return false;
+
+    try {
+      await fs.mkdir(path.dirname(HOOKS_CONFIG_PATH), { recursive: true });
+      await fs.writeFile(HOOKS_CONFIG_PATH, upgradedHooks, 'utf-8');
+      this.log?.appendLine('[codex] Upgraded owned Codex Hooks while preserving third-party hooks');
+      window.showWarningMessage(
+        'Remote Notifier upgraded its Codex Hook configuration. Codex may ask you to trust the updated Hook on the next session.',
+      );
+      return true;
+    } catch (error) {
+      this.log?.appendLine(`[codex] Failed to upgrade owned Codex Hooks: ${error}`);
+      return false;
     }
   }
 
@@ -256,11 +319,21 @@ export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
     const hookPath = getCodexAttentionHookPath();
     const command =
       platform === 'windows'
-        ? getCodexAttentionHookWindowsPath().replace(/\\/g, '/')
-        : `${hookPath} 2>/dev/null || true`;
-    const hook = (): HookCommand => ({ type: 'command', command, timeout: 3 });
+        ? `cmd.exe /d /c call "${getCodexAttentionHookWindowsPath().replace(/\\/g, '/')}"`
+        : `${quoteShellPath(hookPath)} 2>/dev/null || true`;
+    const hook = (): HookCommand => ({ type: 'command', command, timeout: 5 });
 
     return {
+      SessionStart: [
+        {
+          hooks: [hook()],
+        },
+      ],
+      UserPromptSubmit: [
+        {
+          hooks: [hook()],
+        },
+      ],
       Stop: [
         {
           hooks: [hook()],
@@ -311,4 +384,8 @@ export class CodexAutoConfigProvider extends BaseAutoConfigProvider {
   private isIdentical(a: HookEntry, b: HookEntry): boolean {
     return JSON.stringify(a) === JSON.stringify(b);
   }
+}
+
+function quoteShellPath(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }

@@ -1,8 +1,8 @@
 {
   "name": "remote-notifier-codex-router",
   "displayName": "Remote Notifier Codex (Router)",
-  "description": "Route OpenAI Codex CLI hooks from local or Remote SSH workspaces to persistent Windows notifications with click-to-focus session navigation",
-  "version": "1.0.10",
+  "description": "Route OpenAI Codex CLI protocol events and Hook fallbacks to reliable Windows notifications with click-to-focus navigation",
+  "version": "1.0.21",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",
@@ -79,7 +79,7 @@
       },
       {
         "command": "remoteNotifier.removeCodexConfiguration",
-        "title": "Remote Notifier: Remove Codex notification hooks"
+        "title": "Remote Notifier: Remove Codex notification configuration"
       }
     ],
     "configuration": {
@@ -121,6 +121,11 @@
           "maximum": 100,
           "default": 16,
           "description": "Maximum visible characters used for each Codex session name and answer preview."
+        },
+        "remoteNotifier.codexProtocolMonitoring": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the Codex 0.145+ app-server protocol in newly created integrated terminals for exact notifications. Unsupported invocations automatically fall back to hooks."
         }
       }
     }
@@ -134,11 +139,13 @@
     "package": "npm run build && npx @vscode/vsce package --no-dependencies"
   },
   "dependencies": {
-    "remote-notifier-shared": "*"
+    "remote-notifier-shared": "*",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.28.0",
     "vitest": "^4.1.5"
   }

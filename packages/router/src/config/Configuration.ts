@@ -30,4 +30,8 @@ export class Configuration {
   get codexPreviewLength(): number {
     return this.config.get('codexPreviewLength', 16);
   }
+
+  get codexProtocolMonitoring(): boolean {
+    return this.config.get('codexProtocolMonitoring', true);
+  }
 }

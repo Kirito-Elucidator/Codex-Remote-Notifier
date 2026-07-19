@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -71,8 +72,23 @@ export class CodexAttentionHookInstaller {
   }
 
   async ensureInstalled(): Promise<void> {
-    if (!(await this.isInstalled()) || (await this.needsUpdate())) {
+    const installed = await this.isInstalled();
+    if (!installed) {
       await this.install(true);
+      return;
+    }
+    if (await this.needsUpdate()) {
+      await this.install(true);
+      const hash = createHash('sha256')
+        .update(this.normalize(hookScript))
+        .digest('hex')
+        .slice(0, 12);
+      this.log?.appendLine(
+        `[CodexAttentionHookInstaller] Hook content changed (sha256 ${hash}); Codex trust may need renewal`,
+      );
+      vscode.window.showWarningMessage(
+        'Remote Notifier updated its Codex hook. Codex may ask you to trust the new hook hash on the next session.',
+      );
     }
   }
 

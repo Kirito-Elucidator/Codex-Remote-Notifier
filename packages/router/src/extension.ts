@@ -17,10 +17,12 @@ import {
 
 import { CodexAutoConfigProvider } from './autoconfig/CodexAutoConfigProvider';
 import { createAutoConfigRegistry } from './autoconfig/Registry';
+import { CodexEventHandler } from './codex/CodexEventHandler';
 import { Configuration } from './config/Configuration';
 import { NotificationHandler } from './handler/NotificationHandler';
 import { CodeNotifyScriptInstaller } from './installer/CodeNotifyScriptInstaller';
 import { CodexAttentionHookInstaller } from './installer/CodexAttentionHookInstaller';
+import { CodexProtocolShimManager } from './installer/CodexProtocolShimManager';
 import { CommandPresenter } from './presenter/CommandPresenter';
 import { NotificationServer } from './server/NotificationServer';
 import { SessionManager } from './session/SessionManager';
@@ -28,6 +30,7 @@ import { CodexTerminalFocusRegistry } from './terminal/CodexTerminalFocusRegistr
 import { StatusBar } from './ui/StatusBar';
 
 let log: vscode.OutputChannel;
+const CODEX_PROTOCOL_MIGRATION_KEY = 'codexProtocolMonitoring.migrationDecision';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   log = vscode.window.createOutputChannel('Remote Notifier');
@@ -36,6 +39,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const config = new Configuration();
   if (!config.enabled) {
+    context.environmentVariableCollection.delete('PATH');
     log.appendLine('[Router] Extension disabled via config, skipping');
     return;
   }
@@ -45,10 +49,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const terminalFocus = new CodexTerminalFocusRegistry(context.workspaceState, log);
   const codexFocusCommand = `${COMMAND_FOCUS_CODEX_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
   const handler = new NotificationHandler(presenter, config, terminalFocus, codexFocusCommand);
+  const codexEvents = new CodexEventHandler(handler, config, undefined, log);
   const sessionManager = new SessionManager(context, {
     codexPreviewLength: config.codexPreviewLength,
   });
-  const server = new NotificationServer(handler, config);
+  const codexProtocolShim = new CodexProtocolShimManager(context, log);
+  const codexHookInstaller = new CodexAttentionHookInstaller(log);
+  const codexProvider = new CodexAutoConfigProvider(log, codexHookInstaller, {
+    onConfigured: async () => {
+      await context.globalState.update(CODEX_PROTOCOL_MIGRATION_KEY, true);
+      if (!config.codexProtocolMonitoring) return;
+      await codexProtocolShim.enable();
+      vscode.window.showInformationMessage(
+        'Remote Notifier: Exact Codex protocol monitoring will be active in new integrated terminals.',
+      );
+    },
+    onUnconfigured: () => codexProtocolShim.disable(true),
+  });
+  const server = new NotificationServer(handler, config, codexEvents);
 
   await server.start(sessionManager.token);
   log.appendLine(`[Router] HTTP server listening on port ${server.port}`);
@@ -78,17 +96,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log.appendLine(`[Router] Failed to auto-install or update script: ${err}`);
     });
 
-  const codexHookInstaller = new CodexAttentionHookInstaller(log);
-  codexHookInstaller
-    .isInstalled()
-    .then((installed) => (installed ? codexHookInstaller.ensureInstalled() : undefined))
+  codexProvider
+    .isConfigured()
+    .then(async (configured) => {
+      if (!configured) return;
+      await codexHookInstaller.ensureInstalled();
+      await codexProvider.upgradeOwnedHooks();
+    })
     .catch((err) => {
-      log.appendLine(`[Router] Failed to auto-update Codex attention helper: ${err}`);
+      log.appendLine(`[Router] Failed to auto-update Codex notification configuration: ${err}`);
     });
+
+  void initializeCodexProtocolMonitoring(context, config, codexProvider, codexProtocolShim);
 
   context.subscriptions.push(
     log,
     server,
+    codexEvents,
     {
       dispose: () => {
         sessionManager.dispose().catch(() => {});
@@ -141,7 +165,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await installer.install();
     }),
     vscode.commands.registerCommand(COMMAND_AUTO_CONFIGURE, async () => {
-      const registry = createAutoConfigRegistry(log);
+      const registry = createAutoConfigRegistry(log, codexProvider);
       const items = registry.getAll().map((p) => ({
         label: p.label,
         description: p.description,
@@ -157,15 +181,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand(COMMAND_REMOVE_CODEX_CONFIG, async () => {
-      await new CodexAutoConfigProvider(log).unconfigure();
+      await codexProvider.unconfigure();
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (!event.affectsConfiguration('remoteNotifier.codexPreviewLength')) return;
-      sessionManager
-        .updateCodexPreviewLength(config.codexPreviewLength, server.port)
-        .catch((err) => {
-          log.appendLine(`[Router] Failed to update Codex preview length: ${err}`);
-        });
+      if (event.affectsConfiguration('remoteNotifier.codexPreviewLength')) {
+        sessionManager
+          .updateCodexPreviewLength(config.codexPreviewLength, server.port)
+          .catch((err) => {
+            log.appendLine(`[Router] Failed to update Codex preview length: ${err}`);
+          });
+      }
+      if (event.affectsConfiguration('remoteNotifier.codexProtocolMonitoring')) {
+        void updateCodexProtocolSetting(context, config, codexProvider, codexProtocolShim);
+      }
     }),
   );
 
@@ -178,4 +206,58 @@ export function deactivate(): void {
 
 function buildCurlCommand(port: number, token: string): string {
   return `curl -s -X POST http://127.0.0.1:${port}/notify -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" -d '{"message":"Task completed"}'`;
+}
+
+async function initializeCodexProtocolMonitoring(
+  context: vscode.ExtensionContext,
+  config: Configuration,
+  provider: CodexAutoConfigProvider,
+  shim: CodexProtocolShimManager,
+): Promise<void> {
+  try {
+    if (!config.codexProtocolMonitoring || !(await provider.isConfigured())) {
+      await shim.disable(false);
+      return;
+    }
+
+    let enabled = context.globalState.get<boolean | undefined>(
+      CODEX_PROTOCOL_MIGRATION_KEY,
+      undefined,
+    );
+    if (enabled === undefined) {
+      const selection = await vscode.window.showInformationMessage(
+        'Remote Notifier can use Codex 0.145+ protocol events for exact completion, approval, safety-check, and terminal-error notifications. This applies to new integrated terminals.',
+        'Enable exact monitoring',
+        'Keep Hook fallback',
+      );
+      enabled = selection === 'Enable exact monitoring';
+      await context.globalState.update(CODEX_PROTOCOL_MIGRATION_KEY, enabled);
+    }
+    if (enabled) await shim.enable();
+    else await shim.disable(false);
+  } catch (error) {
+    log.appendLine(`[Router] Failed to initialize Codex protocol monitoring: ${error}`);
+  }
+}
+
+async function updateCodexProtocolSetting(
+  context: vscode.ExtensionContext,
+  config: Configuration,
+  provider: CodexAutoConfigProvider,
+  shim: CodexProtocolShimManager,
+): Promise<void> {
+  try {
+    if (!config.codexProtocolMonitoring) {
+      await shim.disable(false);
+      return;
+    }
+    if (!(await provider.isConfigured())) return;
+    await context.globalState.update(CODEX_PROTOCOL_MIGRATION_KEY, true);
+    await shim.enable();
+    vscode.window.showInformationMessage(
+      'Remote Notifier: Codex protocol monitoring setting changed. Open a new integrated terminal to apply it.',
+    );
+  } catch (error) {
+    log.appendLine(`[Router] Failed to update Codex protocol monitoring: ${error}`);
+  }
 }

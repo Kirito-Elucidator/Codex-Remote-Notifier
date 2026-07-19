@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { window } from 'vscode';
@@ -12,6 +13,7 @@ vi.mock('../../src/installer/CodeNotifyScriptInstaller', () => ({
   SCRIPT_NAME: 'code-notify',
   CodeNotifyScriptInstaller: vi.fn(),
 }));
+vi.mock('fs/promises');
 
 vi.mock('../../src/installer/CodexAttentionHookInstaller', () => ({
   CODEX_ATTENTION_HOOK_NAME: 'codex-attention-hook',
@@ -29,6 +31,8 @@ describe('CodexAutoConfigProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
     provider = new CodexAutoConfigProvider();
   });
 
@@ -42,26 +46,70 @@ describe('CodexAutoConfigProvider', () => {
     expect(resolveCodexHome({}, 'C:/Users/test')).toBe(path.join('C:/Users/test', '.codex'));
   });
 
+  it('automatically upgrades owned Hooks without rewriting unrelated TOML', async () => {
+    const existing = {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              { type: 'command', command: 'echo third-party', timeout: 9 },
+              {
+                type: 'command',
+                command: '/home/u/.local/bin/codex-attention-hook',
+                timeout: 3,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    vi.spyOn(provider, 'isConfigured').mockResolvedValue(true);
+    vi.mocked(fs.readFile).mockImplementation(async (filePath) =>
+      String(filePath) === hooksPath ? JSON.stringify(existing) : '[tui]\nnotifications = true\n',
+    );
+
+    await expect(provider.upgradeOwnedHooks()).resolves.toBe(true);
+
+    expect(fs.writeFile).toHaveBeenCalledTimes(1);
+    expect(fs.writeFile).toHaveBeenCalledWith(
+      hooksPath,
+      expect.stringContaining('UserPromptSubmit'),
+      'utf-8',
+    );
+    const upgraded = JSON.parse(vi.mocked(fs.writeFile).mock.calls[0][1] as string);
+    expect(upgraded.hooks.Stop[0].hooks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ command: 'echo third-party', timeout: 9 }),
+        expect.objectContaining({ timeout: 5 }),
+      ]),
+    );
+    expect(window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('trust the updated Hook'),
+    );
+  });
+
   describe('processConfigs', () => {
     it('adds hooks to empty JSON and creates TUI section in TOML', async () => {
       const loaded = new Map<string, string>();
       const result = await provider.processConfigs(loaded, 'unix', true);
 
       expect(result).not.toBeNull();
-      expect(result!.stats.added).toBe(3);
+      expect(result!.stats.added).toBe(5);
 
       const hooks = JSON.parse(result!.modifiedFiles.get(hooksPath)!);
+      expect(hooks.hooks.SessionStart).toHaveLength(1);
+      expect(hooks.hooks.UserPromptSubmit).toHaveLength(1);
       expect(hooks.hooks.Stop).toHaveLength(1);
       expect(hooks.hooks.PreToolUse[0].matcher).toBe('^request_user_input$');
       expect(hooks.hooks.PermissionRequest[0].hooks[0].command).toContain('codex-attention-hook');
-      expect(hooks.hooks.PermissionRequest[0].hooks[0].timeout).toBe(3);
+      expect(hooks.hooks.PermissionRequest[0].hooks[0].timeout).toBe(5);
 
       const toml = result!.modifiedFiles.get(tomlPath)!;
       expect(toml).toContain('[tui]');
       expect(toml).toContain('notifications = false');
     });
 
-    it('builds a Windows command that cmd.exe can pass to Python', async () => {
+    it('explicitly invokes the Windows helper through cmd.exe', async () => {
       const result = await provider.processConfigs(new Map(), 'windows', false);
       const hooks = JSON.parse(result!.modifiedFiles.get(hooksPath)!);
       const command = hooks.hooks.Stop[0].hooks[0].command;
@@ -69,8 +117,7 @@ describe('CodexAutoConfigProvider', () => {
         .join(os.homedir(), '.local', 'bin', 'codex-attention-hook.cmd')
         .replace(/\\/g, '/');
 
-      expect(command).toBe(hookPath);
-      expect(command).not.toContain('"');
+      expect(command).toBe(`cmd.exe /d /c call "${hookPath}"`);
     });
 
     it('updates existing hooks in JSON', async () => {
@@ -91,7 +138,7 @@ describe('CodexAutoConfigProvider', () => {
 
       expect(result!.stats.updated).toBe(1);
       const hooks = JSON.parse(result!.modifiedFiles.get(hooksPath)!);
-      expect(hooks.hooks.Stop[0].hooks[0].timeout).toBe(3);
+      expect(hooks.hooks.Stop[0].hooks[0].timeout).toBe(5);
 
       const toml = result!.modifiedFiles.get(tomlPath)!;
       expect(toml).toContain('notifications = false');
@@ -146,7 +193,7 @@ foo = "bar"
       ]);
       const result = await provider.processConfigs(loaded, 'unix', false);
 
-      expect(result!.stats.skipped).toBe(3);
+      expect(result!.stats.skipped).toBe(5);
       expect(result!.modifiedFiles.size).toBe(0);
     });
 
@@ -183,7 +230,14 @@ foo = "bar"
 
       const hooks = JSON.parse(result!.modifiedFiles.get(hooksPath)!);
       expect(hooks.custom).toEqual({ enabled: true });
-      expect(hooks.hooks.SessionStart).toEqual(existingHooks.hooks.SessionStart);
+      expect(hooks.hooks.SessionStart).toEqual(
+        expect.arrayContaining(existingHooks.hooks.SessionStart),
+      );
+      expect(
+        hooks.hooks.SessionStart.flatMap((entry: any) => entry.hooks).filter((hook: any) =>
+          hook.command.includes('codex-attention-hook'),
+        ),
+      ).toHaveLength(1);
       expect(hooks.hooks.Stop[0].note).toBe('keep me');
       expect(hooks.hooks.Stop[0].hooks).toEqual(
         expect.arrayContaining([expect.objectContaining({ command: 'echo user-stop' })]),

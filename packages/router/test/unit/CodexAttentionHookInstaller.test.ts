@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 
 import * as shared from 'remote-notifier-shared';
+import { window } from 'vscode';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CodexAttentionHookInstaller } from '../../src/installer/CodexAttentionHookInstaller';
@@ -77,6 +78,9 @@ describe('CodexAttentionHookInstaller', () => {
       { mode: 0o755 },
     );
     expect(fs.chmod).toHaveBeenCalledTimes(2);
+    expect(window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('trust the new hook hash'),
+    );
   });
 
   it('removes the helper and ignores a missing file', async () => {
