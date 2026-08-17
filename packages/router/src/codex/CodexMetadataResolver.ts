@@ -230,7 +230,7 @@ async function readFileTail(filePath: string, maxBytes: number): Promise<string>
       if (newline < 0) return '';
       data = data.subarray(newline + 1);
     }
-    return data.toString('utf-8');
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data);
   } finally {
     await handle.close();
   }
@@ -250,7 +250,8 @@ async function querySqliteTitle(
     '        connection = sqlite3.connect("file:" + db_path.replace("\\\\", "/") + "?mode=ro", uri=True, timeout=0.1)',
     `        row = connection.execute("SELECT title FROM threads WHERE id = ? AND title <> '' LIMIT 1", (session_id,)).fetchone()`,
     '        if row and isinstance(row[0], str) and row[0].strip():',
-    '            print(row[0])',
+    '            sys.stdout.buffer.write(row[0].encode("utf-8") + b"\\n")',
+    '            sys.stdout.buffer.flush()',
     '            break',
     '    except Exception:',
     '        pass',
@@ -272,12 +273,14 @@ async function querySqliteTitle(
 
   for (const candidate of candidates) {
     try {
-      const output = await execFileText(candidate.command, [
+      const output = await execFileBytes(candidate.command, [
         ...candidate.args,
         JSON.stringify(databasePaths),
         sessionId,
       ]);
-      const title = cleanVisibleText(output);
+      const title = cleanVisibleText(
+        new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(output),
+      );
       if (title) return title;
       return undefined;
     } catch (error) {
@@ -288,13 +291,13 @@ async function querySqliteTitle(
   return undefined;
 }
 
-function execFileText(command: string, args: string[]): Promise<string> {
+function execFileBytes(command: string, args: string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     execFile(
       command,
       args,
       {
-        encoding: 'utf-8',
+        encoding: null,
         timeout: SQLITE_TIMEOUT_MS,
         maxBuffer: 4096,
         windowsHide: true,

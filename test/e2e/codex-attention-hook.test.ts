@@ -17,6 +17,7 @@ interface HookResult {
 interface ReceivedRequest {
   url: string;
   authorization?: string;
+  contentType?: string;
   payload: Record<string, unknown>;
 }
 
@@ -44,6 +45,7 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
         received.push({
           url: request.url ?? '',
           authorization: request.headers.authorization,
+          contentType: request.headers['content-type'],
           payload: JSON.parse(Buffer.concat(chunks).toString('utf-8')),
         });
         response.writeHead(202, { 'Content-Type': 'application/json' });
@@ -127,6 +129,22 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
       expect(request.payload).not.toHaveProperty('title');
       expect(request.payload).not.toHaveProperty('message');
     }
+  });
+
+  it('preserves exact Unicode through the simulated Remote SSH hook route', async () => {
+    const fixture = '中文🙂e\u0301<&>涓枃棰勮';
+
+    const result = await runHook({
+      hook_event_name: 'Stop',
+      session_id: 'session-unicode',
+      turn_id: 'turn-unicode',
+      last_assistant_message: fixture,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0].contentType).toBe('application/json; charset=utf-8');
+    expect(received[0].payload.last_assistant_message).toBe(fixture);
   });
 
   it('does not read transcripts, the session index, or SQLite in the helper', async () => {

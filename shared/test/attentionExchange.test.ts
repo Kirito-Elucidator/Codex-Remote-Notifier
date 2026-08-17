@@ -9,6 +9,7 @@ import {
   parsePresentationInteraction,
   parsePresentationReceipt,
 } from '../attentionExchange';
+import { deriveDisplayableNotificationText } from '../notificationText';
 
 describe('attention exchange contracts', () => {
   const record = {
@@ -192,6 +193,70 @@ describe('attention exchange contracts', () => {
     expect(() =>
       parsePresentationReceipt({ kind: 'applied', transactionId: '', ok: true }),
     ).toThrow(AttentionExchangeValidationError);
+  });
+
+  it('preserves canonical Unicode exactly and derives a separately filtered display copy', () => {
+    const canonical = '中文🙂e\u0301<&>"\'涓枃棰勮';
+    const damagedTitle = `\ud800${canonical}\ufffd\u0001\udfff`;
+    const damagedBody = '\ud800\ufffd\u0000\udfff';
+    const observationExchange = parseObservationExchange({
+      kind: 'append',
+      deliveryGeneration: 'unicode-generation',
+      scope: {
+        invocationId: 'unicode-invocation',
+        connectionId: 'unicode-connection',
+        authorityEpoch: 'unicode-epoch',
+      },
+      fromSequence: 1,
+      observations: [
+        {
+          kind: 'human-action-request',
+          sourceSequence: 1,
+          turnKey: 'unicode-turn',
+          requestKey: 'unicode-request',
+          requestKind: 'input',
+          canonicalTitle: damagedTitle,
+          canonicalBody: damagedBody,
+        },
+      ],
+    });
+    const exchange = parsePresentationExchange({
+      kind: 'reconcile',
+      transactionId: 'unicode-transaction',
+      records: [
+        {
+          ...record,
+          canonicalTitle: damagedTitle,
+          canonicalBody: damagedBody,
+        },
+      ],
+    });
+
+    expect(observationExchange.kind).toBe('append');
+    if (observationExchange.kind !== 'append') throw new Error('expected append exchange');
+    expect(observationExchange.observations[0]).toMatchObject({
+      canonicalTitle: damagedTitle,
+      canonicalBody: damagedBody,
+    });
+    expect(exchange.kind).toBe('reconcile');
+    if (exchange.kind !== 'reconcile') throw new Error('expected reconcile exchange');
+    expect(exchange.records[0].canonicalTitle).toBe(damagedTitle);
+    expect(exchange.records[0].canonicalBody).toBe(damagedBody);
+    expect(deriveDisplayableNotificationText(damagedTitle, damagedBody)).toEqual({
+      title: canonical,
+      body: '请返回 Codex 查看详情',
+      titleFiltered: true,
+      bodyFiltered: true,
+    });
+  });
+
+  it('uses the generic title fallback only when title filtering removes every character', () => {
+    expect(deriveDisplayableNotificationText('\ud800\ufffd\u0001', 'valid body')).toEqual({
+      title: 'Codex 需要你的注意',
+      body: 'valid body',
+      titleFiltered: true,
+      bodyFiltered: false,
+    });
   });
 
   it('rejects a reconcile tail that does not exactly cover the retained range', () => {

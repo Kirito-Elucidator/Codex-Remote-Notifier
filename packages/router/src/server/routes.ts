@@ -88,7 +88,7 @@ export class Router {
     }
 
     const contentType = req.headers['content-type'];
-    if (!contentType || !contentType.includes('application/json')) {
+    if (!isUtf8JsonContentType(contentType)) {
       this.sendJson(res, 400, {
         ok: false,
         error: 'validation_error',
@@ -103,6 +103,14 @@ export class Router {
     } catch (err) {
       if (err instanceof PayloadTooLargeError) {
         this.sendJson(res, 413, { ok: false, error: 'payload_too_large' });
+        return INVALID_REQUEST;
+      }
+      if (err instanceof InvalidUtf8Error) {
+        this.sendJson(res, 400, {
+          ok: false,
+          error: 'validation_error',
+          details: 'invalid UTF-8 JSON',
+        });
         return INVALID_REQUEST;
       }
       this.sendJson(res, 400, {
@@ -127,7 +135,8 @@ export class Router {
 
   private readBody(req: IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
+      const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+      let body = '';
       let size = 0;
       let rejected = false;
 
@@ -140,12 +149,22 @@ export class Router {
           reject(new PayloadTooLargeError());
           return;
         }
-        chunks.push(chunk);
+        try {
+          body += decoder.decode(chunk, { stream: true });
+        } catch (error) {
+          rejected = true;
+          req.resume();
+          reject(new InvalidUtf8Error(error));
+        }
       });
 
       req.on('end', () => {
         if (!rejected) {
-          resolve(Buffer.concat(chunks).toString('utf-8'));
+          try {
+            resolve(body + decoder.decode());
+          } catch (error) {
+            reject(new InvalidUtf8Error(error));
+          }
         }
       });
       req.on('error', (err) => {
@@ -155,12 +174,12 @@ export class Router {
   }
 
   private sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
-    const json = JSON.stringify(body);
+    const bytes = Buffer.from(JSON.stringify(body), 'utf-8');
     res.writeHead(statusCode, {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(json),
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': bytes.length,
     });
-    res.end(json);
+    res.end(bytes);
   }
 }
 
@@ -170,4 +189,18 @@ class PayloadTooLargeError extends Error {
   constructor() {
     super('payload too large');
   }
+}
+
+class InvalidUtf8Error extends Error {
+  constructor(cause: unknown) {
+    super('invalid UTF-8', { cause });
+  }
+}
+
+function isUtf8JsonContentType(value: string | undefined): boolean {
+  if (!value) return false;
+  const [mediaType, ...parameters] = value.split(';').map((part) => part.trim().toLowerCase());
+  if (mediaType !== 'application/json') return false;
+  const charsets = parameters.filter((parameter) => parameter.startsWith('charset='));
+  return charsets.every((charset) => charset === 'charset=utf-8' || charset === 'charset=utf8');
 }

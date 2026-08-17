@@ -669,7 +669,13 @@ function expectReturnTarget(value: unknown, path: string): string {
 }
 
 function expectCanonicalText(value: unknown, path: string, maximumBytes: number): string {
-  return expectString(value, path, maximumBytes);
+  if (typeof value !== 'string' || value.length === 0) {
+    return fail(path, 'must be a non-empty string');
+  }
+  if (Buffer.byteLength(value, 'utf8') > maximumBytes) {
+    fail(path, `exceeds ${maximumBytes} encoded bytes`);
+  }
+  return value;
 }
 
 function optionalCanonicalTitle(value: unknown, path: string): string | undefined {

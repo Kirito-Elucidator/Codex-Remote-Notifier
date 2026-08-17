@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import * as http from 'http';
+
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { NotificationPresenter } from 'remote-notifier-shared';
 import { NotificationServer } from '../../src/server/NotificationServer';
 import { NotificationHandler } from '../../src/handler/NotificationHandler';
@@ -135,6 +137,22 @@ describe('HTTP API Integration', () => {
       expect(res.status).toBe(400);
       const body = JSON.parse(res.body);
       expect(body.details).toContain('Content-Type');
+    });
+
+    it('rejects a non-UTF-8 JSON charset instead of guessing its encoding', async () => {
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/notify',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json; charset=windows-1252',
+        },
+        '{"message":"hello"}',
+      );
+
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body).details).toContain('Content-Type');
     });
 
     it('returns 413 for payload exceeding maxBodySize', async () => {
@@ -316,6 +334,49 @@ describe('HTTP API Integration', () => {
       expect(mockCodexEvents.handle).not.toHaveBeenCalled();
     });
 
+    it('rejects an entire malformed UTF-8 envelope without handling its valid prefix', async () => {
+      vi.mocked(mockCodexEvents.handle).mockClear();
+      const prefix = Buffer.from(
+        '{"version":1,"kind":"protocol","method":"turn/completed","instance_id":"instance-1","thread_id":"thread-1","turn_id":"turn-1","status":"completed","preview":"',
+        'utf-8',
+      );
+      const malformed = Buffer.from([0xc3, 0x28]);
+      const suffix = Buffer.from('"}', 'utf-8');
+
+      const response = await sendRawChunks(port, token, [prefix, malformed, suffix]);
+
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body)).toMatchObject({
+        error: 'validation_error',
+        details: 'invalid UTF-8 JSON',
+      });
+      expect(mockCodexEvents.handle).not.toHaveBeenCalled();
+    });
+
+    it('streams split UTF-8 JSON without changing Chinese, emoji, or combining marks', async () => {
+      vi.mocked(mockCodexEvents.handle).mockClear();
+      const preview = '中文🙂e\u0301<&>';
+      const bytes = Buffer.from(
+        JSON.stringify({
+          ...validEvent,
+          method: 'turn/completed',
+          status: 'completed',
+          preview,
+        }),
+        'utf-8',
+      );
+      const chinese = Buffer.from('中', 'utf-8');
+      const split = bytes.indexOf(chinese) + 1;
+
+      const response = await sendRawChunks(port, token, [
+        bytes.subarray(0, split),
+        bytes.subarray(split),
+      ]);
+
+      expect(response.status).toBe(202);
+      expect(mockCodexEvents.handle).toHaveBeenCalledWith(expect.objectContaining({ preview }));
+    });
+
     it('rejects raw protocol fields outside the sanitized event contract', async () => {
       const response = await sendRaw(
         port,
@@ -384,3 +445,37 @@ describe('HTTP API Integration', () => {
     });
   });
 });
+
+function sendRawChunks(
+  port: number,
+  token: string,
+  chunks: Buffer[],
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: '/codex/events',
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+      },
+      (response) => {
+        const responseChunks: Buffer[] = [];
+        response.on('data', (chunk) => responseChunks.push(chunk));
+        response.on('end', () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            body: Buffer.concat(responseChunks).toString('utf-8'),
+          }),
+        );
+      },
+    );
+    request.on('error', reject);
+    for (const chunk of chunks) request.write(chunk);
+    request.end();
+  });
+}

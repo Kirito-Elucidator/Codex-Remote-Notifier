@@ -239,7 +239,8 @@ def _send(body: dict[str, Any], deadline: float) -> None:
             data=data,
             headers={
                 "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+                "Content-Length": str(len(data)),
             },
             method="POST",
         )
@@ -255,8 +256,8 @@ def _send(body: dict[str, Any], deadline: float) -> None:
 
 def _write_noop_response() -> None:
     try:
-        sys.stdout.write('{"continue":true}\n')
-        sys.stdout.flush()
+        sys.stdout.buffer.write(b'{"continue":true}\n')
+        sys.stdout.buffer.flush()
     except Exception:
         pass
 

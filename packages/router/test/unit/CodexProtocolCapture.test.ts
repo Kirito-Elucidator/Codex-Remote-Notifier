@@ -12,6 +12,17 @@ describe('JsonLineFramer', () => {
     expect(framer.push(bytes.subarray(split))).toEqual(['{"message":"中文"}', '{"second":true}']);
     expect(framer.end()).toEqual(['partial']);
   });
+
+  it('rejects a malformed UTF-8 frame without interpreting a partial JSON object', () => {
+    const framer = new JsonLineFramer();
+    const prefix = Buffer.from('{"message":"accepted-prefix', 'utf-8');
+    const malformed = Buffer.from([0xc3, 0x28]);
+    const suffix = Buffer.from('"}\n', 'utf-8');
+
+    expect(() => framer.push(Buffer.concat([prefix, malformed, suffix]))).toThrow(
+      /malformed UTF-8/i,
+    );
+  });
 });
 
 describe('CodexProtocolCapture', () => {

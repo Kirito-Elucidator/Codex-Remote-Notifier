@@ -2,6 +2,8 @@ import * as cp from 'child_process';
 
 import type * as vscode from 'vscode';
 
+import { deriveDisplayableNotificationText } from 'remote-notifier-shared';
+
 import reminderScript from './windows-reminder.ps1';
 
 export interface WindowsReminderOptions {
@@ -21,10 +23,11 @@ export class WindowsReminderPresenter {
 
   async present(options: WindowsReminderOptions): Promise<void> {
     const encodedScript = Buffer.from(reminderScript, 'utf16le').toString('base64');
+    const displayable = deriveDisplayableNotificationText(options.title, options.message);
     const env = {
       ...process.env,
-      RN_REMINDER_TITLE: options.title,
-      RN_REMINDER_MESSAGE: options.message,
+      RN_REMINDER_TITLE: displayable.title,
+      RN_REMINDER_MESSAGE: displayable.body,
       RN_REMINDER_ICON: options.iconPath,
       RN_REMINDER_SILENT: options.silent ? '1' : '0',
       RN_REMINDER_APP_ID: APP_ID,

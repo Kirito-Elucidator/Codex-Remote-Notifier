@@ -134,7 +134,9 @@ export class CodexRouterClient {
     const sessionFile = this.environment.REMOTE_NOTIFIER_SESSION_FILE;
     if (sessionFile) {
       try {
-        const raw = await fs.readFile(sessionFile, 'utf-8');
+        const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+          await fs.readFile(sessionFile),
+        );
         if (raw.length <= 64 * 1024) {
           const session = JSON.parse(raw) as Record<string, unknown>;
           if (
@@ -309,8 +311,12 @@ export class CodexWebSocketBridge {
       }
     });
     appServer.stdout.on('end', () => {
-      for (const line of connection.framer.end()) {
-        this.onServerLine(connection, line);
+      try {
+        for (const line of connection.framer.end()) {
+          this.onServerLine(connection, line);
+        }
+      } catch {
+        connection.webSocket?.close(1011, 'malformed app-server frame');
       }
       this.closeClientForAppServerFailure(connection, 'app-server output closed');
     });
@@ -967,15 +973,15 @@ function postJson(
   event: CodexProtocolEvent,
 ): Promise<'accepted' | 'retry' | 'drop'> {
   return new Promise((resolve) => {
-    const body = JSON.stringify(event);
+    const body = Buffer.from(JSON.stringify(event), 'utf-8');
     const request = http.request(
       url,
       {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Length': body.length,
         },
       },
       (response) => {

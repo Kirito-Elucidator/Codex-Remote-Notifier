@@ -123,9 +123,10 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
   "if ($env:RN_ICON_KEY) { $p.icon = $env:RN_ICON_KEY }; " ^
   "if ($env:RN_SOUND_KEY) { $p.sound = $env:RN_SOUND_KEY }; " ^
   "$json = $p | ConvertTo-Json -Compress; " ^
+  "$jsonBytes = [Text.Encoding]::UTF8.GetBytes($json); " ^
   "try { " ^
   "  $headers = @{ Authorization = 'Bearer ' + $token }; " ^
-  "  Invoke-RestMethod -Uri $url -Method Post -Body $json -ContentType 'application/json' -Headers $headers | Out-Null; " ^
+  "  Invoke-RestMethod -Uri $url -Method Post -Body $jsonBytes -ContentType 'application/json; charset=utf-8' -Headers $headers | Out-Null; " ^
   "  exit 0; " ^
   "} catch { " ^
   "  if ($_.Exception.Response) { " ^

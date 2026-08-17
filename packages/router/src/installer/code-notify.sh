@@ -113,7 +113,7 @@ json+="}"
 
 http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 -m 10 -X POST "$url" \
   -H "Authorization: Bearer $token" \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json; charset=utf-8" \
   -d "$json" 2>/dev/null || true)
 
 if [[ "$http_code" == "200" ]]; then

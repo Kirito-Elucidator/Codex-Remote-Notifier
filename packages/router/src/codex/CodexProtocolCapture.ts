@@ -1,5 +1,3 @@
-import { StringDecoder } from 'string_decoder';
-
 import type {
   CodexProtocolError,
   CodexProtocolEvent,
@@ -21,11 +19,16 @@ interface RequestContext {
 }
 
 export class JsonLineFramer {
-  private readonly decoder = new StringDecoder('utf-8');
+  private readonly decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   private pending = '';
 
   push(chunk: Buffer | string): string[] {
-    this.pending += typeof chunk === 'string' ? chunk : this.decoder.write(chunk);
+    try {
+      this.pending +=
+        typeof chunk === 'string' ? chunk : this.decoder.decode(chunk, { stream: true });
+    } catch (error) {
+      throw new Error('Codex app-server emitted malformed UTF-8', { cause: error });
+    }
     if (this.pending.length > MAX_PROTOCOL_LINE_LENGTH) {
       throw new Error('Codex app-server emitted an oversized JSONL frame');
     }
@@ -41,7 +44,11 @@ export class JsonLineFramer {
   }
 
   end(): string[] {
-    this.pending += this.decoder.end();
+    try {
+      this.pending += this.decoder.decode();
+    } catch (error) {
+      throw new Error('Codex app-server ended with malformed UTF-8', { cause: error });
+    }
     if (!this.pending) return [];
     const line = this.pending.replace(/\r$/, '');
     this.pending = '';

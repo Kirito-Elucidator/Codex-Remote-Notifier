@@ -115,6 +115,17 @@ describe('code-notify shell helper', { timeout: 30000 }, () => {
     expect(body.message).toBe('Completed');
   });
 
+  it('sends exact UTF-8 notification text with an explicit charset', async () => {
+    receivedRequests.length = 0;
+    const fixture = '中文🙂e\u0301<&>';
+    await runNotify([fixture, fixture]);
+
+    const body = JSON.parse(receivedRequests[0].body);
+    expect(receivedRequests[0].headers['content-type']).toContain('charset=utf-8');
+    expect(body.title).toBe(fixture);
+    expect(body.message).toBe(fixture);
+  });
+
   it('sends notification with display hint', async () => {
     receivedRequests.length = 0;
     await runNotify(['-d', 'app', 'Message']);

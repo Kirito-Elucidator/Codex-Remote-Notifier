@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
-import { StringDecoder } from 'string_decoder';
+import { TextDecoder } from 'util';
 
 import type * as vscode from 'vscode';
 
@@ -33,7 +33,7 @@ interface TranscriptCompletion {
 interface TranscriptFileState {
   filePath: string;
   offset: number;
-  decoder: StringDecoder;
+  decoder: TextDecoder;
   pendingLine: string;
   discardingOversizedLine: boolean;
   turns: Map<string, CodexTranscriptTurn>;
@@ -64,7 +64,7 @@ export class CodexTranscriptMonitor implements vscode.Disposable {
         state = {
           filePath,
           offset: stat.size,
-          decoder: new StringDecoder('utf-8'),
+          decoder: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }),
           pendingLine: '',
           discardingOversizedLine: false,
           turns: new Map(),
@@ -155,6 +155,7 @@ export class CodexTranscriptMonitor implements vscode.Disposable {
       this.log?.appendLine(
         `[CodexTranscriptMonitor] Failed to read ${path.basename(state.filePath)}: ${formatError(error)}`,
       );
+      this.closeState(state);
     } finally {
       state.draining = false;
     }
@@ -166,7 +167,7 @@ export class CodexTranscriptMonitor implements vscode.Disposable {
       const stat = await handle.stat();
       if (stat.size < state.offset) {
         state.offset = 0;
-        state.decoder = new StringDecoder('utf-8');
+        state.decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
         state.pendingLine = '';
         state.discardingOversizedLine = false;
       }
@@ -177,7 +178,10 @@ export class CodexTranscriptMonitor implements vscode.Disposable {
         const { bytesRead } = await handle.read(buffer, 0, length, state.offset);
         if (bytesRead === 0) break;
         state.offset += bytesRead;
-        this.consumeText(state, state.decoder.write(buffer.subarray(0, bytesRead)));
+        this.consumeText(
+          state,
+          state.decoder.decode(buffer.subarray(0, bytesRead), { stream: true }),
+        );
       }
     } finally {
       await handle.close();

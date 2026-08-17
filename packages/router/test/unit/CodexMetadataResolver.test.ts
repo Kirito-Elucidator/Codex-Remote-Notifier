@@ -1,6 +1,8 @@
+import { execFile } from 'child_process';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { promisify } from 'util';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +11,8 @@ import {
   CodexMetadataResolver,
   truncateVisible,
 } from '../../src/codex/CodexMetadataResolver';
+
+const execFileAsync = promisify(execFile);
 
 describe('CodexMetadataResolver', () => {
   let testDirectory: string;
@@ -167,6 +171,27 @@ describe('CodexMetadataResolver', () => {
     expect(await resolver.readSessionTitle('thread-sqlite')).toBe('SQLite fallback');
     expect(sqlite).toHaveBeenCalledWith([path.join(codexHome, 'state_5.sqlite')], 'thread-sqlite');
   });
+
+  it.each(['中文预览', '🙂', 'e\u0301', '涓枃棰勮'])(
+    'preserves an exact Unicode SQLite title: %s',
+    async (title) => {
+      const database = path.join(codexHome, 'state_unicode.sqlite');
+      const python = process.platform === 'win32' ? 'py' : 'python3';
+      const prefix = process.platform === 'win32' ? ['-3'] : [];
+      const script = [
+        'import sqlite3, sys',
+        'connection = sqlite3.connect(sys.argv[1])',
+        'connection.execute("CREATE TABLE threads (id TEXT, title TEXT)")',
+        'connection.execute("INSERT INTO threads VALUES (?, ?)", ("thread-unicode", sys.argv[2]))',
+        'connection.commit()',
+        'connection.close()',
+      ].join('\n');
+      await execFileAsync(python, [...prefix, '-c', script, database, title]);
+
+      const resolver = new CodexMetadataResolver(codexHome);
+      await expect(resolver.readSessionTitle('thread-unicode')).resolves.toBe(title);
+    },
+  );
 });
 
 describe('Codex visible text helpers', () => {
