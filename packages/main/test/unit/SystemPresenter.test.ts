@@ -69,6 +69,8 @@ describe('SystemPresenter', () => {
 
   it('filters only the Codex display copy and keeps canonical XML metacharacters', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
+    const log = { appendLine: vi.fn() };
+    presenter = new SystemPresenter(log as never);
 
     await presenter.present({
       title: '\ud800\ufffd\u0001',
@@ -81,6 +83,9 @@ describe('SystemPresenter', () => {
         title: 'Codex 需要你的注意',
         message: '<中文 & 🙂 e\u0301>',
       }),
+    );
+    expect(log.appendLine).toHaveBeenCalledWith(
+      '[SystemPresenter] reason=codex-display-filter title=true body=true',
     );
   });
 

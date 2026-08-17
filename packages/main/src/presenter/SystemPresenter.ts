@@ -40,6 +40,11 @@ export class SystemPresenter implements NotificationPresenter {
       payload.source === 'codex'
         ? deriveDisplayableNotificationText(title, payload.message)
         : { title, body: payload.message };
+    if ('titleFiltered' in displayable && (displayable.titleFiltered || displayable.bodyFiltered)) {
+      this.log?.appendLine(
+        `[SystemPresenter] reason=codex-display-filter title=${String(displayable.titleFiltered)} body=${String(displayable.bodyFiltered)}`,
+      );
+    }
     const config = vscode.workspace.getConfiguration('remoteNotifier');
     const soundEnabled = config.get<boolean>('notificationSound', true);
     const customPlayer = config.get<string>('notificationSoundPlayer', '');
