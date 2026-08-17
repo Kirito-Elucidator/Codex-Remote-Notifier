@@ -7,7 +7,6 @@ import {
   assertMatchingPresentationReceipt,
   AttentionPresentationPort,
   parsePresentationExchange,
-  parsePresentationReceipt,
   PresentationExchange,
   PresentationReceipt,
 } from 'remote-notifier-shared';
@@ -20,10 +19,14 @@ import {
   readBrokerDiscovery,
   removeOwnedBrokerDiscovery,
 } from './broker/BrokerProtocol';
+import {
+  BrokerJsonChannel,
+  BrokerServerMessage,
+  parseBrokerServerMessage,
+} from './broker/BrokerWire';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_DISCOVERY_POLL_MS = 25;
-const MAXIMUM_WIRE_MESSAGE_BYTES = 70 * 1024;
 
 export interface BrokerConnectionInfo {
   epochReset: boolean;
@@ -241,15 +244,12 @@ export function launchDetachedPresentationBroker(options: DetachedBrokerLaunchOp
 }
 
 class BrokerClientConnection {
-  private readonly channel: ClientJsonLineChannel;
-
   private constructor(
     private readonly socket: Socket,
+    private readonly channel: BrokerJsonChannel<BrokerServerMessage>,
     readonly compatible: boolean,
     readonly presentationEpoch: string,
-  ) {
-    this.channel = new ClientJsonLineChannel(socket);
-  }
+  ) {}
 
   get isOpen(): boolean {
     return !this.socket.destroyed;
@@ -265,18 +265,16 @@ class BrokerClientConnection {
     timeoutMs: number,
   ): Promise<BrokerClientConnection> {
     const socket = await connectSocket(discovery.pipeAddress, timeoutMs);
-    const channel = new ClientJsonLineChannel(socket);
+    const channel = new BrokerJsonChannel(socket, parseBrokerServerMessage);
     try {
       await channel.send({
         kind: 'hello',
         protocolVersion,
         credential: discovery.credential,
       });
-      const response = expectWireObject(
-        await channel.waitFor((message) => {
-          const input = asWireObject(message);
-          return input?.kind === 'hello' || input?.kind === 'error';
-        }, timeoutMs),
+      const response = await channel.waitFor(
+        (message) => message.kind === 'hello' || message.kind === 'error',
+        timeoutMs,
       );
       if (response.kind === 'error' && response.code === 'authentication-failed') {
         throw new BrokerConnectionError(
@@ -284,17 +282,12 @@ class BrokerClientConnection {
           'Broker rejected the epoch credential',
         );
       }
-      if (
-        response.kind !== 'hello' ||
-        (response.status !== 'ready' && response.status !== 'incompatible') ||
-        typeof response.presentationEpoch !== 'string' ||
-        response.presentationEpoch !== discovery.presentationEpoch
-      ) {
+      if (response.kind !== 'hello' || response.presentationEpoch !== discovery.presentationEpoch) {
         throw new BrokerConnectionError('unavailable', 'Broker returned an invalid handshake');
       }
-      channel.detach();
       return new BrokerClientConnection(
         socket,
+        channel,
         response.status === 'ready',
         response.presentationEpoch,
       );
@@ -307,26 +300,21 @@ class BrokerClientConnection {
   async exchange(exchange: PresentationExchange): Promise<PresentationReceipt> {
     const requestId = randomBytes(16).toString('hex');
     await this.channel.send({ kind: 'exchange', requestId, exchange });
-    const response = expectWireObject(
-      await this.channel.waitFor(
-        (message) => asWireObject(message)?.requestId === requestId,
-        DEFAULT_CONNECT_TIMEOUT_MS,
-      ),
+    const response = await this.channel.waitFor(
+      (message) => 'requestId' in message && message.requestId === requestId,
+      DEFAULT_CONNECT_TIMEOUT_MS,
     );
     if (response.kind !== 'exchange-receipt') throw new Error('Invalid broker exchange response');
-    const receipt = parsePresentationReceipt(response.receipt);
-    assertMatchingPresentationReceipt(exchange, receipt);
-    return receipt;
+    assertMatchingPresentationReceipt(exchange, response.receipt);
+    return response.receipt;
   }
 
   async stop(timeoutMs: number): Promise<void> {
     const requestId = randomBytes(16).toString('hex');
     await this.channel.send({ kind: 'stop', requestId });
-    const response = expectWireObject(
-      await this.channel.waitFor(
-        (message) => asWireObject(message)?.requestId === requestId,
-        timeoutMs,
-      ),
+    const response = await this.channel.waitFor(
+      (message) => 'requestId' in message && message.requestId === requestId,
+      timeoutMs,
     );
     if (
       response.kind !== 'stopped' ||
@@ -340,105 +328,6 @@ class BrokerClientConnection {
 
   close(): void {
     this.channel.close();
-  }
-}
-
-class ClientJsonLineChannel {
-  private readonly decoder = new TextDecoder('utf-8', { fatal: true });
-  private readonly waiters = new Set<{
-    match: (message: unknown) => boolean;
-    reject: (error: Error) => void;
-    resolve: (message: unknown) => void;
-    timer: NodeJS.Timeout;
-  }>();
-  private buffer = '';
-  private resolveClosed!: () => void;
-  readonly whenClosed: Promise<void>;
-
-  constructor(private readonly socket: Socket) {
-    this.whenClosed = new Promise((resolve) => {
-      this.resolveClosed = resolve;
-    });
-    socket.on('data', this.handleData);
-    socket.on('error', this.handleFailure);
-    socket.once('close', this.handleClose);
-  }
-
-  detach(): void {
-    this.socket.off('data', this.handleData);
-    this.socket.off('error', this.handleFailure);
-    this.socket.off('close', this.handleClose);
-  }
-
-  close(): void {
-    this.socket.destroy();
-  }
-
-  async send(message: unknown): Promise<void> {
-    const payload = `${JSON.stringify(message)}\n`;
-    if (Buffer.byteLength(payload, 'utf8') > MAXIMUM_WIRE_MESSAGE_BYTES) {
-      throw new Error('Broker message exceeds the wire limit');
-    }
-    await new Promise<void>((resolve, reject) => {
-      this.socket.write(payload, 'utf8', (error) => (error ? reject(error) : resolve()));
-    });
-  }
-
-  async waitFor(match: (message: unknown) => boolean, timeoutMs: number): Promise<unknown> {
-    return await new Promise((resolve, reject) => {
-      const waiter = {
-        match,
-        reject,
-        resolve,
-        timer: setTimeout(() => {
-          this.waiters.delete(waiter);
-          reject(new Error('Timed out waiting for the broker response'));
-        }, timeoutMs),
-      };
-      this.waiters.add(waiter);
-    });
-  }
-
-  private readonly handleData = (chunk: Buffer): void => {
-    try {
-      this.buffer += this.decoder.decode(chunk, { stream: true });
-      let newline = this.buffer.indexOf('\n');
-      while (newline >= 0) {
-        const line = this.buffer.slice(0, newline);
-        this.buffer = this.buffer.slice(newline + 1);
-        if (Buffer.byteLength(line, 'utf8') > MAXIMUM_WIRE_MESSAGE_BYTES) {
-          throw new Error('Broker message exceeds the wire limit');
-        }
-        if (line.length > 0) this.dispatch(JSON.parse(line));
-        newline = this.buffer.indexOf('\n');
-      }
-      if (Buffer.byteLength(this.buffer, 'utf8') > MAXIMUM_WIRE_MESSAGE_BYTES) {
-        throw new Error('Broker message exceeds the wire limit');
-      }
-    } catch (error) {
-      this.handleFailure(error instanceof Error ? error : new Error(String(error)));
-    }
-  };
-
-  private readonly handleFailure = (error: Error): void => {
-    for (const waiter of this.waiters) {
-      clearTimeout(waiter.timer);
-      waiter.reject(error);
-    }
-    this.waiters.clear();
-  };
-
-  private readonly handleClose = (): void => {
-    this.handleFailure(new Error('Broker connection closed'));
-    this.resolveClosed();
-  };
-
-  private dispatch(message: unknown): void {
-    const waiter = [...this.waiters].find(({ match }) => match(message));
-    if (waiter === undefined) return;
-    clearTimeout(waiter.timer);
-    this.waiters.delete(waiter);
-    waiter.resolve(message);
   }
 }
 
@@ -460,18 +349,6 @@ function connectSocket(pipeAddress: string, timeoutMs: number): Promise<Socket> 
       resolve(socket);
     });
   });
-}
-
-function asWireObject(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function expectWireObject(value: unknown): Record<string, unknown> {
-  const result = asWireObject(value);
-  if (result === undefined) throw new Error('Invalid broker response');
-  return result;
 }
 
 async function delay(milliseconds: number): Promise<void> {

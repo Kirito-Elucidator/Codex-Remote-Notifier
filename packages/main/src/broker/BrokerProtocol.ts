@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 export const PRESENTATION_BROKER_PROTOCOL_VERSION = 1;
 export const PRESENTATION_BROKER_IDLE_TIMEOUT_MS = 60_000;
 export const PRESENTATION_BROKER_DRAIN_TIMEOUT_MS = 5_000;
+export const PRESENTATION_BROKER_HANDSHAKE_TIMEOUT_MS = 5_000;
 
 export interface BrokerRuntimePaths {
   discoveryFile: string;

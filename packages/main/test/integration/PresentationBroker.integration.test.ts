@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Socket } from 'node:net';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -149,6 +150,67 @@ describe('Windows presentation broker', () => {
     await delay(80);
 
     expect(occupied.isRunning).toBe(true);
+  });
+
+  it('does not let an unauthenticated socket control the empty-broker lifetime', async () => {
+    const paths = await runtimePaths();
+    const server = trackServer(
+      new PresentationBrokerServer({
+        paths,
+        handshakeTimeoutMs: 1_000,
+        idleTimeoutMs: 30,
+      }),
+    );
+    await server.start();
+    const unauthenticated = new Socket();
+    await new Promise<void>((resolve, reject) => {
+      unauthenticated.once('error', reject);
+      unauthenticated.connect(paths.pipeAddress, resolve);
+    });
+    const socketClosed = new Promise<void>((resolve) => {
+      unauthenticated.once('close', () => resolve());
+    });
+
+    await expect(server.closed).resolves.toBe('idle');
+    await socketClosed;
+    expect(unauthenticated.destroyed).toBe(true);
+  });
+
+  it('rejects exchanges that arrive after controlled-stop draining begins', async () => {
+    const paths = await runtimePaths();
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    let reportCleanupStarted!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      reportCleanupStarted = resolve;
+    });
+    const cleanup = vi.fn(async () => {
+      reportCleanupStarted();
+      await cleanupGate;
+    });
+    const server = trackServer(new PresentationBrokerServer({ paths, cleanupEpochItems: cleanup }));
+    const client = trackClient(
+      new PresentationBrokerClient({
+        paths,
+        launch: async () => {
+          await server.start();
+        },
+      }),
+    );
+    await client.start();
+
+    const stop = server.stop('controlled');
+    await cleanupStarted;
+    await expect(client.exchange(createExchange('after-stop'))).resolves.toEqual({
+      kind: 'rejected',
+      transactionId: 'after-stop',
+      reason: 'unavailable',
+    });
+    releaseCleanup();
+    await stop;
+    expect(cleanup).toHaveBeenCalledWith([]);
   });
 
   it('drains and cleans up an incompatible epoch before reporting an empty reset', async () => {

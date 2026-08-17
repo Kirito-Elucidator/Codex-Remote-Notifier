@@ -1,29 +1,27 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, Server, Socket } from 'node:net';
 
-import {
-  parsePresentationExchange,
-  PresentationRecord,
-} from 'remote-notifier-shared/attentionExchange';
+import { PresentationRecord } from 'remote-notifier-shared/attentionExchange';
 
 import {
   BrokerRuntimePaths,
   createEpochCredential,
   createPresentationEpoch,
   PRESENTATION_BROKER_DRAIN_TIMEOUT_MS,
+  PRESENTATION_BROKER_HANDSHAKE_TIMEOUT_MS,
   PRESENTATION_BROKER_IDLE_TIMEOUT_MS,
   PRESENTATION_BROKER_PROTOCOL_VERSION,
   removeOwnedBrokerDiscovery,
   writeBrokerDiscovery,
 } from './BrokerProtocol';
+import { BrokerClientMessage, BrokerJsonChannel, parseBrokerClientMessage } from './BrokerWire';
 import { PresentationLedger } from './PresentationLedger';
-
-const MAXIMUM_WIRE_MESSAGE_BYTES = 70 * 1024;
 
 export interface PresentationBrokerServerOptions {
   paths: BrokerRuntimePaths;
   cleanupEpochItems?: (records: PresentationRecord[]) => Promise<void>;
   drainTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
   idleTimeoutMs?: number;
   protocolVersion?: number;
 }
@@ -34,11 +32,13 @@ export type BrokerStopReason = 'controlled' | 'idle' | 'incompatible-replacement
 export class PresentationBrokerServer {
   private readonly cleanupEpochItems: (records: PresentationRecord[]) => Promise<void>;
   private readonly drainTimeoutMs: number;
+  private readonly handshakeTimeoutMs: number;
   private readonly idleTimeoutMs: number;
   private readonly ledger: PresentationLedger;
   private readonly protocolVersion: number;
   private readonly server: Server;
   private readonly sockets = new Set<Socket>();
+  private readonly authenticatedSockets = new Set<Socket>();
   private activeExchanges = 0;
   private credential = createEpochCredential();
   private idleTimer?: NodeJS.Timeout;
@@ -52,6 +52,8 @@ export class PresentationBrokerServer {
   constructor(private readonly options: PresentationBrokerServerOptions) {
     this.cleanupEpochItems = options.cleanupEpochItems ?? (async () => undefined);
     this.drainTimeoutMs = options.drainTimeoutMs ?? PRESENTATION_BROKER_DRAIN_TIMEOUT_MS;
+    this.handshakeTimeoutMs =
+      options.handshakeTimeoutMs ?? PRESENTATION_BROKER_HANDSHAKE_TIMEOUT_MS;
     this.idleTimeoutMs = options.idleTimeoutMs ?? PRESENTATION_BROKER_IDLE_TIMEOUT_MS;
     this.protocolVersion = options.protocolVersion ?? PRESENTATION_BROKER_PROTOCOL_VERSION;
     this.ledger = new PresentationLedger(this.presentationEpoch);
@@ -99,23 +101,27 @@ export class PresentationBrokerServer {
       return;
     }
     this.sockets.add(socket);
-    this.cancelIdleExit();
     socket.setNoDelay(true);
-    const channel = new JsonLineChannel(socket);
+    const channel = new BrokerJsonChannel(socket, parseBrokerClientMessage);
     let authenticated = false;
     let compatible = false;
+    const handshakeTimer = setTimeout(() => socket.destroy(), this.handshakeTimeoutMs);
+    handshakeTimer.unref();
 
     channel.onMessage(async (message) => {
       try {
         if (!authenticated) {
-          const hello = parseHello(message);
-          if (!credentialsMatch(hello.credential, this.credential)) {
+          if (message.kind !== 'hello') throw new Error('Expected broker hello');
+          if (!credentialsMatch(message.credential, this.credential)) {
             await channel.send({ kind: 'error', code: 'authentication-failed' });
             socket.end();
             return;
           }
           authenticated = true;
-          compatible = hello.protocolVersion === this.protocolVersion;
+          clearTimeout(handshakeTimer);
+          this.authenticatedSockets.add(socket);
+          this.cancelIdleExit();
+          compatible = message.protocolVersion === this.protocolVersion;
           await channel.send({
             kind: 'hello',
             status: compatible ? 'ready' : 'incompatible',
@@ -124,24 +130,36 @@ export class PresentationBrokerServer {
           });
           return;
         }
-        const request = expectWireObject(message);
-        if (request.kind === 'stop') {
-          const requestId = expectRequestId(request.requestId);
+        if (message.kind === 'stop') {
           const reason = compatible ? 'controlled' : 'incompatible-replacement';
-          void this.stopWithResponse(channel, requestId, reason);
+          void this.stopWithResponse(channel, message.requestId, reason);
           return;
         }
         if (!compatible) {
           await channel.send({ kind: 'error', code: 'incompatible-protocol' });
           return;
         }
-        if (request.kind !== 'exchange') throw new Error('Unsupported broker request');
-        const requestId = expectRequestId(request.requestId);
-        const exchange = parsePresentationExchange(request.exchange);
+        if (message.kind !== 'exchange') throw new Error('Unsupported broker request');
+        if (this.stopPromise !== undefined) {
+          await channel.send({
+            kind: 'exchange-receipt',
+            requestId: message.requestId,
+            receipt: {
+              kind: 'rejected',
+              transactionId: message.exchange.transactionId,
+              reason: 'unavailable',
+            },
+          });
+          return;
+        }
         this.activeExchanges += 1;
         try {
-          const receipt = await this.ledger.exchange(exchange);
-          await channel.send({ kind: 'exchange-receipt', requestId, receipt });
+          const receipt = await this.ledger.exchange(message.exchange);
+          await channel.send({
+            kind: 'exchange-receipt',
+            requestId: message.requestId,
+            receipt,
+          });
         } finally {
           this.activeExchanges -= 1;
         }
@@ -152,14 +170,16 @@ export class PresentationBrokerServer {
     });
     channel.onFailure(() => socket.destroy());
     socket.once('close', () => {
+      clearTimeout(handshakeTimer);
       channel.dispose();
       this.sockets.delete(socket);
+      this.authenticatedSockets.delete(socket);
       this.scheduleIdleExit();
     });
   }
 
   private async stopWithResponse(
-    channel: JsonLineChannel,
+    channel: BrokerJsonChannel<BrokerClientMessage>,
     requestId: string,
     reason: BrokerStopReason,
   ): Promise<void> {
@@ -185,7 +205,7 @@ export class PresentationBrokerServer {
     await waitFor(() => this.activeExchanges === 0, deadline);
     const records = this.ledger.currentRecords();
     await runUntil(() => this.cleanupEpochItems(records), deadline);
-    if (beforeDisconnect !== undefined) await runUntil(beforeDisconnect, deadline);
+    if (beforeDisconnect !== undefined) await beforeDisconnect().catch(() => undefined);
     await removeOwnedBrokerDiscovery(this.options.paths.discoveryFile, this.presentationEpoch);
     for (const socket of this.sockets) socket.end();
     await closeServer(this.server, this.sockets);
@@ -195,7 +215,7 @@ export class PresentationBrokerServer {
   }
 
   private scheduleIdleExit(): void {
-    if (!this.isRunning || this.sockets.size > 0 || !this.ledger.isEmpty()) return;
+    if (!this.isRunning || this.authenticatedSockets.size > 0 || !this.ledger.isEmpty()) return;
     this.cancelIdleExit();
     this.idleTimer = setTimeout(() => void this.stop('idle'), this.idleTimeoutMs);
     this.idleTimer.unref();
@@ -205,96 +225,6 @@ export class PresentationBrokerServer {
     if (this.idleTimer !== undefined) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
   }
-}
-
-class JsonLineChannel {
-  private readonly decoder = new TextDecoder('utf-8', { fatal: true });
-  private readonly failureListeners = new Set<(error: Error) => void>();
-  private readonly messageListeners = new Set<(message: unknown) => void>();
-  private buffer = '';
-
-  constructor(private readonly socket: Socket) {
-    socket.on('data', this.handleData);
-    socket.on('error', this.handleFailure);
-  }
-
-  dispose(): void {
-    this.socket.off('data', this.handleData);
-    this.socket.off('error', this.handleFailure);
-    this.failureListeners.clear();
-    this.messageListeners.clear();
-  }
-
-  onFailure(listener: (error: Error) => void): void {
-    this.failureListeners.add(listener);
-  }
-
-  onMessage(listener: (message: unknown) => void): void {
-    this.messageListeners.add(listener);
-  }
-
-  async send(message: unknown): Promise<void> {
-    const payload = `${JSON.stringify(message)}\n`;
-    if (Buffer.byteLength(payload, 'utf8') > MAXIMUM_WIRE_MESSAGE_BYTES) {
-      throw new Error('Broker message exceeds the wire limit');
-    }
-    await new Promise<void>((resolve, reject) => {
-      this.socket.write(payload, 'utf8', (error) => (error ? reject(error) : resolve()));
-    });
-  }
-
-  private readonly handleData = (chunk: Buffer): void => {
-    try {
-      this.buffer += this.decoder.decode(chunk, { stream: true });
-      if (Buffer.byteLength(this.buffer, 'utf8') > MAXIMUM_WIRE_MESSAGE_BYTES) {
-        throw new Error('Broker message exceeds the wire limit');
-      }
-      let newline = this.buffer.indexOf('\n');
-      while (newline >= 0) {
-        const line = this.buffer.slice(0, newline);
-        this.buffer = this.buffer.slice(newline + 1);
-        if (line.length > 0) {
-          const message: unknown = JSON.parse(line);
-          for (const listener of this.messageListeners) listener(message);
-        }
-        newline = this.buffer.indexOf('\n');
-      }
-    } catch (error) {
-      this.handleFailure(error instanceof Error ? error : new Error(String(error)));
-    }
-  };
-
-  private readonly handleFailure = (error: Error): void => {
-    for (const listener of this.failureListeners) listener(error);
-  };
-}
-
-function parseHello(value: unknown): { credential: string; protocolVersion: number } {
-  const input = expectWireObject(value);
-  if (
-    input.kind !== 'hello' ||
-    Object.keys(input).some((key) => !['kind', 'protocolVersion', 'credential'].includes(key)) ||
-    !Number.isSafeInteger(input.protocolVersion) ||
-    (input.protocolVersion as number) < 0 ||
-    typeof input.credential !== 'string'
-  ) {
-    throw new Error('Invalid broker hello');
-  }
-  return { credential: input.credential, protocolVersion: input.protocolVersion as number };
-}
-
-function expectWireObject(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Broker request must be an object');
-  }
-  return value as Record<string, unknown>;
-}
-
-function expectRequestId(value: unknown): string {
-  if (typeof value !== 'string' || !/^[0-9a-f]{32}$/.test(value)) {
-    throw new Error('Invalid broker request id');
-  }
-  return value;
 }
 
 function credentialsMatch(candidate: string, expected: string): boolean {
