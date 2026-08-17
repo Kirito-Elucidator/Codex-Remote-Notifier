@@ -67,6 +67,36 @@ describe('SystemPresenter', () => {
     expect(notifier.notify).toHaveBeenCalled();
   });
 
+  it('filters only the Codex display copy and keeps canonical XML metacharacters', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+
+    await presenter.present({
+      title: '\ud800\ufffd\u0001',
+      message: '<中文 & 🙂 e\u0301>\udfff\ufffd\u0000',
+      source: 'codex',
+    });
+
+    expect(reminderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Codex 需要你的注意',
+        message: '<中文 & 🙂 e\u0301>',
+      }),
+    );
+  });
+
+  it('does not apply Codex fallback wording to generic notifications', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const title = '\ud800\ufffd\u0001';
+    const message = '\udfff\ufffd\u0000';
+
+    await presenter.present({ title, message });
+
+    expect(notifier.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title, message }),
+      expect.any(Function),
+    );
+  });
+
   it('can disable persistent Codex notifications', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
     setMockConfig('remoteNotifier.codexPersistentNotifications', false);

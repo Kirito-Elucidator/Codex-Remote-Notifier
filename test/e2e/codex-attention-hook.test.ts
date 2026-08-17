@@ -6,6 +6,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { deriveDisplayableNotificationText } from 'remote-notifier-shared';
 
 interface HookResult {
   exitCode: number;
@@ -145,6 +146,38 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
     expect(received).toHaveLength(1);
     expect(received[0].contentType).toBe('application/json; charset=utf-8');
     expect(received[0].payload.last_assistant_message).toBe(fixture);
+  });
+
+  it('contains damaged Remote SSH display fields without dropping the event', async () => {
+    const damaged = '\ud800\ufffd\u0001\udfff';
+
+    const result = await runHook({
+      hook_event_name: 'Stop',
+      session_id: 'session-damaged',
+      turn_id: 'turn-damaged',
+      last_assistant_message: damaged,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0].payload.last_assistant_message).toBe(damaged);
+    expect(deriveDisplayableNotificationText('valid title', damaged).body).toBe(
+      '请返回 Codex 查看详情',
+    );
+  });
+
+  it('rejects a malformed UTF-8 Hook envelope as a whole', async () => {
+    const malformed = Buffer.concat([
+      Buffer.from('{"hook_event_name":"Stop","last_assistant_message":"', 'utf-8'),
+      Buffer.from([0xc3, 0x28]),
+      Buffer.from('"}', 'utf-8'),
+    ]);
+
+    const result = await runRawHook(malformed);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe('{"continue":true}');
+    expect(received).toHaveLength(0);
   });
 
   it('does not read transcripts, the session index, or SQLite in the helper', async () => {
@@ -300,7 +333,10 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
     return runRawHook(JSON.stringify(payload), env);
   }
 
-  function runRawHook(stdin: string, env: Record<string, string> = {}): Promise<HookResult> {
+  function runRawHook(
+    stdin: string | Buffer,
+    env: Record<string, string> = {},
+  ): Promise<HookResult> {
     return runProcess(python, [hookPath], stdin, {
       ...process.env,
       HOME: testHome,
@@ -316,7 +352,7 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
 function runProcess(
   command: string,
   args: string[],
-  stdin: string,
+  stdin: string | Buffer,
   env: NodeJS.ProcessEnv,
 ): Promise<HookResult> {
   return new Promise((resolve, reject) => {

@@ -21,6 +21,7 @@ import {
   cleanVisibleText,
   CodexMetadataResolver,
   CodexTranscriptInfo,
+  truncateCanonicalText,
   truncateVisible,
 } from './CodexMetadataResolver';
 import { CodexTranscriptMonitor, CodexTranscriptTerminalFailure } from './CodexTranscriptMonitor';
@@ -217,8 +218,8 @@ export class CodexEventHandler implements vscode.Disposable {
     this.setThreadState(threadId, {
       activeTurnId: undefined,
       safetyBufferingVisible: false,
-      cwd: cleanVisibleText(event.cwd),
-      sessionTitle: cleanVisibleText(event.session_title),
+      cwd: event.cwd,
+      sessionTitle: event.session_title,
       instanceId: event.instance_id,
     });
   }
@@ -230,7 +231,7 @@ export class CodexEventHandler implements vscode.Disposable {
     state.activeTurnId = event.turn_id;
     state.safetyBufferingVisible = false;
     state.instanceId = event.instance_id;
-    if (event.cwd) state.cwd = cleanVisibleText(event.cwd);
+    if (event.cwd) state.cwd = event.cwd;
   }
 
   private async onSafetyBuffering(event: CodexProtocolEvent): Promise<void> {
@@ -514,9 +515,9 @@ export class CodexEventHandler implements vscode.Disposable {
     const state = sessionId ? this.threads.get(sessionId) : undefined;
     const parts = await this.metadata.resolvePreviewParts(sessionId, state?.cwd ?? cwd, answer);
     const limit = normalizePreviewLength(this.config.codexPreviewLength);
-    const title = truncateVisible(parts.sessionTitle ?? state?.sessionTitle, limit);
-    const response = truncateVisible(parts.answer, answerLimit ?? limit);
-    const fallback = truncateVisible(parts.cwdName, limit) ?? 'Codex';
+    const title = truncateCanonicalText(parts.sessionTitle ?? state?.sessionTitle, limit);
+    const response = truncateCanonicalText(parts.answer, answerLimit ?? limit);
+    const fallback = truncateCanonicalText(parts.cwdName, limit) ?? 'Codex';
     const preview = title ? [title, response].filter(Boolean) : [response ?? fallback];
     return `${os.hostname()} | ${preview.join(' | ')}`;
   }
@@ -881,7 +882,7 @@ function requestNotificationDetails(method: CodexProtocolRequestMethod): { title
 }
 
 function stripPlanTags(value: string | undefined): string | undefined {
-  return value?.replace(/<\/?proposed_plan\s*>/gi, '').trim();
+  return value?.replace(/<\/?proposed_plan\s*>/gi, '');
 }
 
 function normalizePreviewLength(value: number): number {

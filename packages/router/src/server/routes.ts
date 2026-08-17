@@ -201,6 +201,9 @@ function isUtf8JsonContentType(value: string | undefined): boolean {
   if (!value) return false;
   const [mediaType, ...parameters] = value.split(';').map((part) => part.trim().toLowerCase());
   if (mediaType !== 'application/json') return false;
-  const charsets = parameters.filter((parameter) => parameter.startsWith('charset='));
-  return charsets.every((charset) => charset === 'charset=utf-8' || charset === 'charset=utf8');
+  const charsets = parameters
+    .map((parameter) => parameter.split('=', 2).map((part) => part.trim()))
+    .filter(([name]) => name === 'charset')
+    .map(([, charset = '']) => charset.replace(/^"(.*)"$/, '$1'));
+  return charsets.every((charset) => charset === 'utf-8' || charset === 'utf8');
 }

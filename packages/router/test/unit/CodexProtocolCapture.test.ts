@@ -322,6 +322,30 @@ describe('CodexProtocolCapture', () => {
     expect(JSON.stringify(event)).not.toContain('private first user prompt');
   });
 
+  it('preserves canonical title and preview scalars without whitespace normalization', () => {
+    const capture = new CodexProtocolCapture('instance-1', ancestry);
+    const sessionTitle = '  中文\t🙂e\u0301\n';
+    const [thread] = capture.observeServerMessage({
+      method: 'thread/started',
+      params: { thread: { id: 'thread-1', name: sessionTitle } },
+    });
+    const preview = '\n回答\t🙂e\u0301  ';
+    const [completion] = capture.observeServerMessage({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: {
+          id: 'turn-1',
+          status: 'completed',
+          items: [{ type: 'agentMessage', text: preview }],
+        },
+      },
+    });
+
+    expect(thread.session_title).toBe(sessionTitle);
+    expect(completion.preview).toBe(preview);
+  });
+
   it('ignores malformed, unmonitored, and incomplete messages', () => {
     const capture = new CodexProtocolCapture('instance-1', ancestry);
     expect(capture.observeServerText('{invalid')).toEqual([]);

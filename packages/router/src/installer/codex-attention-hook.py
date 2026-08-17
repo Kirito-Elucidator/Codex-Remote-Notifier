@@ -229,7 +229,9 @@ def _minimal_event(event: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _send(body: dict[str, Any], deadline: float) -> None:
-    data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    # Escaping keeps isolated damaged UTF-16 units field-local while the UTF-8
+    # envelope stays valid. JSON parsing restores every accepted scalar exactly.
+    data = json.dumps(body, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     for url, token in _endpoints():
         remaining = deadline - time.monotonic()
         if remaining <= 0:

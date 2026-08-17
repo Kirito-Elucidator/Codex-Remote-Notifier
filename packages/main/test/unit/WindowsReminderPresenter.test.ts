@@ -86,22 +86,6 @@ describe('WindowsReminderPresenter', () => {
     expect(script).toContain('SecurityElement]::Escape');
   });
 
-  it('derives displayable text without changing valid Unicode or XML metacharacters', async () => {
-    const presenter = new WindowsReminderPresenter();
-    await presenter.present({
-      title: '\ud800\ufffd\u0001',
-      message: '<中文 & 🙂 e\u0301>\udfff\ufffd\u0000',
-      iconPath: 'C:\\icon.png',
-      silent: true,
-      launchUri: 'vscode://remote-notifier/session',
-      urgentWhenFullscreen: false,
-    });
-
-    const options = vi.mocked(cp.execFile).mock.calls[0][2] as { env: NodeJS.ProcessEnv };
-    expect(options.env.RN_REMINDER_TITLE).toBe('Codex 需要你的注意');
-    expect(options.env.RN_REMINDER_MESSAGE).toBe('<中文 & 🙂 e\u0301>');
-  });
-
   it('records PowerShell diagnostics and propagates launch failures', async () => {
     const log = { appendLine: vi.fn() };
     vi.mocked(cp.execFile).mockImplementationOnce((...args: any[]) => {

@@ -105,9 +105,9 @@ export class CodexMetadataResolver {
     const sessionTitle = sessionId ? await this.readSessionTitle(sessionId) : undefined;
     const cwdName = cwd ? path.basename(path.resolve(cwd)) || cwd : undefined;
     return {
-      sessionTitle: cleanVisibleText(sessionTitle),
-      answer: cleanVisibleText(answer),
-      cwdName: cleanVisibleText(cwdName),
+      sessionTitle,
+      answer,
+      cwdName,
     };
   }
 
@@ -203,6 +203,22 @@ export function truncateVisible(value: string | undefined, limit: number): strin
         .trimEnd();
 }
 
+export function truncateCanonicalText(
+  value: string | undefined,
+  limit: number,
+): string | undefined {
+  if (!value) return undefined;
+  const boundedLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  const segments = [...segmenter.segment(value)];
+  return segments.length <= boundedLimit
+    ? value
+    : segments
+        .slice(0, boundedLimit)
+        .map((segment) => segment.segment)
+        .join('');
+}
+
 export function normalizeProtocolError(value: unknown): CodexProtocolError | undefined {
   if (!isRecord(value) || typeof value.message !== 'string' || !value.message.trim()) {
     return undefined;
@@ -278,10 +294,9 @@ async function querySqliteTitle(
         JSON.stringify(databasePaths),
         sessionId,
       ]);
-      const title = cleanVisibleText(
-        new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(output),
-      );
-      if (title) return title;
+      const decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(output);
+      const title = decoded.endsWith('\n') ? decoded.slice(0, -1) : decoded;
+      if (title.trim()) return title;
       return undefined;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;

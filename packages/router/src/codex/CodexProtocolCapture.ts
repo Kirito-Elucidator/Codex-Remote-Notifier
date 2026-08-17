@@ -5,7 +5,7 @@ import type {
 } from 'remote-notifier-shared';
 
 import { CODEX_PROTOCOL_REQUEST_METHODS } from './CodexEventValidation';
-import { cleanVisibleText, normalizeProtocolError, truncateVisible } from './CodexMetadataResolver';
+import { normalizeProtocolError, truncateCanonicalText } from './CodexMetadataResolver';
 
 const MAX_PROTOCOL_LINE_LENGTH = 128 * 1024 * 1024;
 const MAX_CAPTURE_JSON_LENGTH = 16 * 1024 * 1024;
@@ -279,7 +279,7 @@ export class CodexProtocolCapture {
 
 function boundedText(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== 'string') return undefined;
-  return truncateVisible(cleanVisibleText(value), maxLength);
+  return truncateCanonicalText(value, maxLength);
 }
 
 function boundError(error: CodexProtocolError): CodexProtocolError {

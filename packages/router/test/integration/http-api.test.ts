@@ -155,6 +155,21 @@ describe('HTTP API Integration', () => {
       expect(JSON.parse(response.body).details).toContain('Content-Type');
     });
 
+    it('accepts a quoted UTF-8 JSON charset', async () => {
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/notify',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json; charset="UTF-8"',
+        },
+        '{"message":"hello"}',
+      );
+
+      expect(response.status).toBe(200);
+    });
+
     it('returns 413 for payload exceeding maxBodySize', async () => {
       const largeBody = JSON.stringify({ message: 'x'.repeat(2000) });
       const res = await sendRaw(

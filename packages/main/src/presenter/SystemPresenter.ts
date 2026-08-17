@@ -4,7 +4,12 @@ import * as vscode from 'vscode';
 
 import * as notifier from 'node-notifier';
 
-import { fileExists, NotificationPayload, NotificationPresenter } from 'remote-notifier-shared';
+import {
+  deriveDisplayableNotificationText,
+  fileExists,
+  NotificationPayload,
+  NotificationPresenter,
+} from 'remote-notifier-shared';
 
 import { SoundPlayer } from './SoundPlayer';
 import { WindowsReminderPresenter } from './WindowsReminderPresenter';
@@ -31,6 +36,10 @@ export class SystemPresenter implements NotificationPresenter {
 
   async present(payload: NotificationPayload): Promise<string | undefined> {
     const title = payload.title ?? 'Remote Notifier';
+    const displayable =
+      payload.source === 'codex'
+        ? deriveDisplayableNotificationText(title, payload.message)
+        : { title, body: payload.message };
     const config = vscode.workspace.getConfiguration('remoteNotifier');
     const soundEnabled = config.get<boolean>('notificationSound', true);
     const customPlayer = config.get<string>('notificationSoundPlayer', '');
@@ -43,7 +52,7 @@ export class SystemPresenter implements NotificationPresenter {
     }
 
     this.log?.appendLine(
-      `[SystemPresenter] Sending OS notification: title="${title}" message="${payload.message}" icon="${iconPath}" nativeSound=${useNativeSound}`,
+      `[SystemPresenter] Sending OS notification: title="${displayable.title}" message="${displayable.body}" icon="${iconPath}" nativeSound=${useNativeSound}`,
     );
 
     const usePersistentCodexNotification =
@@ -53,8 +62,8 @@ export class SystemPresenter implements NotificationPresenter {
     if (usePersistentCodexNotification) {
       try {
         await this.windowsReminder.present({
-          title,
-          message: payload.message,
+          title: displayable.title,
+          message: displayable.body,
           iconPath,
           silent: !soundEnabled || Boolean(soundPath),
           launchUri: this.launchUriFactory(payload),
@@ -72,8 +81,8 @@ export class SystemPresenter implements NotificationPresenter {
     try {
       notifier.notify(
         {
-          title,
-          message: payload.message,
+          title: displayable.title,
+          message: displayable.body,
           icon: iconPath,
           sound: useNativeSound,
           wait: false,

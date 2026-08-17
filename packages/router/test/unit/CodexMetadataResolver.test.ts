@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   cleanVisibleText,
   CodexMetadataResolver,
+  truncateCanonicalText,
   truncateVisible,
 } from '../../src/codex/CodexMetadataResolver';
 
@@ -192,6 +193,17 @@ describe('CodexMetadataResolver', () => {
       await expect(resolver.readSessionTitle('thread-unicode')).resolves.toBe(title);
     },
   );
+
+  it('keeps optional canonical preview parts unchanged until presentation', async () => {
+    const answer = '  中文\t🙂e\u0301\n';
+    const resolver = new CodexMetadataResolver(codexHome);
+
+    await expect(resolver.resolvePreviewParts(undefined, undefined, answer)).resolves.toEqual({
+      sessionTitle: undefined,
+      answer,
+      cwdName: undefined,
+    });
+  });
 });
 
 describe('Codex visible text helpers', () => {
@@ -201,5 +213,9 @@ describe('Codex visible text helpers', () => {
 
   it('truncates by grapheme rather than splitting combining characters or emoji', () => {
     expect(truncateVisible('A\u0301B🙂C', 3)).toBe('A\u0301B🙂');
+  });
+
+  it('bounds canonical text without trimming or collapsing valid scalars', () => {
+    expect(truncateCanonicalText(' \tA\u0301\n🙂 ', 5)).toBe(' \tA\u0301\n🙂');
   });
 });
