@@ -65,6 +65,32 @@ describe('attention exchange contracts', () => {
     ).toBe('reconcile');
   });
 
+  it('represents connection qualification without source protocol details', () => {
+    const exchange = parseObservationExchange({
+      kind: 'append',
+      deliveryGeneration: 'generation-a',
+      scope: {
+        invocationId: 'invocation-a',
+        connectionId: 'connection-a',
+        authorityEpoch: 'epoch-a',
+      },
+      fromSequence: 1,
+      observations: [
+        {
+          kind: 'connection-qualification',
+          sourceSequence: 1,
+          initialized: true,
+          primary: true,
+          capabilities: 'audited',
+          foregroundOwnership: 'confirmed',
+        },
+      ],
+    });
+
+    expect(exchange.kind).toBe('append');
+    expect(JSON.stringify(exchange)).not.toMatch(/protocol|hook|method/i);
+  });
+
   it('accepts atomic presentation mutations, reconciliation, and interactions', () => {
     const apply = parsePresentationExchange({
       kind: 'apply',
@@ -166,5 +192,30 @@ describe('attention exchange contracts', () => {
     expect(() =>
       parsePresentationReceipt({ kind: 'applied', transactionId: '', ok: true }),
     ).toThrow(AttentionExchangeValidationError);
+  });
+
+  it('rejects a reconcile tail that does not exactly cover the retained range', () => {
+    const scope = {
+      invocationId: 'invocation-a',
+      connectionId: 'connection-a',
+      authorityEpoch: 'epoch-a',
+    };
+    const tail = [1, 2].map((sourceSequence) => ({
+      kind: 'turn-start',
+      sourceSequence,
+      turnKey: `turn-${sourceSequence}`,
+      returnTarget: `opaque:target-${sourceSequence}`,
+    }));
+
+    expect(() =>
+      parseObservationExchange({
+        kind: 'reconcile',
+        deliveryGeneration: 'generation-a',
+        scope,
+        retainedRange: { fromSequence: 1, throughSequence: 1 },
+        checkpoint: { throughSequence: 0, monitoring: 'exact', observations: [] },
+        tail,
+      }),
+    ).toThrow(/retainedRange\.throughSequence/i);
   });
 });

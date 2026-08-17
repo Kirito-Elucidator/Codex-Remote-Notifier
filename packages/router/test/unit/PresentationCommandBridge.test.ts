@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import { commands } from 'vscode';
 
-import { COMMAND_EXCHANGE_PRESENTATION, PresentationExchange } from 'remote-notifier-shared';
+import {
+  COMMAND_EXCHANGE_PRESENTATION,
+  COMMAND_SHOW_NOTIFICATION,
+  NotificationPresenter,
+  PresentationExchange,
+} from 'remote-notifier-shared';
 
 import { createPresentationExchangeCommandHandler } from '../../../main/src/PresentationExchangeCommand';
+import { CommandPresenter } from '../../src/presenter/CommandPresenter';
 import { PresentationCommandBridge } from '../../src/presenter/PresentationCommandBridge';
 
 describe('PresentationCommandBridge', () => {
@@ -44,6 +51,31 @@ describe('PresentationCommandBridge', () => {
       transactionId: exchange.transactionId,
     });
     expect(endpoint.exchange).toHaveBeenCalledWith(exchange);
+  });
+
+  it('coexists with the unchanged generic notification command', async () => {
+    const endpoint = {
+      exchange: vi.fn().mockResolvedValue({
+        kind: 'applied',
+        transactionId: exchange.transactionId,
+      }),
+    };
+    const handler = createPresentationExchangeCommandHandler(endpoint);
+    vi.mocked(commands.executeCommand).mockImplementation(async (command, input) => {
+      if (command === COMMAND_EXCHANGE_PRESENTATION) return handler(input);
+      if (command === COMMAND_SHOW_NOTIFICATION) return 'legacy-result';
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const fallback: NotificationPresenter = { present: vi.fn() };
+
+    await expect(new PresentationCommandBridge().exchange(exchange)).resolves.toMatchObject({
+      kind: 'applied',
+    });
+    await expect(
+      new CommandPresenter(fallback).present({ message: 'generic notification' }),
+    ).resolves.toBe('legacy-result');
+    expect(endpoint.exchange).toHaveBeenCalledOnce();
+    expect(fallback.present).not.toHaveBeenCalled();
   });
 
   it('does not forward an invalid exchange to Main', async () => {

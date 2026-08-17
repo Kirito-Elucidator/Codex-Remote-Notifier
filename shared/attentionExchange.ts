@@ -25,6 +25,14 @@ export interface SequenceRange {
 
 export type SanitizedAttentionObservation =
   | {
+      kind: 'connection-qualification';
+      sourceSequence: number;
+      initialized: boolean;
+      primary: boolean;
+      capabilities: 'audited' | 'unsupported' | 'unknown';
+      foregroundOwnership: 'confirmed' | 'unconfirmed';
+    }
+  | {
       kind: 'authority-change';
       sourceSequence: number;
       monitoring: MonitoringMode;
@@ -112,12 +120,14 @@ export type ObservationExchange =
       tail: SanitizedAttentionObservation[];
     };
 
-export interface ObservationExchangeReceipt {
+export interface ExchangeReceipt {
   receivedThrough: number;
   appliedThrough?: number;
   replayFrom?: number;
   monitoring: MonitoringMode;
 }
+
+export type ObservationExchangeReceipt = ExchangeReceipt;
 
 export interface PresentationRecord {
   key: string;
@@ -158,7 +168,7 @@ export interface AttentionPresentationPort {
 }
 
 export interface CodexAttentionNormalization {
-  exchange(input: ObservationExchange): Promise<ObservationExchangeReceipt>;
+  exchange(input: ObservationExchange): Promise<ExchangeReceipt>;
 }
 
 export class AttentionExchangeValidationError extends Error {
@@ -218,7 +228,14 @@ export function parseObservationExchange(value: unknown): ObservationExchange {
     assertContiguous(tail, checkpoint.throughSequence + 1, 'observationExchange.tail');
   }
   if (checkpoint.throughSequence > retainedRange.throughSequence) {
-    fail('observationExchange.checkpoint.throughSequence', 'must be inside the retained range');
+    fail('observationExchange.checkpoint.throughSequence', 'cannot exceed the retained range');
+  }
+  if (retainedRange.fromSequence > checkpoint.throughSequence + 1) {
+    fail('observationExchange.retainedRange', 'must not leave a sequence gap after the checkpoint');
+  }
+  const reconciledThrough = tail.at(-1)?.sourceSequence ?? checkpoint.throughSequence;
+  if (reconciledThrough !== retainedRange.throughSequence) {
+    fail('observationExchange.tail', 'must end at retainedRange.throughSequence');
   }
   return { kind, deliveryGeneration, scope, retainedRange, checkpoint, tail };
 }
@@ -357,6 +374,14 @@ function parseObservationCheckpoint(value: unknown, path: string): ObservationCh
   assertExactFields(input, ['throughSequence', 'monitoring', 'observations'], path);
   const throughSequence = expectCursor(input.throughSequence, `${path}.throughSequence`);
   const observations = parseObservations(input.observations, `${path}.observations`);
+  for (const [index, observation] of observations.entries()) {
+    if (observation.sourceSequence > throughSequence) {
+      fail(`${path}.observations[${index}].sourceSequence`, 'cannot exceed throughSequence');
+    }
+    if (index > 0 && observation.sourceSequence <= observations[index - 1].sourceSequence) {
+      fail(`${path}.observations[${index}].sourceSequence`, 'must be strictly increasing');
+    }
+  }
   return {
     throughSequence,
     monitoring: expectMonitoring(input.monitoring, `${path}.monitoring`),
@@ -373,52 +398,39 @@ function parseObservations(value: unknown, path: string): SanitizedAttentionObse
 function parseObservation(value: unknown, path: string): SanitizedAttentionObservation {
   const input = expectObject(value, path);
   const kind = expectString(input.kind, `${path}.kind`, 64);
-  const fields: Record<string, readonly string[]> = {
-    'authority-change': ['kind', 'sourceSequence', 'monitoring'],
-    'turn-start': ['kind', 'sourceSequence', 'turnKey', 'returnTarget'],
-    'human-action-request': [
-      'kind',
-      'sourceSequence',
-      'turnKey',
-      'requestKey',
-      'requestKind',
-      'canonicalTitle',
-      'canonicalBody',
-    ],
-    'request-resolution': ['kind', 'sourceSequence', 'turnKey', 'requestKey'],
-    'retry-error': ['kind', 'sourceSequence', 'turnKey', 'errorKind', 'canonicalBody'],
-    'terminal-error': ['kind', 'sourceSequence', 'turnKey', 'errorKind', 'canonicalBody'],
-    'terminal-result': [
-      'kind',
-      'sourceSequence',
-      'turnKey',
-      'result',
-      'occurrenceKey',
-      'canonicalTitle',
-      'canonicalBody',
-    ],
-    interruption: ['kind', 'sourceSequence', 'turnKey'],
-    'invocation-end': ['kind', 'sourceSequence', 'endKey'],
-    'connection-end': ['kind', 'sourceSequence', 'endKey'],
-    'reconciliation-deadline': ['kind', 'sourceSequence', 'turnKey'],
-    'content-enrichment': [
-      'kind',
-      'sourceSequence',
-      'semanticKey',
-      'canonicalTitle',
-      'canonicalBody',
-    ],
-  };
-  assertExactFields(input, fields[kind] ?? [], path, true);
   const sourceSequence = expectSequence(input.sourceSequence, `${path}.sourceSequence`);
   switch (kind) {
+    case 'connection-qualification':
+      assertExactFields(
+        input,
+        ['kind', 'sourceSequence', 'initialized', 'primary', 'capabilities', 'foregroundOwnership'],
+        path,
+      );
+      return {
+        kind,
+        sourceSequence,
+        initialized: expectBoolean(input.initialized, `${path}.initialized`),
+        primary: expectBoolean(input.primary, `${path}.primary`),
+        capabilities: expectEnum(
+          input.capabilities,
+          ['audited', 'unknown', 'unsupported'] as const,
+          `${path}.capabilities`,
+        ),
+        foregroundOwnership: expectEnum(
+          input.foregroundOwnership,
+          ['confirmed', 'unconfirmed'] as const,
+          `${path}.foregroundOwnership`,
+        ),
+      };
     case 'authority-change':
+      assertExactFields(input, ['kind', 'sourceSequence', 'monitoring'], path);
       return {
         kind,
         sourceSequence,
         monitoring: expectMonitoring(input.monitoring, `${path}.monitoring`),
       };
     case 'turn-start':
+      assertExactFields(input, ['kind', 'sourceSequence', 'turnKey', 'returnTarget'], path);
       return {
         kind,
         sourceSequence,
@@ -426,6 +438,19 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
         returnTarget: expectReturnTarget(input.returnTarget, `${path}.returnTarget`),
       };
     case 'human-action-request':
+      assertExactFields(
+        input,
+        [
+          'kind',
+          'sourceSequence',
+          'turnKey',
+          'requestKey',
+          'requestKind',
+          'canonicalTitle',
+          'canonicalBody',
+        ],
+        path,
+      );
       return compact({
         kind,
         sourceSequence,
@@ -440,6 +465,7 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
         canonicalBody: optionalCanonicalBody(input.canonicalBody, `${path}.canonicalBody`),
       });
     case 'request-resolution':
+      assertExactFields(input, ['kind', 'sourceSequence', 'turnKey', 'requestKey'], path);
       return {
         kind,
         sourceSequence,
@@ -448,6 +474,11 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
       };
     case 'retry-error':
     case 'terminal-error':
+      assertExactFields(
+        input,
+        ['kind', 'sourceSequence', 'turnKey', 'errorKind', 'canonicalBody'],
+        path,
+      );
       return compact({
         kind,
         sourceSequence,
@@ -456,6 +487,19 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
         canonicalBody: optionalCanonicalBody(input.canonicalBody, `${path}.canonicalBody`),
       });
     case 'terminal-result':
+      assertExactFields(
+        input,
+        [
+          'kind',
+          'sourceSequence',
+          'turnKey',
+          'result',
+          'occurrenceKey',
+          'canonicalTitle',
+          'canonicalBody',
+        ],
+        path,
+      );
       return compact({
         kind,
         sourceSequence,
@@ -467,6 +511,7 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
       });
     case 'interruption':
     case 'reconciliation-deadline':
+      assertExactFields(input, ['kind', 'sourceSequence', 'turnKey'], path);
       return {
         kind,
         sourceSequence,
@@ -474,12 +519,18 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
       };
     case 'invocation-end':
     case 'connection-end':
+      assertExactFields(input, ['kind', 'sourceSequence', 'endKey'], path);
       return {
         kind,
         sourceSequence,
         endKey: expectStableKey(input.endKey, `${path}.endKey`),
       };
     case 'content-enrichment':
+      assertExactFields(
+        input,
+        ['kind', 'sourceSequence', 'semanticKey', 'canonicalTitle', 'canonicalBody'],
+        path,
+      );
       return compact({
         kind,
         sourceSequence,
@@ -588,6 +639,11 @@ function expectArray(value: unknown, path: string): unknown[] {
 
 function expectArrayBound(value: unknown[], maximum: number, path: string): void {
   if (value.length > maximum) fail(path, `must contain at most ${maximum} entries`);
+}
+
+function expectBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== 'boolean') return fail(path, 'must be a boolean');
+  return value;
 }
 
 function expectString(value: unknown, path: string, maximumBytes: number): string {
