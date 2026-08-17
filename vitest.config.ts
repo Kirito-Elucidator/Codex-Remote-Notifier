@@ -16,6 +16,10 @@ export default defineConfig({
   resolve: {
     alias: {
       'remote-notifier-shared/constants': path.resolve(__dirname, 'shared/constants.ts'),
+      'remote-notifier-shared/attentionExchange': path.resolve(
+        __dirname,
+        'shared/attentionExchange.ts',
+      ),
       'remote-notifier-shared': path.resolve(__dirname, 'shared/index.ts'),
       vscode: path.resolve(__dirname, 'packages/router/test/helpers/vscode-mock.ts'),
       'node-notifier': path.resolve(__dirname, 'packages/main/test/helpers/node-notifier-mock.ts'),

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import {
+  AttentionPresentationPort,
   COMMAND_EXCHANGE_PRESENTATION,
   COMMAND_SHOW_NOTIFICATION,
   COMMAND_TEST_SYSTEM,
@@ -9,7 +10,12 @@ import {
   VscodePresenter,
 } from 'remote-notifier-shared';
 
+import { createDefaultBrokerRuntimePaths } from './broker/BrokerProtocol';
 import { NotificationFocusBroker } from './NotificationFocusBroker';
+import {
+  launchDetachedPresentationBroker,
+  PresentationBrokerClient,
+} from './PresentationBrokerClient';
 import {
   createPresentationExchangeCommandHandler,
   createUnavailablePresentationEndpoint,
@@ -40,6 +46,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const focusAware = new FocusAwarePresenter(vscodePresenter, systemPresenter, log);
     const presenter = new RateLimitedPresenter(focusAware);
     const autoInstaller = new RouterAutoInstaller(context, log);
+    const presentationEndpoint = createPresentationEndpoint(context);
 
     const testPayload: NotificationPayload = {
       message: 'This is a test notification from Remote Notifier.',
@@ -51,9 +58,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log,
       focusBroker,
       { dispose: () => presenter.dispose() },
+      { dispose: () => presentationEndpoint.dispose?.() },
       vscode.commands.registerCommand(
         COMMAND_EXCHANGE_PRESENTATION,
-        createPresentationExchangeCommandHandler(createUnavailablePresentationEndpoint()),
+        createPresentationExchangeCommandHandler(presentationEndpoint),
       ),
       vscode.commands.registerCommand(COMMAND_SHOW_NOTIFICATION, (payload: NotificationPayload) => {
         log.appendLine(`[Main] Received notification command: ${JSON.stringify(payload)}`);
@@ -94,4 +102,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 export function deactivate(): void {
   log?.appendLine('[Main] deactivate() called');
+}
+
+function createPresentationEndpoint(
+  context: vscode.ExtensionContext,
+): AttentionPresentationPort & { dispose?: () => void } {
+  if (process.platform !== 'win32') return createUnavailablePresentationEndpoint();
+  try {
+    const paths = createDefaultBrokerRuntimePaths();
+    return new PresentationBrokerClient({
+      paths,
+      launch: async () => {
+        launchDetachedPresentationBroker({
+          paths,
+          scriptPath: context.asAbsolutePath('dist/presentation-broker.js'),
+        });
+      },
+      onStatus: ({ code, previousEpoch }) => {
+        log.appendLine(
+          `[PresentationBroker] ${code}${previousEpoch ? ` epoch=${previousEpoch}` : ''}`,
+        );
+      },
+    });
+  } catch (error) {
+    log.appendLine(`[PresentationBroker] unavailable: ${error}`);
+    return createUnavailablePresentationEndpoint();
+  }
 }
