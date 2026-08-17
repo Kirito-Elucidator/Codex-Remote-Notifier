@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import {
+  COMMAND_EXCHANGE_PRESENTATION,
   COMMAND_SHOW_NOTIFICATION,
   COMMAND_TEST_SYSTEM,
   COMMAND_TEST_VSCODE,
@@ -9,6 +10,10 @@ import {
 } from 'remote-notifier-shared';
 
 import { NotificationFocusBroker } from './NotificationFocusBroker';
+import {
+  createPresentationExchangeCommandHandler,
+  createUnavailablePresentationEndpoint,
+} from './PresentationExchangeCommand';
 import { FocusAwarePresenter } from './presenter/FocusAwarePresenter';
 import { RateLimitedPresenter } from './presenter/RateLimitedPresenter';
 import { SystemPresenter } from './presenter/SystemPresenter';
@@ -46,6 +51,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       log,
       focusBroker,
       { dispose: () => presenter.dispose() },
+      vscode.commands.registerCommand(
+        COMMAND_EXCHANGE_PRESENTATION,
+        createPresentationExchangeCommandHandler(createUnavailablePresentationEndpoint()),
+      ),
       vscode.commands.registerCommand(COMMAND_SHOW_NOTIFICATION, (payload: NotificationPayload) => {
         log.appendLine(`[Main] Received notification command: ${JSON.stringify(payload)}`);
         return presenter.present(payload);
