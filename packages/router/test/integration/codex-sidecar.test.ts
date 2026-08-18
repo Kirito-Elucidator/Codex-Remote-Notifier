@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CodexProtocolCapture } from '../../src/codex/CodexProtocolCapture';
 import {
+  CodexAttentionRouterClient,
   CodexRouterClient,
   CodexWebSocketBridge,
   resolveNpmNodeRuntime,
@@ -109,6 +110,58 @@ describe('CodexWebSocketBridge', () => {
     tui.close();
     sessionPicker.close();
     await Promise.all([onceClose(tui), onceClose(sessionPicker)]);
+  });
+
+  it('replays an audited primary protocol success as scoped source-neutral observations', async () => {
+    const attention = { post: vi.fn() };
+    const bridge = new CodexWebSocketBridge(
+      'token',
+      new CodexProtocolCapture('0123456789abcdef0123456789abcdef', []),
+      { post: vi.fn() } as unknown as CodexRouterClient,
+      {
+        invocationId: '0123456789abcdef0123456789abcdef',
+        version: 'codex-cli 0.147.0',
+        router: attention as unknown as CodexAttentionRouterClient,
+      },
+    );
+    bridges.push(bridge);
+    const address = await bridge.listen();
+    const appServer = fakeAppServer();
+    bridge.attach(appServer.process);
+    const client = await connectWebSocket(address, 'token');
+
+    client.send('{"id":1,"method":"initialize","params":{}}');
+    await onceText(appServer.stdin);
+    appServer.stdout.write(
+      [
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null}}}',
+        '{"id":1,"result":{}}',
+        '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"audited success"}]}}}',
+      ].join('\n') + '\n',
+    );
+
+    await waitFor(() => attention.post.mock.calls.length === 3);
+    const calls = attention.post.mock.calls;
+    expect(calls.map(([, observation]) => observation)).toEqual([
+      expect.objectContaining({ kind: 'connection-qualification', sourceSequence: 1 }),
+      expect.objectContaining({ kind: 'turn-start', sourceSequence: 2, turnKey: 'turn-1' }),
+      expect.objectContaining({
+        kind: 'terminal-result',
+        sourceSequence: 3,
+        canonicalBody: 'audited success',
+      }),
+    ]);
+    const scopes = calls.map(([scope]) => scope);
+    expect(new Set(scopes.map((scope) => scope.connectionId)).size).toBe(1);
+    expect(scopes[0]).toEqual({
+      invocationId: '0123456789abcdef0123456789abcdef',
+      connectionId: expect.stringMatching(/^[0-9a-f]{32}$/),
+      authorityEpoch: expect.stringMatching(/^[0-9a-f]{32}$/),
+    });
+
+    client.close();
+    await onceClose(client);
   });
 
   it('closes a stalled client when the bounded outbound queue is exhausted', async () => {
@@ -314,6 +367,63 @@ describe('CodexRouterClient', () => {
   });
 });
 
+describe('CodexAttentionRouterClient', () => {
+  it('retains a stable observation exchange until the Router reports end-to-end application', async () => {
+    const attempts: Array<Record<string, unknown>> = [];
+    const server = http.createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk) => chunks.push(chunk));
+      request.on('end', () => {
+        const exchange = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        attempts.push(exchange);
+        const through = exchange.observations.at(-1).sourceSequence;
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        response.end(
+          JSON.stringify({
+            receivedThrough: through,
+            appliedThrough: attempts.length === 1 ? through - 1 : through,
+            monitoring: 'exact',
+          }),
+        );
+      });
+    });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+    const client = new CodexAttentionRouterClient({
+      REMOTE_NOTIFIER_URL: `http://127.0.0.1:${address.port}/notify`,
+      REMOTE_NOTIFIER_TOKEN: 'router-token',
+    });
+    const scope = {
+      invocationId: '0123456789abcdef0123456789abcdef',
+      connectionId: 'connection-1',
+      authorityEpoch: 'authority-1',
+    };
+
+    try {
+      client.post(scope, {
+        kind: 'turn-start',
+        sourceSequence: 1,
+        turnKey: 'turn-1',
+        returnTarget: 'opaque-route',
+      });
+      await client.drain(2_000);
+
+      expect(attempts).toHaveLength(2);
+      expect(attempts[1]).toEqual(attempts[0]);
+      expect(attempts[0]).toMatchObject({
+        kind: 'append',
+        deliveryGeneration: expect.stringMatching(/^[0-9a-f]{32}$/),
+        scope,
+        fromSequence: 1,
+      });
+    } finally {
+      client.stop();
+      await closeServer(server);
+    }
+  });
+});
+
 describe('runSidecar passthrough', () => {
   it('never uses an Electron host as the Node runtime for an npm Codex launcher', () => {
     expect(resolveNpmNodeRuntime('C:\\Program Files\\Microsoft VS Code\\Code.exe', 'win32')).toBe(
@@ -379,6 +489,18 @@ describe('runSidecar passthrough', () => {
         ]),
       );
       expect(methods.at(-1)).toBe('session/ended');
+      const exactObservations = events
+        .filter((event) => event.kind === 'append')
+        .flatMap((event) => event.observations as Array<Record<string, unknown>>);
+      expect(exactObservations.map((observation) => observation.kind)).toEqual([
+        'connection-qualification',
+        'turn-start',
+        'terminal-result',
+      ]);
+      expect(exactObservations.at(-1)).toMatchObject({
+        result: 'success',
+        canonicalBody: 'audited success',
+      });
       expect(JSON.stringify(events)).not.toContain('private-command');
 
       const log = await readJsonLines(fake.logPath);
@@ -593,7 +715,20 @@ function createEventServer(events: Array<Record<string, unknown>>): http.Server 
     const chunks: Buffer[] = [];
     request.on('data', (chunk) => chunks.push(chunk));
     request.on('end', () => {
-      events.push(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+      events.push(body);
+      if (body.kind === 'append') {
+        const through = body.observations.at(-1).sourceSequence;
+        response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        response.end(
+          JSON.stringify({
+            receivedThrough: through,
+            appliedThrough: through,
+            monitoring: 'exact',
+          }),
+        );
+        return;
+      }
       response.writeHead(202);
       response.end();
     });
@@ -634,12 +769,13 @@ async function createFakeCodex(): Promise<{
       '      const line = pending.slice(0, newline);',
       '      pending = pending.slice(newline + 1);',
       '      if (line) {',
+      "        process.stdout.write(JSON.stringify({ id: 1, result: {} }) + '\\n');",
       "        if (process.env.FAKE_REMOTE_MODE !== 'fail-after-initialize') {",
       "          process.stdout.write(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'thread-1', cwd: process.cwd(), name: 'Fake session' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-1', turnId: 'turn-1', command: 'private-command' } }) + '\\n');",
+      "          process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [{ type: 'agentMessage', text: 'audited success' }] } } }) + '\\n');",
       '        }',
-      "        process.stdout.write(JSON.stringify({ id: 1, result: {} }) + '\\n');",
       '      }',
       "      newline = pending.indexOf('\\n');",
       '    }',

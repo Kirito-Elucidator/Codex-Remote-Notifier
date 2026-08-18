@@ -1,7 +1,12 @@
 import * as http from 'http';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { NotificationPresenter } from 'remote-notifier-shared';
+import {
+  AttentionPresentationPort,
+  NotificationPresenter,
+  PresentationExchange,
+} from 'remote-notifier-shared';
+import { CodexAttentionNormalizationRegistry } from '../../src/codex/CodexAttentionNormalization';
 import { NotificationServer } from '../../src/server/NotificationServer';
 import { NotificationHandler } from '../../src/handler/NotificationHandler';
 import { Configuration } from '../../src/config/Configuration';
@@ -13,6 +18,7 @@ describe('HTTP API Integration', () => {
   let server: NotificationServer;
   let mockPresenter: NotificationPresenter;
   let mockCodexEvents: Pick<CodexEventHandler, 'handle'>;
+  let presentationExchanges: PresentationExchange[];
   const token = 'test_token_' + 'a'.repeat(53);
   let port: number;
 
@@ -27,7 +33,20 @@ describe('HTTP API Integration', () => {
     } as unknown as Configuration;
     const handler = new NotificationHandler(mockPresenter, config);
     mockCodexEvents = { handle: vi.fn().mockResolvedValue(undefined) };
-    server = new NotificationServer(handler, config, mockCodexEvents as CodexEventHandler);
+    presentationExchanges = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input) => {
+        presentationExchanges.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+    server = new NotificationServer(
+      handler,
+      config,
+      mockCodexEvents as CodexEventHandler,
+      normalization,
+    );
     await server.start(token);
     port = server.port;
   });
@@ -282,6 +301,90 @@ describe('HTTP API Integration', () => {
       expect(JSON.parse(response.body)).toMatchObject({ ok: true, queued: true });
       expect(mockCodexEvents.handle).toHaveBeenCalledWith(validEvent);
       finishHandling?.();
+    });
+
+    it('admits and applies an authenticated exact success exchange before acknowledging it', async () => {
+      presentationExchanges.length = 0;
+      const exchange = {
+        kind: 'append',
+        deliveryGeneration: 'delivery-http',
+        scope: {
+          invocationId: '0123456789abcdef0123456789abcdef',
+          connectionId: 'primary-http',
+          authorityEpoch: 'authority-http',
+        },
+        fromSequence: 1,
+        observations: [
+          {
+            kind: 'connection-qualification',
+            sourceSequence: 1,
+            initialized: true,
+            primary: true,
+            capabilities: 'audited',
+            foregroundOwnership: 'confirmed',
+          },
+          {
+            kind: 'turn-start',
+            sourceSequence: 2,
+            turnKey: 'turn-http',
+            returnTarget: 'opaque-http-route',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 3,
+            turnKey: 'turn-http',
+            result: 'success',
+            occurrenceKey: 'turn-http:success',
+            canonicalBody: 'authenticated success',
+          },
+        ],
+      };
+
+      const response = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        JSON.stringify(exchange),
+      );
+
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        receivedThrough: 3,
+        appliedThrough: 3,
+        monitoring: 'exact',
+      });
+      expect(presentationExchanges).toEqual([
+        expect.objectContaining({
+          kind: 'apply',
+          mutations: [
+            expect.objectContaining({
+              kind: 'create',
+              record: expect.objectContaining({
+                revision: 1,
+                canonicalBody: 'authenticated success',
+                returnTarget: 'opaque-http-route',
+              }),
+            }),
+          ],
+        }),
+      ]);
+
+      const replay = await sendRaw(
+        port,
+        'POST',
+        '/codex/events',
+        {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        JSON.stringify(exchange),
+      );
+      expect(JSON.parse(replay.body)).toEqual(JSON.parse(response.body));
+      expect(presentationExchanges).toHaveLength(1);
     });
 
     it('accepts a bounded error occurrence id and rejects an oversized one', async () => {

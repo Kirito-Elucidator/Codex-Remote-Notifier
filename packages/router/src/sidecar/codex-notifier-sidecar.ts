@@ -6,9 +6,17 @@ import * as path from 'path';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
-import type { CodexProtocolEvent } from 'remote-notifier-shared';
+import type {
+  CodexProtocolEvent,
+  ObservationExchange,
+  ObservationExchangeReceipt,
+  SanitizedAttentionObservation,
+  SourceScope,
+} from 'remote-notifier-shared';
+import { parseObservationExchangeReceipt } from 'remote-notifier-shared/attentionExchange';
 import { ENV_CODEX_PROTOCOL_SESSION } from 'remote-notifier-shared/constants';
 
+import { CodexAttentionProtocolCapture } from '../codex/CodexAttentionProtocolCapture';
 import { CodexProtocolCapture, JsonLineFramer } from '../codex/CodexProtocolCapture';
 import {
   injectRemoteArguments,
@@ -45,6 +53,8 @@ interface ExitResult {
 }
 
 interface BridgeConnection {
+  readonly attentionCapture?: CodexAttentionProtocolCapture;
+  readonly connectionId: string;
   readonly primary: boolean;
   readonly framer: JsonLineFramer;
   pendingClientLines: string[];
@@ -57,6 +67,14 @@ interface BridgeConnection {
   closed: boolean;
   webSocket?: WebSocket;
   appServer?: ChildProcess;
+}
+
+type AppendObservationExchange = Extract<ObservationExchange, { kind: 'append' }>;
+
+export interface CodexAttentionBridgeOptions {
+  invocationId: string;
+  router: Pick<CodexAttentionRouterClient, 'post'>;
+  version: string;
 }
 
 export class CodexRouterClient {
@@ -131,44 +149,7 @@ export class CodexRouterClient {
   }
 
   private async resolveEndpoint(): Promise<{ url: URL; token: string } | undefined> {
-    const sessionFile = this.environment.REMOTE_NOTIFIER_SESSION_FILE;
-    if (sessionFile) {
-      try {
-        const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-          await fs.readFile(sessionFile),
-        );
-        if (raw.length <= 64 * 1024) {
-          const session = JSON.parse(raw) as Record<string, unknown>;
-          if (
-            Number.isSafeInteger(session.port) &&
-            Number(session.port) > 0 &&
-            typeof session.token === 'string' &&
-            session.token.length > 0
-          ) {
-            return {
-              url: new URL(`http://127.0.0.1:${Number(session.port)}/codex/events`),
-              token: session.token,
-            };
-          }
-        }
-      } catch {
-        // Extension reloads can briefly replace the session file.
-      }
-    }
-
-    const rawUrl = this.environment.REMOTE_NOTIFIER_URL;
-    const token = this.environment.REMOTE_NOTIFIER_TOKEN;
-    if (!rawUrl || !token) return undefined;
-    try {
-      const url = new URL(rawUrl);
-      if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') return undefined;
-      url.pathname = '/codex/events';
-      url.search = '';
-      url.hash = '';
-      return { url, token };
-    } catch {
-      return undefined;
-    }
+    return resolveRouterEndpoint(this.environment);
   }
 
   private waitBeforeRetry(): Promise<void> {
@@ -190,6 +171,114 @@ export class CodexRouterClient {
   }
 }
 
+export class CodexAttentionRouterClient {
+  private readonly deliveryGeneration = randomBytes(16).toString('hex');
+  private readonly queue: AppendObservationExchange[] = [];
+  private emptyWaiters: Array<() => void> = [];
+  private pumping = false;
+  private retryDelayMs = 100;
+  private stopped = false;
+  private wakeRetry?: () => void;
+
+  constructor(
+    private readonly environment: NodeJS.ProcessEnv = process.env,
+    private readonly diagnostics: (message: string) => void = () => {},
+  ) {}
+
+  post(scope: SourceScope, observation: SanitizedAttentionObservation): void {
+    if (this.stopped) return;
+    if (this.queue.length >= MAX_ROUTER_EVENTS) {
+      this.diagnostics(
+        'Router attention queue reached its safety limit; newest observation was discarded',
+      );
+      return;
+    }
+    this.queue.push({
+      kind: 'append',
+      deliveryGeneration: this.deliveryGeneration,
+      scope,
+      fromSequence: observation.sourceSequence,
+      observations: [observation],
+    });
+    void this.pump();
+  }
+
+  async drain(timeoutMs: number): Promise<void> {
+    if (this.queue.length === 0 && !this.pumping) return;
+    this.retryDelayMs = 100;
+    this.wakeRetry?.();
+    await Promise.race([
+      new Promise<void>((resolve) => this.emptyWaiters.push(resolve)),
+      delay(timeoutMs),
+    ]);
+    if (this.queue.length > 0) {
+      this.diagnostics(
+        `Router did not apply ${this.queue.length} attention observation(s) before shutdown`,
+      );
+    }
+  }
+
+  stop(): void {
+    this.stopped = true;
+    this.wakeRetry?.();
+    this.resolveEmptyWaiters();
+  }
+
+  private async pump(): Promise<void> {
+    if (this.pumping || this.stopped) return;
+    this.pumping = true;
+    try {
+      while (this.queue.length > 0 && !this.stopped) {
+        const exchange = this.queue[0];
+        const endpoint = await resolveRouterEndpoint(this.environment);
+        const outcome = endpoint
+          ? await postAttentionJson(endpoint.url, endpoint.token, exchange)
+          : { kind: 'retry' as const };
+        if (outcome.kind === 'drop') {
+          this.diagnostics(
+            `Router rejected attention observation ${exchange.scope.invocationId}:${exchange.fromSequence}`,
+          );
+          this.queue.shift();
+          this.retryDelayMs = 100;
+          continue;
+        }
+        if (outcome.kind === 'receipt') {
+          const through = exchange.observations.at(-1)?.sourceSequence ?? exchange.fromSequence;
+          if ((outcome.receipt.appliedThrough ?? 0) >= through) {
+            this.queue.shift();
+            this.retryDelayMs = 100;
+            continue;
+          }
+        }
+        await this.waitBeforeRetry();
+        this.retryDelayMs = Math.min(2_000, this.retryDelayMs * 2);
+      }
+    } finally {
+      this.pumping = false;
+      if (this.queue.length === 0) this.resolveEmptyWaiters();
+      else if (!this.stopped) void this.pump();
+    }
+  }
+
+  private resolveEmptyWaiters(): void {
+    const waiters = this.emptyWaiters;
+    this.emptyWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  private waitBeforeRetry(): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        if (this.wakeRetry === finish) this.wakeRetry = undefined;
+        resolve();
+      };
+      const timer = setTimeout(finish, this.retryDelayMs);
+      this.wakeRetry = finish;
+    });
+  }
+}
+
 export class CodexWebSocketBridge {
   private readonly server = http.createServer((_request, response) => {
     response.writeHead(404);
@@ -208,6 +297,7 @@ export class CodexWebSocketBridge {
     private readonly token: string,
     private readonly capture: CodexProtocolCapture,
     private readonly router: CodexRouterClient,
+    private readonly attention?: CodexAttentionBridgeOptions,
   ) {
     this.server.on('upgrade', (request, socket, head) => {
       if (!this.authorized(request.headers.authorization)) {
@@ -281,8 +371,22 @@ export class CodexWebSocketBridge {
   }
 
   private createConnection(primary: boolean): BridgeConnection {
+    const connectionId = randomBytes(16).toString('hex');
+    const authorityEpoch = randomBytes(16).toString('hex');
     return {
+      connectionId,
       primary,
+      ...(this.attention === undefined
+        ? {}
+        : {
+            attentionCapture: new CodexAttentionProtocolCapture({
+              invocationId: this.attention.invocationId,
+              connectionId,
+              authorityEpoch,
+              version: this.attention.version,
+              primary,
+            }),
+          }),
       framer: new JsonLineFramer(),
       pendingClientLines: [],
       pendingClientBytes: 0,
@@ -354,6 +458,7 @@ export class CodexWebSocketBridge {
         return;
       }
       const text = data.toString();
+      this.postAttention(connection, connection.attentionCapture?.observeClientText(text) ?? []);
       for (const event of this.capture.observeClientText(text)) this.router.post(event);
       this.forwardClientLine(connection, text);
     });
@@ -421,12 +526,30 @@ export class CodexWebSocketBridge {
   }
 
   private onServerLine(connection: BridgeConnection, line: string): void {
-    for (const event of this.capture.observeServerText(line)) this.router.post(event);
+    const observations = connection.attentionCapture?.observeServerText(line) ?? [];
+    this.postAttention(connection, observations);
+    const exactSuccess = observations.some(
+      (observation) => observation.kind === 'terminal-result' && observation.result === 'success',
+    );
+    for (const event of this.capture.observeServerText(line)) {
+      if (exactSuccess && event.method === 'turn/completed' && event.status === 'completed')
+        continue;
+      this.router.post(event);
+    }
     if (!connection.webSocket || connection.webSocket.readyState !== WebSocket.OPEN) {
       this.bufferPendingServerLine(connection, line);
       return;
     }
     this.enqueueOutbound(connection, line);
+  }
+
+  private postAttention(
+    connection: BridgeConnection,
+    observations: SanitizedAttentionObservation[],
+  ): void {
+    const capture = connection.attentionCapture;
+    if (capture === undefined || this.attention === undefined) return;
+    for (const observation of observations) this.attention.router.post(capture.scope, observation);
   }
 
   private enqueueOutbound(connection: BridgeConnection, line: string): void {
@@ -545,18 +668,26 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
     });
   }
 
-  const instanceId = randomBytes(16).toString('hex');
+  const invocationId = randomBytes(16).toString('hex');
   const token = randomBytes(32).toString('hex');
   const ancestry = await processAncestry();
-  const capture = new CodexProtocolCapture(instanceId, ancestry);
+  const capture = new CodexProtocolCapture(invocationId, ancestry);
   const router = new CodexRouterClient(environment, (message) =>
     process.stderr.write(`[remote-notifier] ${message}\n`),
   );
-  const bridge = new CodexWebSocketBridge(token, capture, router);
+  const attentionRouter = new CodexAttentionRouterClient(environment, (message) =>
+    process.stderr.write(`[remote-notifier] ${message}\n`),
+  );
+  const bridge = new CodexWebSocketBridge(token, capture, router, {
+    invocationId,
+    version,
+    router: attentionRouter,
+  });
   let address: string;
   try {
     address = await bridge.listen();
   } catch {
+    attentionRouter.stop();
     return runCodex(launcher, invocation.tuiArgs, {
       cwd: process.cwd(),
       env: environment,
@@ -587,6 +718,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
     appServer = await startAppServer();
   } catch {
     await bridge.close().catch(() => {});
+    attentionRouter.stop();
     return runCodex(launcher, invocation.tuiArgs, {
       cwd: process.cwd(),
       env: environment,
@@ -598,6 +730,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
   } catch {
     await stopChild(appServer);
     await bridge.close().catch(() => {});
+    attentionRouter.stop();
     return runCodex(launcher, invocation.tuiArgs, {
       cwd: process.cwd(),
       env: environment,
@@ -619,8 +752,12 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
     await stopChild(appServer);
     await bridge.close().catch(() => {});
     router.post(capture.lifecycle('session/ended'));
-    await router.drain(ROUTER_DRAIN_TIMEOUT_MS);
+    await Promise.all([
+      router.drain(ROUTER_DRAIN_TIMEOUT_MS),
+      attentionRouter.drain(ROUTER_DRAIN_TIMEOUT_MS),
+    ]);
     router.stop();
+    attentionRouter.stop();
     return runCodex(launcher, invocation.tuiArgs, {
       cwd: process.cwd(),
       env: environment,
@@ -641,8 +778,12 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
   await stopChild(appServer);
   await bridge.close().catch(() => {});
   router.post(capture.lifecycle('session/ended'));
-  await router.drain(ROUTER_DRAIN_TIMEOUT_MS);
+  await Promise.all([
+    router.drain(ROUTER_DRAIN_TIMEOUT_MS),
+    attentionRouter.drain(ROUTER_DRAIN_TIMEOUT_MS),
+  ]);
   router.stop();
+  attentionRouter.stop();
   if (shouldFailOpen) {
     return runCodex(launcher, invocation.tuiArgs, {
       cwd: process.cwd(),
@@ -1003,6 +1144,110 @@ function postJson(
     request.once('error', () => resolve('retry'));
     request.end(body);
   });
+}
+
+function postAttentionJson(
+  url: URL,
+  token: string,
+  exchange: ObservationExchange,
+): Promise<
+  { kind: 'drop' } | { kind: 'receipt'; receipt: ObservationExchangeReceipt } | { kind: 'retry' }
+> {
+  return new Promise((resolve) => {
+    const body = Buffer.from(JSON.stringify(exchange), 'utf-8');
+    const request = http.request(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Length': body.length,
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let responseBytes = 0;
+        response.on('data', (chunk: Buffer) => {
+          responseBytes += chunk.length;
+          if (responseBytes <= 64 * 1024) chunks.push(chunk);
+        });
+        response.on('end', () => {
+          if (response.statusCode === 200 && responseBytes <= 64 * 1024) {
+            try {
+              const decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+                Buffer.concat(chunks),
+              );
+              resolve({
+                kind: 'receipt',
+                receipt: parseObservationExchangeReceipt(JSON.parse(decoded)),
+              });
+              return;
+            } catch {
+              resolve({ kind: 'retry' });
+              return;
+            }
+          }
+          if (
+            response.statusCode === 401 ||
+            response.statusCode === 404 ||
+            response.statusCode === 408 ||
+            (response.statusCode !== undefined && response.statusCode >= 500)
+          ) {
+            resolve({ kind: 'retry' });
+          } else {
+            resolve({ kind: 'drop' });
+          }
+        });
+      },
+    );
+    request.setTimeout(HTTP_TIMEOUT_MS, () => request.destroy());
+    request.once('error', () => resolve({ kind: 'retry' }));
+    request.end(body);
+  });
+}
+
+async function resolveRouterEndpoint(
+  environment: NodeJS.ProcessEnv,
+): Promise<{ url: URL; token: string } | undefined> {
+  const sessionFile = environment.REMOTE_NOTIFIER_SESSION_FILE;
+  if (sessionFile) {
+    try {
+      const raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+        await fs.readFile(sessionFile),
+      );
+      if (raw.length <= 64 * 1024) {
+        const session = JSON.parse(raw) as Record<string, unknown>;
+        if (
+          Number.isSafeInteger(session.port) &&
+          Number(session.port) > 0 &&
+          typeof session.token === 'string' &&
+          session.token.length > 0
+        ) {
+          return {
+            url: new URL(`http://127.0.0.1:${Number(session.port)}/codex/events`),
+            token: session.token,
+          };
+        }
+      }
+    } catch {
+      // Extension reloads can briefly replace the session file.
+    }
+  }
+
+  const rawUrl = environment.REMOTE_NOTIFIER_URL;
+  const token = environment.REMOTE_NOTIFIER_TOKEN;
+  if (!rawUrl || !token) return undefined;
+  try {
+    const url = new URL(rawUrl);
+    if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') return undefined;
+    url.pathname = '/codex/events';
+    url.search = '';
+    url.hash = '';
+    return { url, token };
+  } catch {
+    return undefined;
+  }
 }
 
 function delay(milliseconds: number): Promise<void> {

@@ -210,6 +210,14 @@ export function isCodexProtocolVersion(versionOutput: string): boolean {
   return major > 0 || minor > 145 || (minor === 145 && patch >= 0);
 }
 
+export function isAuditedCodexProtocolVersion(versionOutput: string): boolean {
+  const match = versionOutput.match(/\b(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?\b/);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major === 0 && minor >= 145 && minor <= 147;
+}
+
 function parseLongOption(raw: string): { name: string; value?: string } | undefined {
   if (!raw.startsWith('--')) return undefined;
   const separator = raw.indexOf('=');

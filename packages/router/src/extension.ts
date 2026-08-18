@@ -17,6 +17,7 @@ import {
 
 import { CodexAutoConfigProvider } from './autoconfig/CodexAutoConfigProvider';
 import { createAutoConfigRegistry } from './autoconfig/Registry';
+import { CodexAttentionNormalizationRegistry } from './codex/CodexAttentionNormalization';
 import { CodexEventHandler } from './codex/CodexEventHandler';
 import { Configuration } from './config/Configuration';
 import { NotificationHandler } from './handler/NotificationHandler';
@@ -24,6 +25,7 @@ import { CodeNotifyScriptInstaller } from './installer/CodeNotifyScriptInstaller
 import { CodexAttentionHookInstaller } from './installer/CodexAttentionHookInstaller';
 import { CodexProtocolShimManager } from './installer/CodexProtocolShimManager';
 import { CommandPresenter } from './presenter/CommandPresenter';
+import { PresentationCommandBridge } from './presenter/PresentationCommandBridge';
 import { NotificationServer } from './server/NotificationServer';
 import { SessionManager } from './session/SessionManager';
 import { CodexTerminalFocusRegistry } from './terminal/CodexTerminalFocusRegistry';
@@ -50,6 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const codexFocusCommand = `${COMMAND_FOCUS_CODEX_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
   const handler = new NotificationHandler(presenter, config, terminalFocus, codexFocusCommand);
   const codexEvents = new CodexEventHandler(handler, config, undefined, log);
+  const codexAttention = new CodexAttentionNormalizationRegistry(new PresentationCommandBridge());
   const sessionManager = new SessionManager(context, {
     codexPreviewLength: config.codexPreviewLength,
   });
@@ -66,7 +69,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
     onUnconfigured: () => codexProtocolShim.disable(true),
   });
-  const server = new NotificationServer(handler, config, codexEvents);
+  const server = new NotificationServer(handler, config, codexEvents, codexAttention);
 
   await server.start(sessionManager.token);
   log.appendLine(`[Router] HTTP server listening on port ${server.port}`);

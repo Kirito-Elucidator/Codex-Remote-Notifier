@@ -1,5 +1,11 @@
 import { IncomingMessage, ServerResponse } from 'http';
 
+import {
+  AttentionExchangeValidationError,
+  CodexAttentionNormalization,
+  parseObservationExchange,
+} from 'remote-notifier-shared';
+
 import * as routerPackageJson from '../../package.json';
 import { CodexEventHandler } from '../codex/CodexEventHandler';
 import { parseCodexEvent } from '../codex/CodexEventValidation';
@@ -12,6 +18,7 @@ export class Router {
     private readonly token: string,
     private readonly maxBodySize: number,
     private readonly codexEvents?: CodexEventHandler,
+    private readonly codexAttention?: CodexAttentionNormalization,
   ) {}
 
   async dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -39,12 +46,30 @@ export class Router {
   }
 
   private async handleCodexEvent(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const payload = await this.readAuthenticatedJson(req, res);
+    if (payload === INVALID_REQUEST) return;
+    if (isObservationExchange(payload)) {
+      if (!this.codexAttention) {
+        return this.sendJson(res, 503, { ok: false, error: 'codex_attention_unavailable' });
+      }
+      try {
+        const exchange = parseObservationExchange(payload);
+        const receipt = await this.codexAttention.exchange(exchange);
+        return this.sendJson(res, 200, receipt);
+      } catch (error) {
+        if (error instanceof AttentionExchangeValidationError) {
+          return this.sendJson(res, 400, {
+            ok: false,
+            error: 'validation_error',
+            details: error.message,
+          });
+        }
+        throw error;
+      }
+    }
     if (!this.codexEvents) {
       return this.sendJson(res, 503, { ok: false, error: 'codex_events_unavailable' });
     }
-
-    const payload = await this.readAuthenticatedJson(req, res);
-    if (payload === INVALID_REQUEST) return;
     const parsed = parseCodexEvent(payload);
     if (!parsed.ok) {
       return this.sendJson(res, 400, {
@@ -206,4 +231,10 @@ function isUtf8JsonContentType(value: string | undefined): boolean {
     .filter(([name]) => name === 'charset')
     .map(([, charset = '']) => charset.replace(/^"(.*)"$/, '$1'));
   return charsets.every((charset) => charset === 'utf-8' || charset === 'utf8');
+}
+
+function isObservationExchange(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const kind = (value as Record<string, unknown>).kind;
+  return kind === 'append' || kind === 'reconcile';
 }

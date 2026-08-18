@@ -20,6 +20,10 @@ export default defineConfig({
         __dirname,
         'shared/attentionExchange.ts',
       ),
+      'remote-notifier-shared/codexReturnTarget': path.resolve(
+        __dirname,
+        'shared/codexReturnTarget.ts',
+      ),
       'remote-notifier-shared/notificationText': path.resolve(
         __dirname,
         'shared/notificationText.ts',
