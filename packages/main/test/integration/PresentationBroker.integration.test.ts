@@ -102,6 +102,37 @@ describe('Windows presentation broker', () => {
     expect((await readDiscovery(paths)).presentationEpoch).not.toBe('a'.repeat(32));
   });
 
+  it('converges concurrent recovery without deleting a winner after malformed discovery', async () => {
+    const paths = await runtimePaths();
+    await writeFile(paths.discoveryFile, '{malformed', 'utf8');
+    const firstServer = trackServer(new PresentationBrokerServer({ paths }));
+    const secondServer = trackServer(new PresentationBrokerServer({ paths }));
+    const firstClient = trackClient(
+      new PresentationBrokerClient({
+        paths,
+        launch: async () => {
+          await firstServer.start();
+        },
+      }),
+    );
+    const secondClient = trackClient(
+      new PresentationBrokerClient({
+        paths,
+        launch: async () => {
+          await secondServer.start();
+        },
+      }),
+    );
+
+    const [firstConnection, secondConnection] = await Promise.all([
+      firstClient.start(),
+      secondClient.start(),
+    ]);
+
+    expect(firstConnection.presentationEpoch).toBe(secondConnection.presentationEpoch);
+    expect((await readDiscovery(paths)).presentationEpoch).toBe(firstConnection.presentationEpoch);
+  });
+
   it('retains applied transactions across client reloads without retry ownership in Main', async () => {
     const paths = await runtimePaths();
     const server = trackServer(new PresentationBrokerServer({ paths, idleTimeoutMs: 1_000 }));

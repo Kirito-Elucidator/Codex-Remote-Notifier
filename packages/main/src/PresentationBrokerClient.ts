@@ -1,6 +1,5 @@
 import { spawn, SpawnOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import { Socket } from 'node:net';
 
 import {
@@ -216,7 +215,6 @@ export class PresentationBrokerClient implements AttentionPresentationPort {
     } catch (error) {
       if (error instanceof BrokerConnectionError && error.code === 'invalid-discovery') {
         this.options.onStatus?.({ code: 'stale-discovery' });
-        await rm(this.options.paths.discoveryFile, { force: true });
         return undefined;
       }
       throw error;

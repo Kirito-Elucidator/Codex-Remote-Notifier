@@ -205,7 +205,7 @@ export class PresentationBrokerServer {
     await waitFor(() => this.activeExchanges === 0, deadline);
     const records = this.ledger.currentRecords();
     await runUntil(() => this.cleanupEpochItems(records), deadline);
-    if (beforeDisconnect !== undefined) await beforeDisconnect().catch(() => undefined);
+    if (beforeDisconnect !== undefined) await runUntil(beforeDisconnect, deadline);
     await removeOwnedBrokerDiscovery(this.options.paths.discoveryFile, this.presentationEpoch);
     for (const socket of this.sockets) socket.end();
     await closeServer(this.server, this.sockets);
