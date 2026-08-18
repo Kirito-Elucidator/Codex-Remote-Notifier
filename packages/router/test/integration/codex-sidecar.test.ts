@@ -130,14 +130,19 @@ describe('CodexWebSocketBridge', () => {
     bridge.attach(appServer.process);
     const client = await connectWebSocket(address, 'token');
 
-    client.send('{"id":1,"method":"initialize","params":{}}');
+    client.send(
+      '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-tui","version":"0.147.0"},"capabilities":{"experimentalApi":true}}}',
+    );
     await onceText(appServer.stdin);
-    appServer.stdout.write('{"id":1,"result":{}}\n');
+    appServer.stdout.write(
+      '{"id":1,"result":{"userAgent":"codex_cli_rs/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}\n',
+    );
+    client.send('{"method":"initialized"}');
     client.send('{"id":2,"method":"thread/start","params":{"cwd":"/repo"}}');
     await onceText(appServer.stdin);
     appServer.stdout.write(
       [
-        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null}}}',
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null,"source":"cli"}}}',
         '{"id":2,"result":{"thread":{"id":"thread-1"}}}',
         '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"audited success"}]}}}',
@@ -774,9 +779,9 @@ async function createFakeCodex(): Promise<{
       '      if (line) {',
       '        const request = JSON.parse(line);',
       "        if (request.method === 'initialize') {",
-      "          process.stdout.write(JSON.stringify({ id: request.id, result: {} }) + '\\n');",
+      "          process.stdout.write(JSON.stringify({ id: request.id, result: { userAgent: 'codex_cli_rs/0.145.0', codexHome: process.cwd(), platformFamily: process.platform === 'win32' ? 'windows' : 'unix', platformOs: process.platform } }) + '\\n');",
       "        } else if (request.method === 'thread/start' && process.env.FAKE_REMOTE_MODE !== 'fail-after-initialize') {",
-      "          process.stdout.write(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'thread-1', cwd: process.cwd(), name: 'Fake session' } } }) + '\\n');",
+      "          process.stdout.write(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'thread-1', cwd: process.cwd(), name: 'Fake session', parentThreadId: null, source: 'cli' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ id: request.id, result: { thread: { id: 'thread-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-1', turnId: 'turn-1', command: 'private-command' } }) + '\\n');",
@@ -798,20 +803,20 @@ async function createFakeCodex(): Promise<{
       "    const tokenName = args[args.indexOf('--remote-auth-token-env') + 1];",
       "    const client = new WebSocket(address, { headers: { Authorization: 'Bearer ' + process.env[tokenName] } });",
       '    let messages = 0;',
-      "    client.on('open', () => client.send(JSON.stringify({ id: 1, method: 'initialize', params: {} })));",
+      "    client.on('open', () => client.send(JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'codex-tui', version: '0.145.0' }, capabilities: { experimentalApi: true } } })));",
       '    let nestedPickerStarted = false;',
       "    client.on('message', () => {",
       '      messages += 1;',
       "      if (process.env.FAKE_REMOTE_MODE === 'fail-after-initialize') { client.close(); return; }",
-      "      if (messages === 1) { client.send(JSON.stringify({ id: 2, method: 'thread/start', params: {} })); return; }",
+      "      if (messages === 1) { client.send(JSON.stringify({ method: 'initialized' })); client.send(JSON.stringify({ id: 2, method: 'thread/start', params: {} })); return; }",
       '      if (messages < 6) return;',
       "      if (process.env.FAKE_REMOTE_MODE !== 'nested-connect') { client.close(); return; }",
       '      if (nestedPickerStarted) return;',
       '      nestedPickerStarted = true;',
       "      const picker = new WebSocket(address, { headers: { Authorization: 'Bearer ' + process.env[tokenName] } });",
       '      let pickerMessages = 0;',
-      "      picker.on('open', () => picker.send(JSON.stringify({ id: 1, method: 'initialize', params: {} })));",
-      "      picker.on('message', () => { pickerMessages += 1; if (pickerMessages === 1) { picker.send(JSON.stringify({ id: 2, method: 'thread/start', params: {} })); return; } if (pickerMessages >= 6) picker.close(); });",
+      "      picker.on('open', () => picker.send(JSON.stringify({ id: 1, method: 'initialize', params: { clientInfo: { name: 'codex-tui', version: '0.145.0' }, capabilities: { experimentalApi: true } } })));",
+      "      picker.on('message', () => { pickerMessages += 1; if (pickerMessages === 1) { picker.send(JSON.stringify({ method: 'initialized' })); picker.send(JSON.stringify({ id: 2, method: 'thread/start', params: {} })); return; } if (pickerMessages >= 6) picker.close(); });",
       "      picker.on('close', () => { log('nested-picker-exit', { pickerMessages }); client.close(); });",
       "      picker.on('error', () => { log('nested-picker-error'); process.exit(44); });",
       '    });',

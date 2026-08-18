@@ -20,6 +20,7 @@ export class CodexAttentionProtocolCapture {
   private foregroundThreadCandidateId?: string;
   private foregroundThreadId?: string;
   private initializeRequestId?: string;
+  private initializeResponseValidated = false;
   private initialized = false;
   private readonly pendingThreadRequests = new Set<string>();
   private pendingTurnId?: string;
@@ -38,9 +39,17 @@ export class CodexAttentionProtocolCapture {
 
   observeClientText(text: string): SanitizedAttentionObservation[] {
     const message = parseMessage(text);
-    if (!this.eligible || message === undefined || !validRequestId(message.id)) return [];
+    if (!this.eligible || message === undefined) return [];
+    if (message.method === 'initialized') {
+      if (!this.initializeResponseValidated || this.initialized) return [];
+      this.initialized = true;
+      return [...this.qualify(), ...this.emitPendingTurn()];
+    }
+    if (!validRequestId(message.id)) return [];
     if (message.method === 'initialize') {
-      this.initializeRequestId = requestIdKey(message.id);
+      this.initializeRequestId = isAuditedInitializeRequest(message.params, this.options.version)
+        ? requestIdKey(message.id)
+        : undefined;
       return [];
     }
     if (isForegroundThreadRequest(message.method)) {
@@ -57,12 +66,10 @@ export class CodexAttentionProtocolCapture {
     if (
       this.initializeRequestId !== undefined &&
       requestIdKey(message.id) === this.initializeRequestId &&
-      isRecord(message.result) &&
+      isAuditedInitializeResult(message.result, this.options.version) &&
       message.error === undefined
     ) {
-      this.initialized = true;
-      observations.push(...this.qualify());
-      observations.push(...this.emitPendingTurn());
+      this.initializeResponseValidated = true;
       return observations;
     }
 
@@ -206,11 +213,12 @@ function boundedIdentifier(value: unknown): string | undefined {
 }
 
 function isForegroundThread(thread: Record<string, unknown>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(thread, 'source')) return false;
   if (thread.parentThreadId !== undefined && thread.parentThreadId !== null) return false;
   if (thread.parent_thread_id !== undefined && thread.parent_thread_id !== null) return false;
   const source = thread.source;
   if (source === 'subAgent') return false;
-  return !(isRecord(source) && (source.subAgent === true || source.sub_agent === true));
+  return !(isRecord(source) && ('subAgent' in source || 'sub_agent' in source));
 }
 
 function isForegroundThreadRequest(method: unknown): boolean {
@@ -219,6 +227,51 @@ function isForegroundThreadRequest(method: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isAuditedInitializeRequest(value: unknown, versionOutput: string): boolean {
+  if (!isRecord(value) || !isRecord(value.clientInfo) || !isRecord(value.capabilities))
+    return false;
+  const clientVersion = boundedProtocolText(value.clientInfo.version);
+  if (value.clientInfo.name !== 'codex-tui' || !clientVersion) return false;
+  if (protocolVersion(clientVersion) !== protocolVersion(versionOutput)) return false;
+  if (value.capabilities.experimentalApi !== true) return false;
+  const optedOut = value.capabilities.optOutNotificationMethods;
+  return (
+    (optedOut === undefined || optedOut === null || isStringArray(optedOut)) &&
+    !REQUIRED_NOTIFICATION_METHODS.some(
+      (method) => Array.isArray(optedOut) && optedOut.includes(method),
+    )
+  );
+}
+
+const REQUIRED_NOTIFICATION_METHODS = ['thread/started', 'turn/started', 'turn/completed'];
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isAuditedInitializeResult(value: unknown, versionOutput: string): boolean {
+  if (!isRecord(value)) return false;
+  const userAgent = boundedProtocolText(value.userAgent);
+  const codexHome = boundedProtocolText(value.codexHome);
+  const platformFamily = boundedProtocolText(value.platformFamily);
+  const platformOs = boundedProtocolText(value.platformOs);
+  if (!userAgent || !codexHome || !platformFamily || !platformOs) return false;
+  if (!isAbsoluteProtocolPath(codexHome)) return false;
+  return protocolVersion(userAgent) === protocolVersion(versionOutput);
+}
+
+function boundedProtocolText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= 4_096 ? value : undefined;
+}
+
+function isAbsoluteProtocolPath(value: string): boolean {
+  return value.startsWith('/') || value.startsWith('\\\\') || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+function protocolVersion(value: string): string | undefined {
+  return value.match(/\b(\d+\.\d+\.\d+)(?:[-+][^\s]+)?\b/)?.[1];
 }
 
 function parseMessage(text: string): Record<string, unknown> | undefined {
@@ -247,7 +300,8 @@ function successPreview(items: unknown): string | undefined {
     const item = items[index];
     if (!isRecord(item) || (item.type !== 'agentMessage' && item.type !== 'plan')) continue;
     if (typeof item.text !== 'string' || item.text.trim().length === 0) continue;
-    return boundCanonicalUtf8(item.text, ATTENTION_EXCHANGE_LIMITS.canonicalBodyBytes);
+    const preview = boundCanonicalUtf8(item.text, ATTENTION_EXCHANGE_LIMITS.canonicalBodyBytes);
+    return preview.length > 0 ? preview : undefined;
   }
   return undefined;
 }

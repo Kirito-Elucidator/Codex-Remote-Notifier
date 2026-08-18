@@ -92,12 +92,17 @@ describe('exact foreground success', () => {
       version: 'codex-cli 0.147.0',
       primary: true,
     });
-    capture.observeClientText('{"id":1,"method":"initialize","params":{}}');
-    capture.observeServerText('{"id":1,"result":{}}');
+    capture.observeClientText(
+      '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-tui","version":"0.147.0"},"capabilities":{"experimentalApi":true}}}',
+    );
+    capture.observeServerText(
+      '{"id":1,"result":{"userAgent":"codex_cli_rs/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}',
+    );
+    capture.observeClientText('{"method":"initialized"}');
     capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
     const observations = [
       ...capture.observeServerText(
-        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null}}}',
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null,"source":"cli"}}}',
       ),
       ...capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}'),
       ...capture.observeServerText(
