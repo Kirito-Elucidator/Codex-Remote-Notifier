@@ -13,6 +13,13 @@ const MAXIMUM_PENDING_MESSAGES = 64;
 export type BrokerClientMessage =
   | { kind: 'hello'; protocolVersion: number; credential: string }
   | { kind: 'exchange'; requestId: string; exchange: PresentationExchange }
+  | {
+      kind: 'redeem-activation';
+      requestId: string;
+      presentationEpoch: string;
+      activationId: string;
+    }
+  | { kind: 'focus-result'; requestId: string; focused: boolean }
   | { kind: 'stop'; requestId: string };
 
 export type BrokerServerMessage =
@@ -27,6 +34,8 @@ export type BrokerServerMessage =
       requestId: string;
       receipt: PresentationReceipt;
     }
+  | { kind: 'activation-result'; requestId: string; status: 'focused' | 'failed' }
+  | { kind: 'focus-offer'; requestId: string; returnTarget: string }
   | {
       kind: 'stopped';
       requestId: string;
@@ -188,6 +197,22 @@ export function parseBrokerClientMessage(value: unknown): BrokerClientMessage {
         requestId: expectRequestId(input.requestId),
         exchange: parsePresentationExchange(input.exchange),
       };
+    case 'redeem-activation':
+      expectFields(input, ['kind', 'requestId', 'presentationEpoch', 'activationId']);
+      return {
+        kind: input.kind,
+        requestId: expectRequestId(input.requestId),
+        presentationEpoch: expectHex(input.presentationEpoch, 32, 'presentation epoch'),
+        activationId: expectHex(input.activationId, 32, 'activation id'),
+      };
+    case 'focus-result':
+      expectFields(input, ['kind', 'requestId', 'focused']);
+      if (typeof input.focused !== 'boolean') throw new Error('Invalid focus result');
+      return {
+        kind: input.kind,
+        requestId: expectRequestId(input.requestId),
+        focused: input.focused,
+      };
     case 'stop':
       expectFields(input, ['kind', 'requestId']);
       return { kind: input.kind, requestId: expectRequestId(input.requestId) };
@@ -216,6 +241,23 @@ export function parseBrokerServerMessage(value: unknown): BrokerServerMessage {
         kind: input.kind,
         requestId: expectRequestId(input.requestId),
         receipt: parsePresentationReceipt(input.receipt),
+      };
+    case 'activation-result':
+      expectFields(input, ['kind', 'requestId', 'status']);
+      if (input.status !== 'focused' && input.status !== 'failed') {
+        throw new Error('Invalid activation result');
+      }
+      return {
+        kind: input.kind,
+        requestId: expectRequestId(input.requestId),
+        status: input.status,
+      };
+    case 'focus-offer':
+      expectFields(input, ['kind', 'requestId', 'returnTarget']);
+      return {
+        kind: input.kind,
+        requestId: expectRequestId(input.requestId),
+        returnTarget: expectBoundedString(input.returnTarget, 4_096, 'return target'),
       };
     case 'stopped':
       expectFields(input, ['kind', 'requestId', 'presentationEpoch', 'epochReset']);
@@ -267,6 +309,17 @@ function expectRequestId(value: unknown): string {
 
 function expectHex(value: unknown, length: number, description: string): string {
   if (typeof value !== 'string' || !new RegExp(`^[0-9a-f]{${length}}$`).test(value)) {
+    throw new Error(`Invalid ${description}`);
+  }
+  return value;
+}
+
+function expectBoundedString(value: unknown, maximumBytes: number, description: string): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    Buffer.byteLength(value, 'utf8') > maximumBytes
+  ) {
     throw new Error(`Invalid ${description}`);
   }
   return value;

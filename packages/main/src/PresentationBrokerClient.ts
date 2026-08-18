@@ -42,6 +42,7 @@ export interface PresentationBrokerClientOptions {
   connectTimeoutMs?: number;
   discoveryPollMs?: number;
   launch: () => Promise<void>;
+  claimReturnTarget?: (returnTarget: string) => Promise<boolean>;
   onStatus?: (event: BrokerStatusEvent) => void;
   protocolVersion?: number;
 }
@@ -51,6 +52,7 @@ export interface DetachedBrokerLaunchOptions {
   paths: BrokerRuntimePaths;
   protocolVersion?: number;
   scriptPath: string;
+  sound?: boolean;
   spawnProcess?: (
     command: string,
     args: readonly string[],
@@ -100,6 +102,21 @@ export class PresentationBrokerClient implements AttentionPresentationPort {
     }
   }
 
+  async redeemActivation(
+    presentationEpoch: string,
+    activationId: string,
+  ): Promise<'focused' | 'failed'> {
+    try {
+      await this.start();
+      const connection = this.connection;
+      if (connection === undefined) return 'failed';
+      return await connection.redeemActivation(presentationEpoch, activationId);
+    } catch {
+      if (this.connection !== undefined) this.clearConnection(this.connection);
+      return 'failed';
+    }
+  }
+
   dispose(): void {
     this.disposed = true;
     this.connection?.close();
@@ -117,6 +134,7 @@ export class PresentationBrokerClient implements AttentionPresentationPort {
           existingDiscovery,
           this.protocolVersion,
           this.connectTimeoutMs,
+          this.options.claimReturnTarget,
         );
         if (connection.compatible) {
           return this.adopt(connection, epochReset);
@@ -157,6 +175,7 @@ export class PresentationBrokerClient implements AttentionPresentationPort {
             candidate,
             this.protocolVersion,
             Math.max(1, deadline - Date.now()),
+            this.options.claimReturnTarget,
           );
           if (!connection.compatible) {
             connection.close();
@@ -234,6 +253,7 @@ export function launchDetachedPresentationBroker(options: DetachedBrokerLaunchOp
       REMOTE_NOTIFIER_BROKER_PROTOCOL_VERSION: String(
         options.protocolVersion ?? PRESENTATION_BROKER_PROTOCOL_VERSION,
       ),
+      REMOTE_NOTIFIER_BROKER_SOUND: options.sound === false ? '0' : '1',
     },
     stdio: 'ignore',
     windowsHide: true,
@@ -247,7 +267,13 @@ class BrokerClientConnection {
     private readonly channel: BrokerJsonChannel<BrokerServerMessage>,
     readonly compatible: boolean,
     readonly presentationEpoch: string,
-  ) {}
+    private readonly claimReturnTarget?: (returnTarget: string) => Promise<boolean>,
+  ) {
+    channel.onMessage((message) => {
+      if (message.kind !== 'focus-offer') return;
+      void this.answerFocusOffer(message.requestId, message.returnTarget);
+    });
+  }
 
   get isOpen(): boolean {
     return !this.socket.destroyed;
@@ -261,6 +287,7 @@ class BrokerClientConnection {
     discovery: PresentationBrokerDiscovery,
     protocolVersion: number,
     timeoutMs: number,
+    claimReturnTarget?: (returnTarget: string) => Promise<boolean>,
   ): Promise<BrokerClientConnection> {
     const socket = await connectSocket(discovery.pipeAddress, timeoutMs);
     const channel = new BrokerJsonChannel(socket, parseBrokerServerMessage);
@@ -288,6 +315,7 @@ class BrokerClientConnection {
         channel,
         response.status === 'ready',
         response.presentationEpoch,
+        claimReturnTarget,
       );
     } catch (error) {
       channel.close();
@@ -305,6 +333,25 @@ class BrokerClientConnection {
     if (response.kind !== 'exchange-receipt') throw new Error('Invalid broker exchange response');
     assertMatchingPresentationReceipt(exchange, response.receipt);
     return response.receipt;
+  }
+
+  async redeemActivation(
+    presentationEpoch: string,
+    activationId: string,
+  ): Promise<'focused' | 'failed'> {
+    const requestId = randomBytes(16).toString('hex');
+    await this.channel.send({
+      kind: 'redeem-activation',
+      requestId,
+      presentationEpoch,
+      activationId,
+    });
+    const response = await this.channel.waitFor(
+      (message) => 'requestId' in message && message.requestId === requestId,
+      DEFAULT_CONNECT_TIMEOUT_MS,
+    );
+    if (response.kind !== 'activation-result') throw new Error('Invalid activation response');
+    return response.status;
   }
 
   async stop(timeoutMs: number): Promise<void> {
@@ -326,6 +373,13 @@ class BrokerClientConnection {
 
   close(): void {
     this.channel.close();
+  }
+
+  private async answerFocusOffer(requestId: string, returnTarget: string): Promise<void> {
+    const focused = await Promise.resolve()
+      .then(() => this.claimReturnTarget?.(returnTarget) ?? false)
+      .catch(() => false);
+    await this.channel.send({ kind: 'focus-result', requestId, focused }).catch(() => undefined);
   }
 }
 

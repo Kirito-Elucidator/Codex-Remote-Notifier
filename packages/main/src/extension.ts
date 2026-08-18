@@ -46,7 +46,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const focusAware = new FocusAwarePresenter(vscodePresenter, systemPresenter, log);
     const presenter = new RateLimitedPresenter(focusAware);
     const autoInstaller = new RouterAutoInstaller(context, log);
-    const presentationEndpoint = createPresentationEndpoint(context);
+    const presentationEndpoint = createPresentationEndpoint(context, focusBroker);
 
     const testPayload: NotificationPayload = {
       message: 'This is a test notification from Remote Notifier.',
@@ -83,7 +83,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         );
       }),
       vscode.window.registerUriHandler({
-        handleUri: (uri) => focusBroker.handleUri(uri),
+        handleUri: async (uri) => {
+          const query = new URLSearchParams(uri.query);
+          const epoch = query.get('epoch');
+          const activation = query.get('activation');
+          if (
+            uri.path === '/notification' &&
+            epoch !== null &&
+            activation !== null &&
+            presentationEndpoint.redeemActivation !== undefined
+          ) {
+            const status = await presentationEndpoint.redeemActivation(epoch, activation);
+            if (status === 'failed') {
+              await vscode.window.showWarningMessage(
+                'Unable to return to the corresponding session',
+              );
+            }
+            return;
+          }
+          focusBroker.handleUri(uri);
+        },
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => autoInstaller.debouncedCheck()),
     );
@@ -106,7 +125,8 @@ export function deactivate(): void {
 
 function createPresentationEndpoint(
   context: vscode.ExtensionContext,
-): AttentionPresentationPort & { dispose?: () => void } {
+  focusBroker: NotificationFocusBroker,
+): PresentationEndpoint {
   if (process.platform !== 'win32') return createUnavailablePresentationEndpoint();
   try {
     const paths = createDefaultBrokerRuntimePaths();
@@ -116,8 +136,12 @@ function createPresentationEndpoint(
         launchDetachedPresentationBroker({
           paths,
           scriptPath: context.asAbsolutePath('dist/presentation-broker.js'),
+          sound: vscode.workspace
+            .getConfiguration('remoteNotifier')
+            .get<boolean>('notificationSound', true),
         });
       },
+      claimReturnTarget: (returnTarget) => focusBroker.claimReturnTarget(returnTarget),
       onStatus: ({ code, previousEpoch }) => {
         log.appendLine(
           `[PresentationBroker] ${code}${previousEpoch ? ` epoch=${previousEpoch}` : ''}`,
@@ -128,4 +152,12 @@ function createPresentationEndpoint(
     log.appendLine(`[PresentationBroker] unavailable: ${error}`);
     return createUnavailablePresentationEndpoint();
   }
+}
+
+interface PresentationEndpoint extends AttentionPresentationPort {
+  dispose?: () => void;
+  redeemActivation?: (
+    presentationEpoch: string,
+    activationId: string,
+  ) => Promise<'focused' | 'failed'>;
 }

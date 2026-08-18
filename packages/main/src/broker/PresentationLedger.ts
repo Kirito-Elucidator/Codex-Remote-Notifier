@@ -96,6 +96,14 @@ export class PresentationLedger implements AttentionPresentationPort {
     return [...this.records.values()].map((record) => ({ ...record }));
   }
 
+  acknowledge(key: string, revision: number): boolean {
+    const current = this.records.get(key);
+    if (current === undefined || current.revision !== revision) return false;
+    this.records.delete(key);
+    this.tombstones.add(key);
+    return true;
+  }
+
   isEmpty(): boolean {
     return this.records.size === 0;
   }

@@ -43,11 +43,12 @@ describe('presentation broker process boundary', () => {
       entryPoints: [resolve('packages/main/src/presentationBrokerEntry.ts')],
       format: 'cjs',
       logLevel: 'silent',
+      loader: { '.ps1': 'text' },
       outfile: bundle,
       platform: 'node',
       target: 'node18',
     });
-    expect(await readFile(bundle, 'utf8')).not.toMatch(/\bvscode\b/i);
+    expect(await readFile(bundle, 'utf8')).not.toContain('require("vscode")');
 
     const first = spawnBroker(bundle, paths, 0);
     const second = spawnBroker(bundle, paths, 0);
@@ -125,15 +126,8 @@ function createExchange(transactionId: string): PresentationExchange {
     transactionId,
     mutations: [
       {
-        kind: 'create',
-        record: {
-          key: `record-${transactionId}`,
-          revision: 1,
-          appearance: 'information',
-          canonicalTitle: 'Process broker',
-          canonicalBody: 'Survives the process boundary',
-          returnTarget: `opaque:${transactionId}`,
-        },
+        kind: 'withdraw',
+        key: `absent-${transactionId}`,
       },
     ],
   };

@@ -4,6 +4,7 @@ import { commands } from 'vscode';
 import {
   COMMAND_FOCUS_CODEX_SESSION,
   COMMAND_FOCUS_CODEX_SESSION_PREFIX,
+  createCodexReturnTarget,
 } from 'remote-notifier-shared';
 
 import { NotificationFocusBroker } from '../../src/NotificationFocusBroker';
@@ -192,6 +193,40 @@ describe('NotificationFocusBroker', () => {
         session_id: 'session-after-reload',
       });
     });
+  });
+
+  it('claims an opaque broker target through the origin command and then generic fallback', async () => {
+    const broker = await createBroker();
+    vi.mocked(commands.executeCommand).mockImplementation(async (command) => {
+      if (command === instanceCommand) return { ok: false, reason: 'session-not-mapped' };
+      if (command === COMMAND_FOCUS_CODEX_SESSION) {
+        return { ok: true, reason: 'focused', terminal_name: 'Remote Codex' };
+      }
+      return undefined;
+    });
+
+    await expect(
+      broker.claimReturnTarget(
+        createCodexReturnTarget({
+          originCommand: instanceCommand,
+          sessionId: 'remote-session-1',
+        }),
+      ),
+    ).resolves.toBe(true);
+
+    const commandCalls = vi.mocked(commands.executeCommand).mock.calls;
+    expect(commandCalls).toEqual([
+      [instanceCommand, { session_id: 'remote-session-1' }],
+      [COMMAND_FOCUS_CODEX_SESSION, { session_id: 'remote-session-1' }],
+      ['workbench.action.focusWindow'],
+    ]);
+  });
+
+  it('does not claim malformed opaque broker targets', async () => {
+    const broker = await createBroker();
+
+    await expect(broker.claimReturnTarget('{"sessionId":"private"}')).resolves.toBe(false);
+    expect(commands.executeCommand).not.toHaveBeenCalled();
   });
 
   it('keeps session fallback data when the loopback broker could not start', async () => {

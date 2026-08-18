@@ -1,14 +1,26 @@
+import { join } from 'node:path';
+
 import {
   BrokerRuntimePaths,
   createDefaultBrokerRuntimePaths,
   PRESENTATION_BROKER_PROTOCOL_VERSION,
 } from './broker/BrokerProtocol';
+import { NativeAttentionPresentationAdapter } from './broker/NativeWindowsAttentionAdapter';
 import { PresentationBrokerServer } from './broker/PresentationBrokerServer';
 
 async function run(): Promise<void> {
   const paths = runtimePathsFromEnvironment();
   const protocolVersion = parseProtocolVersion(process.env.REMOTE_NOTIFIER_BROKER_PROTOCOL_VERSION);
-  const broker = new PresentationBrokerServer({ paths, protocolVersion });
+  const broker = new PresentationBrokerServer({
+    paths,
+    protocolVersion,
+    presentationAdapterFactory: (presentationEpoch) =>
+      new NativeAttentionPresentationAdapter({
+        iconPath: join(__dirname, 'icon-transparent.png'),
+        presentationEpoch,
+        sound: process.env.REMOTE_NOTIFIER_BROKER_SOUND !== '0',
+      }),
+  });
   const outcome = await broker.start();
   if (outcome === 'existing') return;
 

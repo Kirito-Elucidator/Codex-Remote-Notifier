@@ -20,6 +20,10 @@ export default defineConfig({
         __dirname,
         'shared/attentionExchange.ts',
       ),
+      'remote-notifier-shared/notificationText': path.resolve(
+        __dirname,
+        'shared/notificationText.ts',
+      ),
       'remote-notifier-shared': path.resolve(__dirname, 'shared/index.ts'),
       vscode: path.resolve(__dirname, 'packages/router/test/helpers/vscode-mock.ts'),
       'node-notifier': path.resolve(__dirname, 'packages/main/test/helpers/node-notifier-mock.ts'),

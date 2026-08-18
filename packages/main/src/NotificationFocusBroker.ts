@@ -9,6 +9,7 @@ import {
   COMMAND_FOCUS_CODEX_SESSION,
   COMMAND_FOCUS_CODEX_SESSION_PREFIX,
   NotificationPayload,
+  parseCodexReturnTarget,
 } from 'remote-notifier-shared';
 
 const EXTENSION_ID = 'ddyndo.remote-notifier-codex';
@@ -122,6 +123,32 @@ export class NotificationFocusBroker implements vscode.Disposable {
       );
       await this.focusSession(fallbackSessionId, fallbackFocusCommand);
     });
+  }
+
+  async claimReturnTarget(returnTarget: string): Promise<boolean> {
+    const target = parseCodexReturnTarget(returnTarget);
+    if (target === undefined) return false;
+    const commands = target.originCommand
+      ? [target.originCommand, COMMAND_FOCUS_CODEX_SESSION]
+      : [COMMAND_FOCUS_CODEX_SESSION];
+    for (const command of commands) {
+      try {
+        const result = await vscode.commands.executeCommand<CodexFocusResult>(command, {
+          session_id: target.sessionId,
+        });
+        if (!result?.ok) continue;
+        await vscode.commands.executeCommand('workbench.action.focusWindow');
+        this.log?.appendLine(
+          `[NotificationFocusBroker] Claimed broker target in terminal "${result.terminal_name ?? ''}"`,
+        );
+        return true;
+      } catch (error) {
+        this.log?.appendLine(
+          `[NotificationFocusBroker] Broker target command ${command} failed: ${error}`,
+        );
+      }
+    }
+    return false;
   }
 
   dispose(): void {
