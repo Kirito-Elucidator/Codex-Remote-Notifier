@@ -3,6 +3,7 @@ import { createServer, Server, Socket } from 'node:net';
 
 import {
   PresentationExchange,
+  PresentationInteraction,
   PresentationReceipt,
   PresentationRecord,
 } from 'remote-notifier-shared/attentionExchange';
@@ -30,6 +31,7 @@ const DEFAULT_NAVIGATION_TIMEOUT_MS = 1_500;
 
 export interface NativePresentationAdapterPort {
   exchange(input: NativePresentationExchange): Promise<void>;
+  onInteraction(listener: (event: PresentationInteraction) => void): { dispose(): void };
   cleanup(): Promise<void>;
 }
 
@@ -57,6 +59,7 @@ export class PresentationBrokerServer {
   private readonly ledger: PresentationLedger;
   private readonly activations: PresentationActivationRegistry;
   private readonly presentationAdapter: NativePresentationAdapterPort;
+  private readonly presentationInteractionSubscription: { dispose(): void };
   private readonly protocolVersion: number;
   private readonly server: Server;
   private readonly sockets = new Set<Socket>();
@@ -95,7 +98,11 @@ export class PresentationBrokerServer {
       options.presentationAdapterFactory?.(this.presentationEpoch) ?? {
         cleanup: async () => undefined,
         exchange: async () => undefined,
+        onInteraction: () => ({ dispose: () => undefined }),
       };
+    this.presentationInteractionSubscription = this.presentationAdapter.onInteraction((event) =>
+      this.handlePresentationInteraction(event),
+    );
     this.server = createServer((socket) => this.accept(socket));
     this.closed = new Promise((resolve) => {
       this.resolveClosed = resolve;
@@ -309,14 +316,49 @@ export class PresentationBrokerServer {
     activationId: string,
   ): Promise<string | undefined> {
     const activation = this.activations.redeem(presentationEpoch, activationId);
-    if (activation === undefined) return undefined;
-    if (!this.ledger.acknowledge(activation.key, activation.revision)) return undefined;
+    return activation === undefined
+      ? undefined
+      : await this.commitAcknowledgement(activation, `activation-${activationId}`);
+  }
 
+  private handlePresentationInteraction(event: PresentationInteraction): void {
+    if (this.stopPromise !== undefined) return;
+    this.activeExchanges += 1;
+    const acknowledged = this.exchangeTail.then(async () => {
+      const activation = this.activations.acknowledge(event.key, event.revision);
+      return activation === undefined
+        ? undefined
+        : await this.commitAcknowledgement(
+            activation,
+            `interaction-${randomBytes(16).toString('hex')}`,
+          );
+    });
+    this.exchangeTail = acknowledged.then(
+      () => undefined,
+      () => undefined,
+    );
+    void acknowledged
+      .then(async (returnTarget) => {
+        if (event.kind === 'activate' && returnTarget !== undefined) {
+          await this.broadcastReturnTarget(returnTarget);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.activeExchanges -= 1;
+      });
+  }
+
+  private async commitAcknowledgement(
+    activation: { key: string; revision: number; returnTarget: string },
+    transactionId: string,
+  ): Promise<string | undefined> {
+    if (!this.ledger.acknowledge(activation.key, activation.revision)) return undefined;
     this.activations.reconcile(this.ledger.currentRecords());
     await this.presentationAdapter
       .exchange({
         kind: 'apply',
-        transactionId: `activation-${activationId}`,
+        transactionId,
         mutations: [{ kind: 'withdraw', key: activation.key }],
       })
       .catch(() => undefined);
@@ -396,6 +438,7 @@ export class PresentationBrokerServer {
     const deadline = Date.now() + this.drainTimeoutMs;
     this.server.close();
     await waitFor(() => this.activeExchanges === 0, deadline);
+    this.presentationInteractionSubscription.dispose();
     const records = this.ledger.currentRecords();
     await runUntil(() => this.presentationAdapter.cleanup(), deadline);
     await runUntil(() => this.cleanupEpochItems(records), deadline);

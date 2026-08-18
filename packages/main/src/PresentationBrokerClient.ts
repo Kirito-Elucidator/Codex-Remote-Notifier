@@ -19,6 +19,7 @@ import {
   removeOwnedBrokerDiscovery,
 } from './broker/BrokerProtocol';
 import {
+  BrokerClientMessage,
   BrokerJsonChannel,
   BrokerServerMessage,
   parseBrokerServerMessage,
@@ -291,16 +292,17 @@ class BrokerClientConnection {
   ): Promise<BrokerClientConnection> {
     const socket = await connectSocket(discovery.pipeAddress, timeoutMs);
     const channel = new BrokerJsonChannel(socket, parseBrokerServerMessage);
+    const responsePromise = channel.waitFor(
+      (message) => message.kind === 'hello' || message.kind === 'error',
+      timeoutMs,
+    );
     try {
       await channel.send({
         kind: 'hello',
         protocolVersion,
         credential: discovery.credential,
       });
-      const response = await channel.waitFor(
-        (message) => message.kind === 'hello' || message.kind === 'error',
-        timeoutMs,
-      );
+      const response = await responsePromise;
       if (response.kind === 'error' && response.code === 'authentication-failed') {
         throw new BrokerConnectionError(
           'authentication-failed',
@@ -319,14 +321,15 @@ class BrokerClientConnection {
       );
     } catch (error) {
       channel.close();
+      await responsePromise.catch(() => undefined);
       throw error;
     }
   }
 
   async exchange(exchange: PresentationExchange): Promise<PresentationReceipt> {
     const requestId = randomBytes(16).toString('hex');
-    await this.channel.send({ kind: 'exchange', requestId, exchange });
-    const response = await this.channel.waitFor(
+    const response = await this.request(
+      { kind: 'exchange', requestId, exchange },
       (message) => 'requestId' in message && message.requestId === requestId,
       DEFAULT_CONNECT_TIMEOUT_MS,
     );
@@ -340,13 +343,13 @@ class BrokerClientConnection {
     activationId: string,
   ): Promise<'focused' | 'failed'> {
     const requestId = randomBytes(16).toString('hex');
-    await this.channel.send({
-      kind: 'redeem-activation',
-      requestId,
-      presentationEpoch,
-      activationId,
-    });
-    const response = await this.channel.waitFor(
+    const response = await this.request(
+      {
+        kind: 'redeem-activation',
+        requestId,
+        presentationEpoch,
+        activationId,
+      },
       (message) => 'requestId' in message && message.requestId === requestId,
       DEFAULT_CONNECT_TIMEOUT_MS,
     );
@@ -356,8 +359,8 @@ class BrokerClientConnection {
 
   async stop(timeoutMs: number): Promise<void> {
     const requestId = randomBytes(16).toString('hex');
-    await this.channel.send({ kind: 'stop', requestId });
-    const response = await this.channel.waitFor(
+    const response = await this.request(
+      { kind: 'stop', requestId },
       (message) => 'requestId' in message && message.requestId === requestId,
       timeoutMs,
     );
@@ -380,6 +383,22 @@ class BrokerClientConnection {
       .then(() => this.claimReturnTarget?.(returnTarget) ?? false)
       .catch(() => false);
     await this.channel.send({ kind: 'focus-result', requestId, focused }).catch(() => undefined);
+  }
+
+  private async request(
+    message: BrokerClientMessage,
+    match: (message: BrokerServerMessage) => boolean,
+    timeoutMs: number,
+  ): Promise<BrokerServerMessage> {
+    const responsePromise = this.channel.waitFor(match, timeoutMs);
+    try {
+      await this.channel.send(message);
+      return await responsePromise;
+    } catch (error) {
+      this.channel.close();
+      await responsePromise.catch(() => undefined);
+      throw error;
+    }
   }
 }
 

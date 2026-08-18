@@ -84,6 +84,39 @@ describe('NativeAttentionPresentationAdapter', () => {
     });
   });
 
+  it('replaces the same native identity when a revision receives a new activation id', async () => {
+    const host = createHost();
+    const adapter = createAdapter(host);
+
+    await adapter.exchange(
+      createExchange('create-1', {
+        kind: 'create',
+        record: record('attention-1', 1, '1'.repeat(32)),
+      }),
+    );
+    await adapter.exchange(
+      createExchange('update-1', {
+        kind: 'update',
+        record: {
+          ...record('attention-1', 2, '2'.repeat(32)),
+          canonicalBody: 'Revision-scoped activation',
+        },
+      }),
+    );
+
+    expect(host.show).toHaveBeenCalledOnce();
+    expect(host.replace).toHaveBeenCalledOnce();
+    expect(host.update).not.toHaveBeenCalled();
+    const shown = vi.mocked(host.show).mock.calls[0][0];
+    const replaced = vi.mocked(host.replace).mock.calls[0][0];
+    expect(replaced).toMatchObject({
+      body: 'Revision-scoped activation',
+      ...pickIdentity(shown),
+    });
+    expect(replaced.xml).toContain(`activation=${'2'.repeat(32)}`);
+    expect(replaced.xml).toContain('<audio silent="true"/>');
+  });
+
   it('keeps unsupported enrichment ledger-only instead of showing another item', async () => {
     const host = createHost();
     vi.mocked(host.update).mockResolvedValue('unsupported');
@@ -164,6 +197,7 @@ function createAdapter(host: NativeWindowsNotificationHost): NativeAttentionPres
 function createHost(): NativeWindowsNotificationHost {
   return {
     remove: vi.fn().mockResolvedValue(undefined),
+    replace: vi.fn().mockResolvedValue(undefined),
     show: vi.fn().mockResolvedValue(undefined),
     update: vi.fn().mockResolvedValue('updated'),
   };

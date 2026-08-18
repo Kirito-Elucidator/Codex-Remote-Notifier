@@ -20,6 +20,7 @@ export interface RedeemedPresentationActivation {
 export class PresentationActivationRegistry {
   private readonly byActivation = new Map<string, ActivationEntry>();
   private readonly byKey = new Map<string, ActivationEntry>();
+  private readonly consumed = new Set<string>();
 
   constructor(
     private readonly presentationEpoch: string,
@@ -32,10 +33,19 @@ export class PresentationActivationRegistry {
       if (projection.has(key)) continue;
       this.byKey.delete(key);
       this.byActivation.delete(entry.activationId);
+      this.consumed.add(entry.activationId);
     }
     for (const record of records) {
       const current = this.byKey.get(record.key);
       if (current !== undefined) {
+        if (current.revision !== record.revision) {
+          const replacement = this.mint(record);
+          this.byActivation.delete(current.activationId);
+          this.consumed.add(current.activationId);
+          this.byKey.set(record.key, replacement);
+          this.byActivation.set(replacement.activationId, replacement);
+          continue;
+        }
         current.revision = record.revision;
         current.returnTarget = record.returnTarget;
         continue;
@@ -70,6 +80,16 @@ export class PresentationActivationRegistry {
     if (entry === undefined) return undefined;
     this.byActivation.delete(activationId);
     this.byKey.delete(entry.key);
+    this.consumed.add(activationId);
+    return { key: entry.key, revision: entry.revision, returnTarget: entry.returnTarget };
+  }
+
+  acknowledge(key: string, revision: number): RedeemedPresentationActivation | undefined {
+    const entry = this.byKey.get(key);
+    if (entry === undefined || entry.revision !== revision) return undefined;
+    this.byKey.delete(key);
+    this.byActivation.delete(entry.activationId);
+    this.consumed.add(entry.activationId);
     return { key: entry.key, revision: entry.revision, returnTarget: entry.returnTarget };
   }
 
@@ -79,7 +99,7 @@ export class PresentationActivationRegistry {
       if (!/^[0-9a-f]{32}$/.test(activationId)) {
         throw new Error('Invalid presentation activation id');
       }
-      if (!this.byActivation.has(activationId)) {
+      if (!this.byActivation.has(activationId) && !this.consumed.has(activationId)) {
         return {
           activationId,
           key: record.key,

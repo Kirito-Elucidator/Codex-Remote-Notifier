@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
+import { PresentationInteraction } from 'remote-notifier-shared/attentionExchange';
 import { deriveDisplayableNotificationText } from 'remote-notifier-shared/notificationText';
 
 import nativeAttentionScript from './native-windows-attention.ps1';
@@ -50,6 +51,7 @@ export type NativeUpdateResult = 'updated' | 'not-found' | 'unsupported';
 
 export interface NativeWindowsNotificationHost {
   show(input: NativeShowRequest): Promise<void>;
+  replace(input: NativeShowRequest): Promise<void>;
   update(input: NativeUpdateRequest): Promise<NativeUpdateResult>;
   remove(input: NativeNotificationIdentity): Promise<void>;
 }
@@ -60,6 +62,10 @@ export interface NativeAttentionPresentationAdapterOptions {
   onDiagnostic?: (code: string) => void;
   presentationEpoch: string;
   sound: boolean;
+}
+
+export interface NativePresentationInteractionSubscription {
+  dispose(): void;
 }
 
 interface RetainedNativeRecord {
@@ -104,6 +110,7 @@ export class NativeAttentionPresentationAdapter {
   private readonly records = new Map<string, RetainedNativeRecord>();
   private readonly tombstones = new Set<string>();
   private readonly transactions = new Map<string, string>();
+  private readonly interactionListeners = new Set<(event: PresentationInteraction) => void>();
 
   constructor(private readonly options: NativeAttentionPresentationAdapterOptions) {
     this.allocator = new NativeIdentityAllocator(options.presentationEpoch);
@@ -137,6 +144,13 @@ export class NativeAttentionPresentationAdapter {
     );
   }
 
+  onInteraction(
+    listener: (event: PresentationInteraction) => void,
+  ): NativePresentationInteractionSubscription {
+    this.interactionListeners.add(listener);
+    return { dispose: () => this.interactionListeners.delete(listener) };
+  }
+
   private async applyRecord(record: NativePresentationRecord): Promise<void> {
     if (this.tombstones.has(record.key)) return;
     const current = this.records.get(record.key);
@@ -162,6 +176,20 @@ export class NativeAttentionPresentationAdapter {
           xml: buildToastGenericXml(launchUri, this.options.iconPath, this.options.sound),
         })
         .catch(() => this.options.onDiagnostic?.('native-show-failed'));
+      return;
+    }
+
+    if (current.record.activationId !== record.activationId) {
+      const launchUri = createActivationUri(this.options.presentationEpoch, record.activationId);
+      await this.host
+        .replace({
+          ...identity,
+          body,
+          revision: record.revision,
+          title,
+          xml: buildToastGenericXml(launchUri, this.options.iconPath, false),
+        })
+        .catch(() => this.options.onDiagnostic?.('native-replace-failed'));
       return;
     }
 
@@ -198,6 +226,18 @@ export class NativeAttentionPresentationAdapter {
 
 export class PowerShellWindowsNotificationHost implements NativeWindowsNotificationHost {
   async show(input: NativeShowRequest): Promise<void> {
+    await runPowerShell({
+      RN_NATIVE_BODY: input.body,
+      RN_NATIVE_GROUP: input.group,
+      RN_NATIVE_OPERATION: 'show',
+      RN_NATIVE_REVISION: String(input.revision),
+      RN_NATIVE_TAG: input.tag,
+      RN_NATIVE_TITLE: input.title,
+      RN_NATIVE_XML: input.xml,
+    });
+  }
+
+  async replace(input: NativeShowRequest): Promise<void> {
     await runPowerShell({
       RN_NATIVE_BODY: input.body,
       RN_NATIVE_GROUP: input.group,

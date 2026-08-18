@@ -5,7 +5,11 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createCodexReturnTarget, PresentationExchange } from 'remote-notifier-shared';
+import {
+  createCodexReturnTarget,
+  PresentationExchange,
+  PresentationInteraction,
+} from 'remote-notifier-shared';
 
 import { BrokerRuntimePaths } from '../../src/broker/BrokerProtocol';
 import {
@@ -63,7 +67,7 @@ describe('native presentation broker activation', () => {
     const created = mutationRecord(exchanges[0]);
     const enriched = mutationRecord(exchanges[1]);
     expect(created.activationId).toMatch(/^[0-9a-f]{32}$/);
-    expect(enriched.activationId).toBe(created.activationId);
+    expect(enriched.activationId).not.toBe(created.activationId);
     expect(enriched.canonicalTitle).toBe('\u4e2d\u6587 & <XML> \u{1f642}');
     expect(JSON.stringify(exchanges)).not.toContain('local_unicode');
     expect(exchanges[2]).toMatchObject({
@@ -93,7 +97,22 @@ describe('native presentation broker activation', () => {
     await Promise.all(targetClients.map((client) => client.start()));
     const sender = trackClient(new PresentationBrokerClient({ paths, launch: vi.fn() }));
 
-    for (const target of ['local-1', 'remote-1', 'remote-2']) {
+    await sender.exchange(create('create-local-1', createRecord('local-1', 1, 'local-1')));
+    const staleActivation = activationFor(adapter, 'local-1');
+    await sender.exchange(update('update-local-1', createRecord('local-1', 2, 'local-1')));
+    const currentActivation = activationFor(adapter, 'local-1');
+    expect(currentActivation).not.toBe(staleActivation);
+    await expect(sender.redeemActivation(server.presentationEpoch, staleActivation)).resolves.toBe(
+      'failed',
+    );
+    await expect(
+      sender.redeemActivation(server.presentationEpoch, currentActivation),
+    ).resolves.toBe('focused');
+    await expect(
+      sender.redeemActivation(server.presentationEpoch, currentActivation),
+    ).resolves.toBe('failed');
+
+    for (const target of ['remote-1', 'remote-2']) {
       await sender.exchange(create(`create-${target}`, createRecord(target, 1, target)));
       const activation = activationFor(adapter, target);
       await expect(sender.redeemActivation(server.presentationEpoch, activation)).resolves.toBe(
@@ -139,6 +158,41 @@ describe('native presentation broker activation', () => {
     );
   });
 
+  it('accepts only an adapter dismissal for the exact key and revision', async () => {
+    const paths = await runtimePaths();
+    const events: string[] = [];
+    const adapter = createAdapter(events);
+    const server = trackServer(
+      new PresentationBrokerServer({ paths, presentationAdapter: adapter }),
+    );
+    await server.start();
+    const target = trackClient(createClaimingClient(paths, 'claimed', events));
+    await target.start();
+    const sender = trackClient(new PresentationBrokerClient({ paths, launch: vi.fn() }));
+
+    await sender.exchange(
+      create('create-stale-dismiss', createRecord('stale-dismiss', 1, 'claimed')),
+    );
+    const staleDismissActivation = activationFor(adapter, 'stale-dismiss');
+    adapter.emitInteraction({ kind: 'dismiss', key: 'stale-dismiss', revision: 2 });
+    await expect(
+      sender.redeemActivation(server.presentationEpoch, staleDismissActivation),
+    ).resolves.toBe('focused');
+
+    await sender.exchange(
+      create('create-exact-dismiss', createRecord('exact-dismiss', 1, 'claimed')),
+    );
+    const exactDismissActivation = activationFor(adapter, 'exact-dismiss');
+    events.length = 0;
+    adapter.emitInteraction({ kind: 'dismiss', key: 'exact-dismiss', revision: 1 });
+    await vi.waitFor(() => expect(events).toContain('withdraw:exact-dismiss'));
+    expect(events.some((event) => event.startsWith('claim:'))).toBe(false);
+    await expect(
+      sender.redeemActivation(server.presentationEpoch, exactDismissActivation),
+    ).resolves.toBe('failed');
+    expect(events.some((event) => event.startsWith('claim:'))).toBe(false);
+  });
+
   function trackClient(client: PresentationBrokerClient): PresentationBrokerClient {
     clients.push(client);
     return client;
@@ -163,14 +217,28 @@ describe('native presentation broker activation', () => {
   }
 });
 
-function createAdapter(events: string[] = []): NativePresentationAdapterPort {
+interface TestPresentationAdapter extends NativePresentationAdapterPort {
+  emitInteraction(event: PresentationInteraction): void;
+}
+
+function createAdapter(events: string[] = []): TestPresentationAdapter {
+  let interactionListener: (event: PresentationInteraction) => void = () => undefined;
   return {
     cleanup: vi.fn().mockResolvedValue(undefined),
+    emitInteraction: (event) => interactionListener(event),
     exchange: vi.fn(async (exchange: NativePresentationExchange) => {
       if (exchange.kind !== 'apply') return;
       for (const mutation of exchange.mutations) {
         if (mutation.kind === 'withdraw') events.push(`withdraw:${mutation.key}`);
       }
+    }),
+    onInteraction: vi.fn((listener: (event: PresentationInteraction) => void) => {
+      interactionListener = listener;
+      return {
+        dispose: () => {
+          if (interactionListener === listener) interactionListener = () => undefined;
+        },
+      };
     }),
   };
 }

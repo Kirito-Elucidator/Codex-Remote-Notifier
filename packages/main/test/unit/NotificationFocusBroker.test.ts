@@ -222,6 +222,25 @@ describe('NotificationFocusBroker', () => {
     ]);
   });
 
+  it('keeps a successful target claim when foreground window focus fails', async () => {
+    const log = { appendLine: vi.fn() };
+    const broker = await createBroker(log);
+    vi.mocked(commands.executeCommand).mockImplementation(async (command) => {
+      if (command === COMMAND_FOCUS_CODEX_SESSION) {
+        return { ok: true, reason: 'focused', terminal_name: 'Remote Codex' };
+      }
+      if (command === 'workbench.action.focusWindow') throw new Error('window no longer exists');
+      return undefined;
+    });
+
+    await expect(
+      broker.claimReturnTarget(createCodexReturnTarget({ sessionId: 'remote-session-2' })),
+    ).resolves.toBe(true);
+    expect(log.appendLine).toHaveBeenCalledWith(
+      expect.stringContaining('Focus-window command failed after broker target claim'),
+    );
+  });
+
   it('does not claim malformed opaque broker targets', async () => {
     const broker = await createBroker();
 

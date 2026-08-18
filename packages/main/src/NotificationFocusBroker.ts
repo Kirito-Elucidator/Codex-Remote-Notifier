@@ -137,7 +137,13 @@ export class NotificationFocusBroker implements vscode.Disposable {
           session_id: target.sessionId,
         });
         if (!result?.ok) continue;
-        await vscode.commands.executeCommand('workbench.action.focusWindow');
+        try {
+          await vscode.commands.executeCommand('workbench.action.focusWindow');
+        } catch (error) {
+          this.log?.appendLine(
+            `[NotificationFocusBroker] Focus-window command failed after broker target claim: ${error}`,
+          );
+        }
         this.log?.appendLine(
           `[NotificationFocusBroker] Claimed broker target in terminal "${result.terminal_name ?? ''}"`,
         );
