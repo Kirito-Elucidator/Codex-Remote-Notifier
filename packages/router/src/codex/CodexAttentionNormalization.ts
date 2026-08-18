@@ -22,7 +22,6 @@ const MAXIMUM_INVOCATION_OBSERVATIONS = 4_096;
 interface PendingOutcome {
   exchange: PresentationExchange;
   occurrenceKey: string;
-  record: PresentationRecord;
   sequence: number;
 }
 
@@ -203,7 +202,6 @@ class InvocationActor {
       pending = {
         exchange,
         occurrenceKey: observation.occurrenceKey,
-        record,
         sequence: observation.sourceSequence,
       };
       state.pendingOutcome = pending;

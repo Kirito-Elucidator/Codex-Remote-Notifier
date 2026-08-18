@@ -54,7 +54,6 @@ interface ExitResult {
 
 interface BridgeConnection {
   readonly attentionCapture?: CodexAttentionProtocolCapture;
-  readonly connectionId: string;
   readonly primary: boolean;
   readonly framer: JsonLineFramer;
   pendingClientLines: string[];
@@ -77,30 +76,33 @@ export interface CodexAttentionBridgeOptions {
   version: string;
 }
 
-export class CodexRouterClient {
-  private readonly queue: CodexProtocolEvent[] = [];
-  private pumping = false;
-  private stopped = false;
-  private retryDelayMs = 100;
-  private wakeRetry?: () => void;
+type RouterDeliveryOutcome = 'applied' | 'drop' | 'retry';
+
+abstract class RetainedRouterClient<T> {
+  private readonly queue: T[] = [];
   private emptyWaiters: Array<() => void> = [];
+  private pumping = false;
+  private retryDelayMs = 100;
+  private stopped = false;
+  private wakeRetry?: () => void;
 
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
-    private readonly diagnostics: (message: string) => void = () => {},
+    private readonly environment: NodeJS.ProcessEnv,
+    protected readonly diagnostics: (message: string) => void,
   ) {}
 
-  post(event: CodexProtocolEvent): void {
-    if (this.stopped) return;
-    if (this.queue.length >= MAX_ROUTER_EVENTS) {
-      this.queue.shift();
-      this.diagnostics('Router event queue reached its safety limit; oldest event was dropped');
-    }
-    this.queue.push(event);
-    void this.pump();
+  protected get capacityReached(): boolean {
+    return this.queue.length >= MAX_ROUTER_EVENTS;
   }
 
-  async drain(timeoutMs: number): Promise<void> {
+  protected discardOldest(): void {
+    this.queue.shift();
+  }
+
+  protected async drainQueue(
+    timeoutMs: number,
+    undeliveredMessage: (count: number) => string,
+  ): Promise<void> {
     if (this.queue.length === 0 && !this.pumping) return;
     this.retryDelayMs = 100;
     this.wakeRetry?.();
@@ -109,10 +111,19 @@ export class CodexRouterClient {
       delay(timeoutMs),
     ]);
     if (this.queue.length > 0) {
-      this.diagnostics(
-        `Router did not recover before shutdown; ${this.queue.length} sanitized event(s) could not be delivered`,
-      );
+      this.diagnostics(undeliveredMessage(this.queue.length));
     }
+  }
+
+  protected enqueue(item: T): boolean {
+    if (this.stopped) return false;
+    this.queue.push(item);
+    void this.pump();
+    return true;
+  }
+
+  protected rejectionMessage(_item: T): string | undefined {
+    return undefined;
   }
 
   stop(): void {
@@ -126,13 +137,13 @@ export class CodexRouterClient {
     this.pumping = true;
     try {
       while (this.queue.length > 0 && !this.stopped) {
-        const endpoint = await this.resolveEndpoint();
-        const outcome = endpoint
-          ? await postJson(endpoint.url, endpoint.token, this.queue[0])
-          : 'retry';
-        if (outcome === 'accepted' || outcome === 'drop') {
+        const item = this.queue[0];
+        const endpoint = await resolveRouterEndpoint(this.environment);
+        const outcome = endpoint ? await this.deliver(item, endpoint) : 'retry';
+        if (outcome === 'applied' || outcome === 'drop') {
           if (outcome === 'drop') {
-            this.diagnostics(`Router rejected a sanitized ${this.queue[0].method} event`);
+            const message = this.rejectionMessage(item);
+            if (message !== undefined) this.diagnostics(message);
           }
           this.queue.shift();
           this.retryDelayMs = 100;
@@ -148,8 +159,15 @@ export class CodexRouterClient {
     }
   }
 
-  private async resolveEndpoint(): Promise<{ url: URL; token: string } | undefined> {
-    return resolveRouterEndpoint(this.environment);
+  protected abstract deliver(
+    item: T,
+    endpoint: { url: URL; token: string },
+  ): Promise<RouterDeliveryOutcome>;
+
+  private resolveEmptyWaiters(): void {
+    const waiters = this.emptyWaiters;
+    this.emptyWaiters = [];
+    for (const resolve of waiters) resolve();
   }
 
   private waitBeforeRetry(): Promise<void> {
@@ -163,119 +181,90 @@ export class CodexRouterClient {
       this.wakeRetry = finish;
     });
   }
+}
 
-  private resolveEmptyWaiters(): void {
-    const waiters = this.emptyWaiters;
-    this.emptyWaiters = [];
-    for (const resolve of waiters) resolve();
+export class CodexRouterClient extends RetainedRouterClient<CodexProtocolEvent> {
+  constructor(
+    environment: NodeJS.ProcessEnv = process.env,
+    diagnostics: (message: string) => void = () => {},
+  ) {
+    super(environment, diagnostics);
+  }
+
+  post(event: CodexProtocolEvent): void {
+    if (this.capacityReached) {
+      this.discardOldest();
+      this.diagnostics('Router event queue reached its safety limit; oldest event was dropped');
+    }
+    this.enqueue(event);
+  }
+
+  drain(timeoutMs: number): Promise<void> {
+    return this.drainQueue(
+      timeoutMs,
+      (count) =>
+        `Router did not recover before shutdown; ${count} sanitized event(s) could not be delivered`,
+    );
+  }
+
+  protected async deliver(
+    event: CodexProtocolEvent,
+    endpoint: { url: URL; token: string },
+  ): Promise<RouterDeliveryOutcome> {
+    const outcome = await postJson(endpoint.url, endpoint.token, event);
+    return outcome === 'accepted' ? 'applied' : outcome;
+  }
+
+  protected rejectionMessage(event: CodexProtocolEvent): string {
+    return `Router rejected a sanitized ${event.method} event`;
   }
 }
 
-export class CodexAttentionRouterClient {
+export class CodexAttentionRouterClient extends RetainedRouterClient<AppendObservationExchange> {
   private readonly deliveryGeneration = randomBytes(16).toString('hex');
-  private readonly queue: AppendObservationExchange[] = [];
-  private emptyWaiters: Array<() => void> = [];
-  private pumping = false;
-  private retryDelayMs = 100;
-  private stopped = false;
-  private wakeRetry?: () => void;
 
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
-    private readonly diagnostics: (message: string) => void = () => {},
-  ) {}
+    environment: NodeJS.ProcessEnv = process.env,
+    diagnostics: (message: string) => void = () => {},
+  ) {
+    super(environment, diagnostics);
+  }
 
   post(scope: SourceScope, observation: SanitizedAttentionObservation): void {
-    if (this.stopped) return;
-    if (this.queue.length >= MAX_ROUTER_EVENTS) {
+    if (this.capacityReached) {
       this.diagnostics(
         'Router attention queue reached its safety limit; newest observation was discarded',
       );
       return;
     }
-    this.queue.push({
+    this.enqueue({
       kind: 'append',
       deliveryGeneration: this.deliveryGeneration,
       scope,
       fromSequence: observation.sourceSequence,
       observations: [observation],
     });
-    void this.pump();
   }
 
-  async drain(timeoutMs: number): Promise<void> {
-    if (this.queue.length === 0 && !this.pumping) return;
-    this.retryDelayMs = 100;
-    this.wakeRetry?.();
-    await Promise.race([
-      new Promise<void>((resolve) => this.emptyWaiters.push(resolve)),
-      delay(timeoutMs),
-    ]);
-    if (this.queue.length > 0) {
-      this.diagnostics(
-        `Router did not apply ${this.queue.length} attention observation(s) before shutdown`,
-      );
-    }
+  drain(timeoutMs: number): Promise<void> {
+    return this.drainQueue(
+      timeoutMs,
+      (count) => `Router did not apply ${count} attention observation(s) before shutdown`,
+    );
   }
 
-  stop(): void {
-    this.stopped = true;
-    this.wakeRetry?.();
-    this.resolveEmptyWaiters();
+  protected async deliver(
+    exchange: AppendObservationExchange,
+    endpoint: { url: URL; token: string },
+  ): Promise<RouterDeliveryOutcome> {
+    const outcome = await postAttentionJson(endpoint.url, endpoint.token, exchange);
+    if (outcome.kind !== 'receipt') return outcome.kind;
+    const through = exchange.observations.at(-1)?.sourceSequence ?? exchange.fromSequence;
+    return (outcome.receipt.appliedThrough ?? 0) >= through ? 'applied' : 'retry';
   }
 
-  private async pump(): Promise<void> {
-    if (this.pumping || this.stopped) return;
-    this.pumping = true;
-    try {
-      while (this.queue.length > 0 && !this.stopped) {
-        const exchange = this.queue[0];
-        const endpoint = await resolveRouterEndpoint(this.environment);
-        const outcome = endpoint
-          ? await postAttentionJson(endpoint.url, endpoint.token, exchange)
-          : { kind: 'retry' as const };
-        if (outcome.kind === 'drop') {
-          this.diagnostics(
-            `Router rejected attention observation ${exchange.scope.invocationId}:${exchange.fromSequence}`,
-          );
-          this.queue.shift();
-          this.retryDelayMs = 100;
-          continue;
-        }
-        if (outcome.kind === 'receipt') {
-          const through = exchange.observations.at(-1)?.sourceSequence ?? exchange.fromSequence;
-          if ((outcome.receipt.appliedThrough ?? 0) >= through) {
-            this.queue.shift();
-            this.retryDelayMs = 100;
-            continue;
-          }
-        }
-        await this.waitBeforeRetry();
-        this.retryDelayMs = Math.min(2_000, this.retryDelayMs * 2);
-      }
-    } finally {
-      this.pumping = false;
-      if (this.queue.length === 0) this.resolveEmptyWaiters();
-      else if (!this.stopped) void this.pump();
-    }
-  }
-
-  private resolveEmptyWaiters(): void {
-    const waiters = this.emptyWaiters;
-    this.emptyWaiters = [];
-    for (const resolve of waiters) resolve();
-  }
-
-  private waitBeforeRetry(): Promise<void> {
-    return new Promise((resolve) => {
-      const finish = () => {
-        clearTimeout(timer);
-        if (this.wakeRetry === finish) this.wakeRetry = undefined;
-        resolve();
-      };
-      const timer = setTimeout(finish, this.retryDelayMs);
-      this.wakeRetry = finish;
-    });
+  protected rejectionMessage(exchange: AppendObservationExchange): string {
+    return `Router rejected attention observation ${exchange.scope.invocationId}:${exchange.fromSequence}`;
   }
 }
 
@@ -374,7 +363,6 @@ export class CodexWebSocketBridge {
     const connectionId = randomBytes(16).toString('hex');
     const authorityEpoch = randomBytes(16).toString('hex');
     return {
-      connectionId,
       primary,
       ...(this.attention === undefined
         ? {}

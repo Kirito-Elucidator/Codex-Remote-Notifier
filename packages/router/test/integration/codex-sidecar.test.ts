@@ -132,10 +132,13 @@ describe('CodexWebSocketBridge', () => {
 
     client.send('{"id":1,"method":"initialize","params":{}}');
     await onceText(appServer.stdin);
+    appServer.stdout.write('{"id":1,"result":{}}\n');
+    client.send('{"id":2,"method":"thread/start","params":{"cwd":"/repo"}}');
+    await onceText(appServer.stdin);
     appServer.stdout.write(
       [
         '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null}}}',
-        '{"id":1,"result":{}}',
+        '{"id":2,"result":{"thread":{"id":"thread-1"}}}',
         '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"audited success"}]}}}',
       ].join('\n') + '\n',
@@ -769,9 +772,12 @@ async function createFakeCodex(): Promise<{
       '      const line = pending.slice(0, newline);',
       '      pending = pending.slice(newline + 1);',
       '      if (line) {',
-      "        process.stdout.write(JSON.stringify({ id: 1, result: {} }) + '\\n');",
-      "        if (process.env.FAKE_REMOTE_MODE !== 'fail-after-initialize') {",
+      '        const request = JSON.parse(line);',
+      "        if (request.method === 'initialize') {",
+      "          process.stdout.write(JSON.stringify({ id: request.id, result: {} }) + '\\n');",
+      "        } else if (request.method === 'thread/start' && process.env.FAKE_REMOTE_MODE !== 'fail-after-initialize') {",
       "          process.stdout.write(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'thread-1', cwd: process.cwd(), name: 'Fake session' } } }) + '\\n');",
+      "          process.stdout.write(JSON.stringify({ id: request.id, result: { thread: { id: 'thread-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-1', turnId: 'turn-1', command: 'private-command' } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [{ type: 'agentMessage', text: 'audited success' }] } } }) + '\\n');",
@@ -797,14 +803,15 @@ async function createFakeCodex(): Promise<{
       "    client.on('message', () => {",
       '      messages += 1;',
       "      if (process.env.FAKE_REMOTE_MODE === 'fail-after-initialize') { client.close(); return; }",
-      '      if (messages < 4) return;',
+      "      if (messages === 1) { client.send(JSON.stringify({ id: 2, method: 'thread/start', params: {} })); return; }",
+      '      if (messages < 6) return;',
       "      if (process.env.FAKE_REMOTE_MODE !== 'nested-connect') { client.close(); return; }",
       '      if (nestedPickerStarted) return;',
       '      nestedPickerStarted = true;',
       "      const picker = new WebSocket(address, { headers: { Authorization: 'Bearer ' + process.env[tokenName] } });",
       '      let pickerMessages = 0;',
       "      picker.on('open', () => picker.send(JSON.stringify({ id: 1, method: 'initialize', params: {} })));",
-      "      picker.on('message', () => { pickerMessages += 1; if (pickerMessages >= 4) picker.close(); });",
+      "      picker.on('message', () => { pickerMessages += 1; if (pickerMessages === 1) { picker.send(JSON.stringify({ id: 2, method: 'thread/start', params: {} })); return; } if (pickerMessages >= 6) picker.close(); });",
       "      picker.on('close', () => { log('nested-picker-exit', { pickerMessages }); client.close(); });",
       "      picker.on('error', () => { log('nested-picker-error'); process.exit(44); });",
       '    });',

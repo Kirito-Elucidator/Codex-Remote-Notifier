@@ -173,6 +173,38 @@ describe('CodexAttentionNormalization.exchange', () => {
     });
     expect(presentation.exchange).not.toHaveBeenCalled();
   });
+
+  it('independently rejects a turn that lacks exact connection qualification', async () => {
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await expect(
+      normalization.exchange(
+        append([
+          {
+            kind: 'turn-start',
+            sourceSequence: 1,
+            turnKey: 'unbound-turn',
+            returnTarget: 'opaque-return-target',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 2,
+            turnKey: 'unbound-turn',
+            result: 'success',
+            occurrenceKey: 'unbound-turn:success',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({
+      receivedThrough: 2,
+      appliedThrough: 2,
+      monitoring: 'degraded',
+    });
+    expect(presentation.exchange).not.toHaveBeenCalled();
+  });
 });
 
 function append(

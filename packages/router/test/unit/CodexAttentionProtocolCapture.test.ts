@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { parseObservationExchange } from 'remote-notifier-shared/attentionExchange';
+import { parseCodexReturnTarget } from 'remote-notifier-shared/codexReturnTarget';
+
 import { CodexAttentionProtocolCapture } from '../../src/codex/CodexAttentionProtocolCapture';
 
 describe('CodexAttentionProtocolCapture', () => {
@@ -20,7 +23,11 @@ describe('CodexAttentionProtocolCapture', () => {
         '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null}}}',
       ),
     ).toEqual([]);
-    expect(capture.observeServerText('{"id":1,"result":{"capabilities":{}}}')).toEqual([
+    expect(capture.observeServerText('{"id":1,"result":{"capabilities":{}}}')).toEqual([]);
+    expect(
+      capture.observeClientText('{"id":2,"method":"thread/start","params":{"cwd":"/repo"}}'),
+    ).toEqual([]);
+    expect(capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}')).toEqual([
       {
         kind: 'connection-qualification',
         sourceSequence: 1,
@@ -30,11 +37,10 @@ describe('CodexAttentionProtocolCapture', () => {
         foregroundOwnership: 'confirmed',
       },
     ]);
-    expect(
-      capture.observeServerText(
-        '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
-      ),
-    ).toEqual([
+    const turnStart = capture.observeServerText(
+      '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
+    );
+    expect(turnStart).toEqual([
       {
         kind: 'turn-start',
         sourceSequence: 2,
@@ -42,6 +48,11 @@ describe('CodexAttentionProtocolCapture', () => {
         returnTarget: expect.any(String),
       },
     ]);
+    expect(
+      turnStart[0].kind === 'turn-start'
+        ? parseCodexReturnTarget(turnStart[0].returnTarget)
+        : undefined,
+    ).toEqual({ sessionId: 'thread-1' });
     expect(
       capture.observeServerText(
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"已完成 🙂"}]}}}',
@@ -94,10 +105,57 @@ describe('CodexAttentionProtocolCapture', () => {
     });
     descendant.observeClientText('{"id":1,"method":"initialize","params":{}}');
     descendant.observeServerText('{"id":1,"result":{}}');
+    descendant.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    descendant.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
     expect(
       descendant.observeServerText(
         '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":"parent-1","source":{"subAgent":true}}}}',
       ),
     ).toEqual([]);
+  });
+
+  it('bounds a combining-mark preview to the source-neutral byte contract', () => {
+    const capture = new CodexAttentionProtocolCapture({
+      invocationId: 'invocation-1',
+      connectionId: 'primary',
+      authorityEpoch: 'authority-1',
+      version: 'codex-cli 0.146.0',
+      primary: true,
+    });
+    capture.observeClientText('{"id":1,"method":"initialize","params":{}}');
+    capture.observeServerText('{"id":1,"result":{}}');
+    capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
+    capture.observeServerText('{"method":"thread/started","params":{"thread":{"id":"thread-1"}}}');
+    capture.observeServerText(
+      '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
+    );
+    const text = `e${'\u0301'.repeat(20_000)}`;
+    const [success] = capture.observeServerText(
+      JSON.stringify({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: {
+            id: 'turn-1',
+            status: 'completed',
+            items: [{ type: 'agentMessage', text }],
+          },
+        },
+      }),
+    );
+
+    expect(success).toMatchObject({ kind: 'terminal-result' });
+    if (success.kind !== 'terminal-result') throw new Error('expected terminal result');
+    expect(Buffer.byteLength(success.canonicalBody ?? '', 'utf8')).toBeLessThanOrEqual(16_384);
+    expect(() =>
+      parseObservationExchange({
+        kind: 'append',
+        deliveryGeneration: 'delivery-1',
+        scope: capture.scope,
+        fromSequence: success.sourceSequence,
+        observations: [success],
+      }),
+    ).not.toThrow();
   });
 });
