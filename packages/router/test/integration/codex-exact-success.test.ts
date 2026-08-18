@@ -102,7 +102,7 @@ describe('exact foreground success', () => {
     capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
     const observations = [
       ...capture.observeServerText(
-        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null,"source":"cli"}}}',
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
       ),
       ...capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}'),
       ...capture.observeServerText(

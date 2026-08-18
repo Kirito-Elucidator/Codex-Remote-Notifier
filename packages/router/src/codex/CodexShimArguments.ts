@@ -202,20 +202,22 @@ export function injectRemoteArguments(
 }
 
 export function isCodexProtocolVersion(versionOutput: string): boolean {
-  const match = versionOutput.match(/\b(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?\b/);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  const patch = Number(match[3]);
+  const version = parseCodexProtocolVersion(versionOutput);
+  if (!version) return false;
+  const [major, minor, patch] = version.split('.').map(Number);
   return major > 0 || minor > 145 || (minor === 145 && patch >= 0);
 }
 
 export function isAuditedCodexProtocolVersion(versionOutput: string): boolean {
-  const match = versionOutput.match(/\b(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?\b/);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
+  const version = parseCodexProtocolVersion(versionOutput);
+  if (!version) return false;
+  const [major, minor] = version.split('.').map(Number);
   return major === 0 && minor >= 145 && minor <= 147;
+}
+
+export function parseCodexProtocolVersion(value: string): string | undefined {
+  const match = value.match(/\b(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?\b/);
+  return match ? `${Number(match[1])}.${Number(match[2])}.${Number(match[3])}` : undefined;
 }
 
 function parseLongOption(raw: string): { name: string; value?: string } | undefined {

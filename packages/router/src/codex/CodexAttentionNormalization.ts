@@ -15,6 +15,9 @@ import {
   SanitizedAttentionObservation,
   SourceScope,
 } from 'remote-notifier-shared';
+import { createCodexReturnTarget } from 'remote-notifier-shared/codexReturnTarget';
+
+import { isAuditedCodexProtocolVersion } from './CodexShimArguments';
 
 const MAXIMUM_INVOCATION_BYTES = 8 * 1024 * 1024;
 const MAXIMUM_INVOCATION_OBSERVATIONS = 4_096;
@@ -146,11 +149,7 @@ class InvocationActor {
   ): Promise<boolean> {
     switch (observation.kind) {
       case 'connection-qualification':
-        state.qualified =
-          observation.initialized &&
-          observation.primary &&
-          observation.capabilities === 'audited' &&
-          observation.foregroundOwnership === 'confirmed';
+        state.qualified = independentlyQualified(observation);
         state.monitoring = state.qualified ? 'exact' : 'compatibility';
         return true;
       case 'turn-start':
@@ -245,6 +244,43 @@ class InvocationActor {
     if (admissionReceipt !== undefined) return admissionReceipt;
     await this.applyAdmitted(input, state);
     return receipt(state);
+  }
+}
+
+function independentlyQualified(
+  observation: Extract<SanitizedAttentionObservation, { kind: 'connection-qualification' }>,
+): boolean {
+  const evidence = observation.evidence;
+  if (evidence === undefined) return false;
+  if (
+    !observation.initialized ||
+    !observation.primary ||
+    observation.capabilities !== 'audited' ||
+    observation.foregroundOwnership !== 'confirmed' ||
+    evidence.clientName !== 'codex-tui' ||
+    !evidence.experimentalApi ||
+    evidence.optedOutNotifications.length !== 0 ||
+    !evidence.initializationAcknowledged ||
+    evidence.runtimeVersion !== evidence.clientVersion ||
+    !isAuditedCodexProtocolVersion(evidence.runtimeVersion) ||
+    evidence.initializationRequestKey !== evidence.initializationResponseKey ||
+    evidence.foregroundRequestKey !== evidence.foregroundResponseKey ||
+    evidence.requestedThreadKey !== evidence.announcedThreadKey
+  ) {
+    return false;
+  }
+  const prefix = `codex_cli_rs/${evidence.runtimeVersion}`;
+  if (
+    !evidence.serverUserAgent.startsWith(prefix) ||
+    !['', ' ', '\t'].includes(evidence.serverUserAgent.slice(prefix.length, prefix.length + 1))
+  ) {
+    return false;
+  }
+  try {
+    createCodexReturnTarget({ sessionId: evidence.requestedThreadKey });
+    return true;
+  } catch {
+    return false;
   }
 }
 

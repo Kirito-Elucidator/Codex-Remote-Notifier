@@ -18,7 +18,7 @@ describe('CodexAttentionProtocolCapture', () => {
     expect(capture.observeClientText(initializeRequest(1, '0.147.2'))).toEqual([]);
     expect(
       capture.observeServerText(
-        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null,"source":"cli"}}}',
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
       ),
     ).toEqual([]);
     expect(capture.observeServerText(initializeResponse(1, '0.147.2'))).toEqual([]);
@@ -27,14 +27,24 @@ describe('CodexAttentionProtocolCapture', () => {
       capture.observeClientText('{"id":2,"method":"thread/start","params":{"cwd":"/repo"}}'),
     ).toEqual([]);
     expect(capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}')).toEqual([
-      {
+      expect.objectContaining({
         kind: 'connection-qualification',
         sourceSequence: 1,
         initialized: true,
         primary: true,
         capabilities: 'audited',
         foregroundOwnership: 'confirmed',
-      },
+        evidence: expect.objectContaining({
+          runtimeVersion: '0.147.2',
+          initializationRequestKey: 'number:1',
+          initializationResponseKey: 'number:1',
+          foregroundRequestKey: 'number:2',
+          foregroundResponseKey: 'number:2',
+          requestedThreadKey: 'thread-1',
+          announcedThreadKey: 'thread-1',
+          foregroundSessionKey: 'session-root',
+        }),
+      }),
     ]);
     const turnStart = capture.observeServerText(
       '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
@@ -69,7 +79,7 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
   });
 
-  it('rejects auxiliary, unaudited, and descendant protocol shapes before sequencing', () => {
+  it('rejects auxiliary and unaudited shapes while direct ownership wins over old ancestry', () => {
     for (const capture of [
       new CodexAttentionProtocolCapture({
         invocationId: 'invocation-1',
@@ -109,16 +119,25 @@ describe('CodexAttentionProtocolCapture', () => {
     descendant.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
     expect(
       descendant.observeServerText(
-        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":"parent-1","source":{"subAgent":true}}}}',
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":"parent-1","source":{"subAgent":{}}}}}',
       ),
-    ).toEqual([]);
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'connection-qualification',
+        evidence: expect.objectContaining({
+          foregroundSource: 'subAgent',
+          foregroundParentKey: 'parent-1',
+        }),
+      }),
+    ]);
   });
 
   it('does not qualify incomplete initialization or foreground ownership metadata', () => {
     for (const thread of [
-      { id: 'thread-1', parentThreadId: null },
-      { id: 'thread-1', parentThreadId: 'parent-1', source: 'cli' },
-      { id: 'thread-1', parentThreadId: null, source: { subAgent: {} } },
+      { id: 'thread-1', sessionId: 'session-root', parentThreadId: null },
+      { id: 'thread-1', parentThreadId: null, source: 'cli' },
+      { id: 'thread-1', sessionId: 'session-root', parentThreadId: 42, source: 'cli' },
+      { id: 'thread-1', sessionId: 'session-root', parentThreadId: null, source: null },
     ]) {
       const capture = new CodexAttentionProtocolCapture({
         invocationId: 'invocation-1',
@@ -140,6 +159,10 @@ describe('CodexAttentionProtocolCapture', () => {
     for (const [request, response] of [
       [initializeRequest(1, '0.147.0'), '{"id":1,"result":{}}'],
       [initializeRequest(1, '0.147.0'), initializeResponse(1, '0.146.0')],
+      [
+        initializeRequest(1, '0.147.0'),
+        '{"id":1,"result":{"userAgent":"not-codex/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}',
+      ],
       ['{"id":1,"method":"initialize","params":{}}', initializeResponse(1, '0.147.0')],
       [initializeRequest(1, '0.147.0', ['turn/completed']), initializeResponse(1, '0.147.0')],
     ]) {
@@ -157,10 +180,47 @@ describe('CodexAttentionProtocolCapture', () => {
       capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
       expect(
         capture.observeServerText(
-          '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null,"source":"cli"}}}',
+          '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
         ),
       ).toEqual([]);
     }
+  });
+
+  it('rejects malformed handshake responses and unroutable thread identifiers', () => {
+    const malformedInitialized = initializedCapture(false);
+    malformedInitialized.observeClientText('{"id":99,"method":"initialized"}');
+    malformedInitialized.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    malformedInitialized.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    expect(
+      malformedInitialized.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}'),
+    ).toEqual([]);
+
+    const contradictoryResponse = initializedCapture();
+    contradictoryResponse.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    contradictoryResponse.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    expect(
+      contradictoryResponse.observeServerText(
+        '{"id":2,"result":{"thread":{"id":"thread-1"}},"error":{"code":-1}}',
+      ),
+    ).toEqual([]);
+
+    const unroutableThread = initializedCapture();
+    unroutableThread.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    unroutableThread.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread.1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    expect(
+      unroutableThread.observeServerText('{"id":2,"result":{"thread":{"id":"thread.1"}}}'),
+    ).toEqual([]);
+    expect(() =>
+      unroutableThread.observeServerText(
+        '{"method":"turn/started","params":{"threadId":"thread.1","turn":{"id":"turn-1"}}}',
+      ),
+    ).not.toThrow();
   });
 
   it('bounds a combining-mark preview to the source-neutral byte contract', () => {
@@ -177,7 +237,7 @@ describe('CodexAttentionProtocolCapture', () => {
     capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
     capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
     capture.observeServerText(
-      '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null,"source":"cli"}}}',
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
     );
     capture.observeServerText(
       '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
@@ -265,6 +325,19 @@ function initializeRequest(id: number, version: string, optOut?: string[]): stri
 }
 
 function qualifiedCapture(): CodexAttentionProtocolCapture {
+  const capture = initializedCapture();
+  capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+  capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
+  capture.observeServerText(
+    '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+  );
+  capture.observeServerText(
+    '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
+  );
+  return capture;
+}
+
+function initializedCapture(acknowledge = true): CodexAttentionProtocolCapture {
   const capture = new CodexAttentionProtocolCapture({
     invocationId: 'invocation-1',
     connectionId: 'primary',
@@ -274,14 +347,6 @@ function qualifiedCapture(): CodexAttentionProtocolCapture {
   });
   capture.observeClientText(initializeRequest(1, '0.146.0'));
   capture.observeServerText(initializeResponse(1, '0.146.0'));
-  capture.observeClientText('{"method":"initialized"}');
-  capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
-  capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
-  capture.observeServerText(
-    '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null,"source":"cli"}}}',
-  );
-  capture.observeServerText(
-    '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
-  );
+  if (acknowledge) capture.observeClientText('{"method":"initialized"}');
   return capture;
 }

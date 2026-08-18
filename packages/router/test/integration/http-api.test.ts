@@ -3,6 +3,7 @@ import * as http from 'http';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AttentionPresentationPort,
+  ConnectionQualificationEvidence,
   NotificationPresenter,
   PresentationExchange,
 } from 'remote-notifier-shared';
@@ -26,7 +27,7 @@ describe('HTTP API Integration', () => {
     mockPresenter = { present: vi.fn().mockResolvedValue(undefined) };
     const config = {
       port: 0,
-      maxBodySize: 1024,
+      maxBodySize: 4096,
       enabled: true,
       notificationLevel: 'information',
       showTimestamp: false,
@@ -190,7 +191,7 @@ describe('HTTP API Integration', () => {
     });
 
     it('returns 413 for payload exceeding maxBodySize', async () => {
-      const largeBody = JSON.stringify({ message: 'x'.repeat(2000) });
+      const largeBody = JSON.stringify({ message: 'x'.repeat(5000) });
       const res = await sendRaw(
         port,
         'POST',
@@ -322,6 +323,7 @@ describe('HTTP API Integration', () => {
             primary: true,
             capabilities: 'audited',
             foregroundOwnership: 'confirmed',
+            evidence: qualificationEvidence(),
           },
           {
             kind: 'turn-start',
@@ -519,7 +521,7 @@ describe('HTTP API Integration', () => {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        JSON.stringify({ ...validEvent, preview: 'x'.repeat(2000) }),
+        JSON.stringify({ ...validEvent, preview: 'x'.repeat(5000) }),
       );
 
       expect(response.status).toBe(413);
@@ -596,4 +598,26 @@ function sendRawChunks(
     for (const chunk of chunks) request.write(chunk);
     request.end();
   });
+}
+
+function qualificationEvidence(): ConnectionQualificationEvidence {
+  return {
+    runtimeVersion: '0.147.0',
+    clientName: 'codex-tui',
+    clientVersion: '0.147.0',
+    experimentalApi: true,
+    optedOutNotifications: [],
+    serverUserAgent: 'codex_cli_rs/0.147.0',
+    initializationRequestKey: 'number:1',
+    initializationResponseKey: 'number:1',
+    initializationAcknowledged: true,
+    foregroundRequestKind: 'start',
+    foregroundRequestKey: 'number:2',
+    foregroundResponseKey: 'number:2',
+    requestedThreadKey: 'thread-http',
+    announcedThreadKey: 'thread-http',
+    foregroundSessionKey: 'session-root',
+    foregroundSource: 'cli',
+    foregroundParentKey: null,
+  };
 }

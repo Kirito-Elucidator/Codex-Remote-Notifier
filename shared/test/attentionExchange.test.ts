@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ATTENTION_EXCHANGE_LIMITS,
   AttentionExchangeValidationError,
+  ConnectionQualificationEvidence,
   parseObservationExchange,
   parseObservationExchangeReceipt,
   parsePresentationExchange,
@@ -66,7 +67,7 @@ describe('attention exchange contracts', () => {
     ).toBe('reconcile');
   });
 
-  it('represents connection qualification without source protocol details', () => {
+  it('represents sanitized qualification evidence without raw source messages', () => {
     const exchange = parseObservationExchange({
       kind: 'append',
       deliveryGeneration: 'generation-a',
@@ -84,6 +85,7 @@ describe('attention exchange contracts', () => {
           primary: true,
           capabilities: 'audited',
           foregroundOwnership: 'confirmed',
+          evidence: qualificationEvidence(),
         },
       ],
     });
@@ -284,3 +286,25 @@ describe('attention exchange contracts', () => {
     ).toThrow(/retainedRange\.throughSequence/i);
   });
 });
+
+function qualificationEvidence(): ConnectionQualificationEvidence {
+  return {
+    runtimeVersion: '0.147.0',
+    clientName: 'codex-tui',
+    clientVersion: '0.147.0',
+    experimentalApi: true,
+    optedOutNotifications: [],
+    serverUserAgent: 'codex_cli_rs/0.147.0',
+    initializationRequestKey: 'number:1',
+    initializationResponseKey: 'number:1',
+    initializationAcknowledged: true,
+    foregroundRequestKind: 'start',
+    foregroundRequestKey: 'number:2',
+    foregroundResponseKey: 'number:2',
+    requestedThreadKey: 'thread-1',
+    announcedThreadKey: 'thread-1',
+    foregroundSessionKey: 'session-root',
+    foregroundSource: 'cli',
+    foregroundParentKey: null,
+  };
+}

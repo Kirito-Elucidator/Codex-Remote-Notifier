@@ -1,11 +1,12 @@
 import type {
+  ConnectionQualificationEvidence,
   SanitizedAttentionObservation,
   SourceScope,
 } from 'remote-notifier-shared/attentionExchange';
 import { ATTENTION_EXCHANGE_LIMITS } from 'remote-notifier-shared/attentionExchange';
 import { createCodexReturnTarget } from 'remote-notifier-shared/codexReturnTarget';
 
-import { isAuditedCodexProtocolVersion } from './CodexShimArguments';
+import { isAuditedCodexProtocolVersion, parseCodexProtocolVersion } from './CodexShimArguments';
 
 const MAXIMUM_PROTOCOL_MESSAGE_BYTES = 16 * 1024 * 1024;
 
@@ -14,17 +15,37 @@ export interface CodexAttentionProtocolCaptureOptions extends SourceScope {
   version: string;
 }
 
+type ForegroundRequestKind = ConnectionQualificationEvidence['foregroundRequestKind'];
+type ForegroundSource = ConnectionQualificationEvidence['foregroundSource'];
+
+interface AuditedThread {
+  id: string;
+  sessionId: string;
+  source: ForegroundSource;
+  parentId: string | null;
+}
+
+interface BoundForegroundThread {
+  id: string;
+  requestKey: string;
+  requestKind: ForegroundRequestKind;
+}
+
 export class CodexAttentionProtocolCapture {
   private activeTurnId?: string;
-  private boundForegroundThreadId?: string;
-  private foregroundThreadCandidateId?: string;
+  private boundForegroundThread?: BoundForegroundThread;
+  private foregroundThreadCandidate?: AuditedThread;
   private foregroundThreadId?: string;
+  private initializeClientVersion?: string;
   private initializeRequestId?: string;
+  private initializeResponseId?: string;
   private initializeResponseValidated = false;
   private initialized = false;
-  private readonly pendingThreadRequests = new Set<string>();
+  private readonly pendingThreadRequests = new Map<string, ForegroundRequestKind>();
   private pendingTurnId?: string;
+  private qualificationEvidence?: ConnectionQualificationEvidence;
   private qualified = false;
+  private serverUserAgent?: string;
   private sourceSequence = 0;
 
   readonly scope: SourceScope;
@@ -40,20 +61,24 @@ export class CodexAttentionProtocolCapture {
   observeClientText(text: string): SanitizedAttentionObservation[] {
     const message = parseMessage(text);
     if (!this.eligible || message === undefined) return [];
-    if (message.method === 'initialized') {
+    if (isInitializedNotification(message)) {
       if (!this.initializeResponseValidated || this.initialized) return [];
       this.initialized = true;
       return [...this.qualify(), ...this.emitPendingTurn()];
     }
     if (!validRequestId(message.id)) return [];
     if (message.method === 'initialize') {
-      this.initializeRequestId = isAuditedInitializeRequest(message.params, this.options.version)
-        ? requestIdKey(message.id)
-        : undefined;
+      this.initializeClientVersion = auditedInitializeClientVersion(
+        message.params,
+        this.options.version,
+      );
+      this.initializeRequestId =
+        this.initializeClientVersion === undefined ? undefined : requestIdKey(message.id);
       return [];
     }
-    if (isForegroundThreadRequest(message.method)) {
-      this.rememberThreadRequest(requestIdKey(message.id));
+    const requestKind = foregroundRequestKind(message.method);
+    if (requestKind !== undefined) {
+      this.rememberThreadRequest(requestIdKey(message.id), requestKind);
     }
     return [];
   }
@@ -63,20 +88,31 @@ export class CodexAttentionProtocolCapture {
     if (!this.eligible || message === undefined) return [];
 
     const observations: SanitizedAttentionObservation[] = [];
+    const responseKey = requestIdKey(message.id);
+    const userAgent = isSuccessfulResponse(message)
+      ? auditedServerUserAgent(message.result, this.options.version)
+      : undefined;
     if (
       this.initializeRequestId !== undefined &&
-      requestIdKey(message.id) === this.initializeRequestId &&
-      isAuditedInitializeResult(message.result, this.options.version) &&
-      message.error === undefined
+      responseKey === this.initializeRequestId &&
+      userAgent !== undefined
     ) {
+      this.initializeResponseId = responseKey;
       this.initializeResponseValidated = true;
+      this.serverUserAgent = userAgent;
+      this.bindForegroundCandidate();
+      observations.push(...this.qualify());
+      observations.push(...this.emitPendingTurn());
       return observations;
     }
 
-    const responseId = requestIdKey(message.id);
-    if (responseId !== undefined && this.pendingThreadRequests.delete(responseId)) {
-      const threadId = responseThreadId(message.result);
-      if (threadId !== undefined) this.boundForegroundThreadId = threadId;
+    if (responseKey !== undefined && this.pendingThreadRequests.has(responseKey)) {
+      const requestKind = this.pendingThreadRequests.get(responseKey);
+      this.pendingThreadRequests.delete(responseKey);
+      const threadId = isSuccessfulResponse(message) ? responseThreadId(message.result) : undefined;
+      if (threadId !== undefined && requestKind !== undefined) {
+        this.boundForegroundThread = { id: threadId, requestKey: responseKey, requestKind };
+      }
       this.bindForegroundCandidate();
       observations.push(...this.qualify());
       observations.push(...this.emitPendingTurn());
@@ -86,9 +122,9 @@ export class CodexAttentionProtocolCapture {
     if (message.method === 'thread/started') {
       const params = isRecord(message.params) ? message.params : undefined;
       const thread = params && isRecord(params.thread) ? params.thread : undefined;
-      const threadId = thread && boundedIdentifier(thread.id);
-      if (!threadId || !isForegroundThread(thread)) return [];
-      this.foregroundThreadCandidateId = threadId;
+      const candidate = thread && auditedThread(thread);
+      if (candidate === undefined) return [];
+      this.foregroundThreadCandidate = candidate;
       this.bindForegroundCandidate();
       observations.push(...this.qualify());
       observations.push(...this.emitPendingTurn());
@@ -155,12 +191,40 @@ export class CodexAttentionProtocolCapture {
   }
 
   private bindForegroundCandidate(): void {
+    const bound = this.boundForegroundThread;
+    const candidate = this.foregroundThreadCandidate;
+    const runtimeVersion = parseCodexProtocolVersion(this.options.version);
     if (
-      this.boundForegroundThreadId !== undefined &&
-      this.boundForegroundThreadId === this.foregroundThreadCandidateId
-    ) {
-      this.foregroundThreadId = this.boundForegroundThreadId;
-    }
+      bound === undefined ||
+      candidate === undefined ||
+      bound.id !== candidate.id ||
+      runtimeVersion === undefined ||
+      this.initializeClientVersion === undefined ||
+      this.initializeRequestId === undefined ||
+      this.initializeResponseId === undefined ||
+      this.serverUserAgent === undefined
+    )
+      return;
+    this.foregroundThreadId = bound.id;
+    this.qualificationEvidence = {
+      runtimeVersion,
+      clientName: 'codex-tui',
+      clientVersion: this.initializeClientVersion,
+      experimentalApi: true,
+      optedOutNotifications: [],
+      serverUserAgent: this.serverUserAgent,
+      initializationRequestKey: this.initializeRequestId,
+      initializationResponseKey: this.initializeResponseId,
+      initializationAcknowledged: this.initialized,
+      foregroundRequestKind: bound.requestKind,
+      foregroundRequestKey: bound.requestKey,
+      foregroundResponseKey: bound.requestKey,
+      requestedThreadKey: bound.id,
+      announcedThreadKey: candidate.id,
+      foregroundSessionKey: candidate.sessionId,
+      foregroundSource: candidate.source,
+      foregroundParentKey: candidate.parentId,
+    };
   }
 
   private get eligible(): boolean {
@@ -171,18 +235,28 @@ export class CodexAttentionProtocolCapture {
     return ++this.sourceSequence;
   }
 
-  private rememberThreadRequest(requestId: string | undefined): void {
+  private rememberThreadRequest(
+    requestId: string | undefined,
+    requestKind: ForegroundRequestKind,
+  ): void {
     if (requestId === undefined) return;
-    this.pendingThreadRequests.add(requestId);
+    this.pendingThreadRequests.set(requestId, requestKind);
     while (this.pendingThreadRequests.size > 32) {
-      const oldest = this.pendingThreadRequests.values().next().value;
+      const oldest = this.pendingThreadRequests.keys().next().value;
       if (oldest === undefined) break;
       this.pendingThreadRequests.delete(oldest);
     }
   }
 
   private qualify(): SanitizedAttentionObservation[] {
-    if (this.qualified || !this.initialized || this.foregroundThreadId === undefined) return [];
+    if (
+      this.qualified ||
+      !this.initialized ||
+      this.foregroundThreadId === undefined ||
+      this.qualificationEvidence === undefined
+    )
+      return [];
+    this.qualificationEvidence.initializationAcknowledged = true;
     this.qualified = true;
     return [
       {
@@ -192,6 +266,7 @@ export class CodexAttentionProtocolCapture {
         primary: true,
         capabilities: 'audited',
         foregroundOwnership: 'confirmed',
+        evidence: this.qualificationEvidence,
       },
     ];
   }
@@ -212,54 +287,64 @@ function boundedIdentifier(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : undefined;
 }
 
-function isForegroundThread(thread: Record<string, unknown>): boolean {
-  if (!Object.prototype.hasOwnProperty.call(thread, 'source')) return false;
-  if (thread.parentThreadId !== undefined && thread.parentThreadId !== null) return false;
-  if (thread.parent_thread_id !== undefined && thread.parent_thread_id !== null) return false;
-  const source = thread.source;
-  if (source === 'subAgent') return false;
-  return !(isRecord(source) && ('subAgent' in source || 'sub_agent' in source));
-}
-
-function isForegroundThreadRequest(method: unknown): boolean {
-  return method === 'thread/fork' || method === 'thread/resume' || method === 'thread/start';
+function foregroundRequestKind(method: unknown): ForegroundRequestKind | undefined {
+  if (method === 'thread/fork') return 'fork';
+  if (method === 'thread/resume') return 'resume';
+  if (method === 'thread/start') return 'start';
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isAuditedInitializeRequest(value: unknown, versionOutput: string): boolean {
-  if (!isRecord(value) || !isRecord(value.clientInfo) || !isRecord(value.capabilities))
-    return false;
-  const clientVersion = boundedProtocolText(value.clientInfo.version);
-  if (value.clientInfo.name !== 'codex-tui' || !clientVersion) return false;
-  if (protocolVersion(clientVersion) !== protocolVersion(versionOutput)) return false;
-  if (value.capabilities.experimentalApi !== true) return false;
-  const optedOut = value.capabilities.optOutNotificationMethods;
+function isInitializedNotification(message: Record<string, unknown>): boolean {
+  if (message.method !== 'initialized') return false;
+  const keys = Object.keys(message);
+  if (keys.some((key) => key !== 'method' && key !== 'params')) return false;
   return (
-    (optedOut === undefined || optedOut === null || isStringArray(optedOut)) &&
-    !REQUIRED_NOTIFICATION_METHODS.some(
-      (method) => Array.isArray(optedOut) && optedOut.includes(method),
-    )
+    message.params === undefined ||
+    message.params === null ||
+    (isRecord(message.params) && Object.keys(message.params).length === 0)
   );
 }
 
-const REQUIRED_NOTIFICATION_METHODS = ['thread/started', 'turn/started', 'turn/completed'];
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+function isSuccessfulResponse(message: Record<string, unknown>): boolean {
+  const keys = Object.keys(message);
+  return (
+    keys.length === 2 &&
+    keys.includes('id') &&
+    keys.includes('result') &&
+    !Object.prototype.hasOwnProperty.call(message, 'error')
+  );
 }
 
-function isAuditedInitializeResult(value: unknown, versionOutput: string): boolean {
-  if (!isRecord(value)) return false;
+function auditedInitializeClientVersion(value: unknown, versionOutput: string): string | undefined {
+  if (!isRecord(value) || !isRecord(value.clientInfo) || !isRecord(value.capabilities))
+    return undefined;
+  const clientVersion = boundedProtocolText(value.clientInfo.version);
+  if (value.clientInfo.name !== 'codex-tui' || !clientVersion) return undefined;
+  const parsedClientVersion = parseCodexProtocolVersion(clientVersion);
+  if (parsedClientVersion !== parseCodexProtocolVersion(versionOutput)) return undefined;
+  if (value.capabilities.experimentalApi !== true) return undefined;
+  const optedOut = value.capabilities.optOutNotificationMethods;
+  if (optedOut !== undefined && optedOut !== null && (!Array.isArray(optedOut) || optedOut.length))
+    return undefined;
+  return parsedClientVersion;
+}
+
+function auditedServerUserAgent(value: unknown, versionOutput: string): string | undefined {
+  if (!isRecord(value)) return undefined;
   const userAgent = boundedProtocolText(value.userAgent);
   const codexHome = boundedProtocolText(value.codexHome);
   const platformFamily = boundedProtocolText(value.platformFamily);
   const platformOs = boundedProtocolText(value.platformOs);
-  if (!userAgent || !codexHome || !platformFamily || !platformOs) return false;
-  if (!isAbsoluteProtocolPath(codexHome)) return false;
-  return protocolVersion(userAgent) === protocolVersion(versionOutput);
+  if (!userAgent || !codexHome || !platformFamily || !platformOs) return undefined;
+  if (!isAbsoluteProtocolPath(codexHome)) return undefined;
+  const version = parseCodexProtocolVersion(versionOutput);
+  if (version === undefined || !userAgent.startsWith(`codex_cli_rs/${version}`)) return undefined;
+  const suffix = userAgent.slice(`codex_cli_rs/${version}`.length);
+  return suffix.length === 0 || /^\s/.test(suffix) ? userAgent : undefined;
 }
 
 function boundedProtocolText(value: unknown): string | undefined {
@@ -270,8 +355,29 @@ function isAbsoluteProtocolPath(value: string): boolean {
   return value.startsWith('/') || value.startsWith('\\\\') || /^[A-Za-z]:[\\/]/.test(value);
 }
 
-function protocolVersion(value: string): string | undefined {
-  return value.match(/\b(\d+\.\d+\.\d+)(?:[-+][^\s]+)?\b/)?.[1];
+function auditedThread(thread: Record<string, unknown>): AuditedThread | undefined {
+  const id = returnSessionIdentifier(thread.id);
+  const sessionId = boundedIdentifier(thread.sessionId);
+  const source = foregroundSource(thread.source);
+  const parentId = thread.parentThreadId;
+  if (!id || !sessionId || source === undefined) return undefined;
+  const normalizedParentId =
+    parentId === undefined || parentId === null ? null : boundedIdentifier(parentId);
+  if (normalizedParentId === undefined) return undefined;
+  return { id, sessionId, source, parentId: normalizedParentId };
+}
+
+function foregroundSource(value: unknown): ForegroundSource | undefined {
+  if (
+    typeof value === 'string' &&
+    ['appServer', 'cli', 'exec', 'unknown', 'vscode'].includes(value)
+  ) {
+    return value as ForegroundSource;
+  }
+  if (!isRecord(value)) return undefined;
+  if (boundedIdentifier(value.custom) !== undefined) return 'custom';
+  if (isRecord(value.subAgent)) return 'subAgent';
+  return undefined;
 }
 
 function parseMessage(text: string): Record<string, unknown> | undefined {
@@ -290,8 +396,19 @@ function requestIdKey(value: unknown): string | undefined {
 
 function responseThreadId(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
-  if (isRecord(value.thread)) return boundedIdentifier(value.thread.id);
-  return boundedIdentifier(value.threadId) ?? boundedIdentifier(value.thread_id);
+  if (isRecord(value.thread)) return returnSessionIdentifier(value.thread.id);
+  return undefined;
+}
+
+function returnSessionIdentifier(value: unknown): string | undefined {
+  const identifier = boundedIdentifier(value);
+  if (identifier === undefined) return undefined;
+  try {
+    createCodexReturnTarget({ sessionId: identifier });
+    return identifier;
+  } catch {
+    return undefined;
+  }
 }
 
 function successPreview(items: unknown): string | undefined {

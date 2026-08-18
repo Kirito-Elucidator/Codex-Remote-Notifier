@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type {
   AttentionPresentationPort,
+  ConnectionQualificationEvidence,
   ObservationExchange,
   PresentationExchange,
   PresentationReceipt,
@@ -33,6 +34,7 @@ describe('CodexAttentionNormalization.exchange', () => {
         primary: true,
         capabilities: 'audited',
         foregroundOwnership: 'confirmed',
+        evidence: qualificationEvidence(),
       },
       {
         kind: 'turn-start',
@@ -115,6 +117,7 @@ describe('CodexAttentionNormalization.exchange', () => {
         primary: true,
         capabilities: 'audited',
         foregroundOwnership: 'confirmed',
+        evidence: qualificationEvidence(),
       },
       {
         kind: 'turn-start',
@@ -205,7 +208,67 @@ describe('CodexAttentionNormalization.exchange', () => {
     });
     expect(presentation.exchange).not.toHaveBeenCalled();
   });
+
+  it('independently rejects inconsistent qualification evidence from the source adapter', async () => {
+    const presentation: AttentionPresentationPort = { exchange: vi.fn() };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await expect(
+      normalization.exchange(
+        append([
+          {
+            kind: 'connection-qualification',
+            sourceSequence: 1,
+            initialized: true,
+            primary: true,
+            capabilities: 'audited',
+            foregroundOwnership: 'confirmed',
+            evidence: qualificationEvidence({ foregroundResponseKey: 'number:99' }),
+          },
+          {
+            kind: 'turn-start',
+            sourceSequence: 2,
+            turnKey: 'turn-forged',
+            returnTarget: 'opaque-return-target',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 3,
+            turnKey: 'turn-forged',
+            result: 'success',
+            occurrenceKey: 'turn-forged:success',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'degraded' });
+    expect(presentation.exchange).not.toHaveBeenCalled();
+  });
 });
+
+function qualificationEvidence(
+  overrides: Partial<ConnectionQualificationEvidence> = {},
+): ConnectionQualificationEvidence {
+  return {
+    runtimeVersion: '0.147.0',
+    clientName: 'codex-tui',
+    clientVersion: '0.147.0',
+    experimentalApi: true,
+    optedOutNotifications: [],
+    serverUserAgent: 'codex_cli_rs/0.147.0',
+    initializationRequestKey: 'number:1',
+    initializationResponseKey: 'number:1',
+    initializationAcknowledged: true,
+    foregroundRequestKind: 'start' as const,
+    foregroundRequestKey: 'number:2',
+    foregroundResponseKey: 'number:2',
+    requestedThreadKey: 'thread-1',
+    announcedThreadKey: 'thread-1',
+    foregroundSessionKey: 'session-root',
+    foregroundSource: 'cli' as const,
+    foregroundParentKey: null,
+    ...overrides,
+  };
+}
 
 function append(
   observations: Extract<ObservationExchange, { kind: 'append' }>['observations'],

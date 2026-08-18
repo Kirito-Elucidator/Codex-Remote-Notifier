@@ -23,6 +23,26 @@ export interface SequenceRange {
   throughSequence: number;
 }
 
+export interface ConnectionQualificationEvidence {
+  runtimeVersion: string;
+  clientName: string;
+  clientVersion: string;
+  experimentalApi: boolean;
+  optedOutNotifications: string[];
+  serverUserAgent: string;
+  initializationRequestKey: string;
+  initializationResponseKey: string;
+  initializationAcknowledged: boolean;
+  foregroundRequestKind: 'fork' | 'resume' | 'start';
+  foregroundRequestKey: string;
+  foregroundResponseKey: string;
+  requestedThreadKey: string;
+  announcedThreadKey: string;
+  foregroundSessionKey: string;
+  foregroundSource: 'appServer' | 'cli' | 'custom' | 'exec' | 'subAgent' | 'unknown' | 'vscode';
+  foregroundParentKey: string | null;
+}
+
 export type SanitizedAttentionObservation =
   | {
       kind: 'connection-qualification';
@@ -31,6 +51,7 @@ export type SanitizedAttentionObservation =
       primary: boolean;
       capabilities: 'audited' | 'unsupported' | 'unknown';
       foregroundOwnership: 'confirmed' | 'unconfirmed';
+      evidence?: ConnectionQualificationEvidence;
     }
   | {
       kind: 'authority-change';
@@ -403,10 +424,18 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
     case 'connection-qualification':
       assertExactFields(
         input,
-        ['kind', 'sourceSequence', 'initialized', 'primary', 'capabilities', 'foregroundOwnership'],
+        [
+          'kind',
+          'sourceSequence',
+          'initialized',
+          'primary',
+          'capabilities',
+          'foregroundOwnership',
+          'evidence',
+        ],
         path,
       );
-      return {
+      return compact({
         kind,
         sourceSequence,
         initialized: expectBoolean(input.initialized, `${path}.initialized`),
@@ -421,7 +450,11 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
           ['confirmed', 'unconfirmed'] as const,
           `${path}.foregroundOwnership`,
         ),
-      };
+        evidence:
+          input.evidence === undefined
+            ? undefined
+            : parseConnectionQualificationEvidence(input.evidence, `${path}.evidence`),
+      });
     case 'authority-change':
       assertExactFields(input, ['kind', 'sourceSequence', 'monitoring'], path);
       return {
@@ -541,6 +574,88 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
     default:
       return fail(`${path}.kind`, 'is not a source-neutral observation kind');
   }
+}
+
+function parseConnectionQualificationEvidence(
+  value: unknown,
+  path: string,
+): ConnectionQualificationEvidence {
+  const input = expectObject(value, path);
+  assertExactFields(
+    input,
+    [
+      'runtimeVersion',
+      'clientName',
+      'clientVersion',
+      'experimentalApi',
+      'optedOutNotifications',
+      'serverUserAgent',
+      'initializationRequestKey',
+      'initializationResponseKey',
+      'initializationAcknowledged',
+      'foregroundRequestKind',
+      'foregroundRequestKey',
+      'foregroundResponseKey',
+      'requestedThreadKey',
+      'announcedThreadKey',
+      'foregroundSessionKey',
+      'foregroundSource',
+      'foregroundParentKey',
+    ],
+    path,
+  );
+  const optedOut = expectArray(input.optedOutNotifications, `${path}.optedOutNotifications`);
+  expectArrayBound(optedOut, 32, `${path}.optedOutNotifications`);
+  return {
+    runtimeVersion: expectIdentifier(input.runtimeVersion, `${path}.runtimeVersion`),
+    clientName: expectIdentifier(input.clientName, `${path}.clientName`),
+    clientVersion: expectIdentifier(input.clientVersion, `${path}.clientVersion`),
+    experimentalApi: expectBoolean(input.experimentalApi, `${path}.experimentalApi`),
+    optedOutNotifications: optedOut.map((entry, index) =>
+      expectString(entry, `${path}.optedOutNotifications[${index}]`, 200),
+    ),
+    serverUserAgent: expectString(input.serverUserAgent, `${path}.serverUserAgent`, 4_096),
+    initializationRequestKey: expectIdentifier(
+      input.initializationRequestKey,
+      `${path}.initializationRequestKey`,
+    ),
+    initializationResponseKey: expectIdentifier(
+      input.initializationResponseKey,
+      `${path}.initializationResponseKey`,
+    ),
+    initializationAcknowledged: expectBoolean(
+      input.initializationAcknowledged,
+      `${path}.initializationAcknowledged`,
+    ),
+    foregroundRequestKind: expectEnum(
+      input.foregroundRequestKind,
+      ['fork', 'resume', 'start'] as const,
+      `${path}.foregroundRequestKind`,
+    ),
+    foregroundRequestKey: expectIdentifier(
+      input.foregroundRequestKey,
+      `${path}.foregroundRequestKey`,
+    ),
+    foregroundResponseKey: expectIdentifier(
+      input.foregroundResponseKey,
+      `${path}.foregroundResponseKey`,
+    ),
+    requestedThreadKey: expectIdentifier(input.requestedThreadKey, `${path}.requestedThreadKey`),
+    announcedThreadKey: expectIdentifier(input.announcedThreadKey, `${path}.announcedThreadKey`),
+    foregroundSessionKey: expectIdentifier(
+      input.foregroundSessionKey,
+      `${path}.foregroundSessionKey`,
+    ),
+    foregroundSource: expectEnum(
+      input.foregroundSource,
+      ['appServer', 'cli', 'custom', 'exec', 'subAgent', 'unknown', 'vscode'] as const,
+      `${path}.foregroundSource`,
+    ),
+    foregroundParentKey:
+      input.foregroundParentKey === null
+        ? null
+        : expectIdentifier(input.foregroundParentKey, `${path}.foregroundParentKey`),
+  };
 }
 
 function parsePresentationMutation(value: unknown, path: string): PresentationMutation {

@@ -142,7 +142,7 @@ describe('CodexWebSocketBridge', () => {
     await onceText(appServer.stdin);
     appServer.stdout.write(
       [
-        '{"method":"thread/started","params":{"thread":{"id":"thread-1","parentThreadId":null,"source":"cli"}}}',
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
         '{"id":2,"result":{"thread":{"id":"thread-1"}}}',
         '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"audited success"}]}}}',
@@ -781,7 +781,7 @@ async function createFakeCodex(): Promise<{
       "        if (request.method === 'initialize') {",
       "          process.stdout.write(JSON.stringify({ id: request.id, result: { userAgent: 'codex_cli_rs/0.145.0', codexHome: process.cwd(), platformFamily: process.platform === 'win32' ? 'windows' : 'unix', platformOs: process.platform } }) + '\\n');",
       "        } else if (request.method === 'thread/start' && process.env.FAKE_REMOTE_MODE !== 'fail-after-initialize') {",
-      "          process.stdout.write(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'thread-1', cwd: process.cwd(), name: 'Fake session', parentThreadId: null, source: 'cli' } } }) + '\\n');",
+      "          process.stdout.write(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'thread-1', sessionId: 'session-root', cwd: process.cwd(), name: 'Fake session', parentThreadId: null, source: 'cli' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ id: request.id, result: { thread: { id: 'thread-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-1', turnId: 'turn-1', command: 'private-command' } }) + '\\n');",
