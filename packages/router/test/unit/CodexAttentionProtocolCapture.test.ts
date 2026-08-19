@@ -304,6 +304,32 @@ describe('CodexAttentionProtocolCapture', () => {
         '{"method":"turn/started","params":{"threadId":"thread.1","turn":{"id":"turn-1"}}}',
       ),
     ).not.toThrow();
+
+    const invalidUnicodeTurn = initializedCapture();
+    invalidUnicodeTurn.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    invalidUnicodeTurn.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    invalidUnicodeTurn.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
+    expect(
+      invalidUnicodeTurn.observeServerText(
+        JSON.stringify({
+          method: 'turn/started',
+          params: { threadId: 'thread-1', turn: { id: '\ud800' } },
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      invalidUnicodeTurn.observeServerText(
+        JSON.stringify({
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-1',
+            turn: { id: '\ud800', status: 'completed', items: [] },
+          },
+        }),
+      ),
+    ).toEqual([]);
   });
 
   it('bounds a combining-mark preview to the source-neutral byte contract', () => {

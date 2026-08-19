@@ -195,6 +195,27 @@ describe('attention exchange contracts', () => {
     expect(() =>
       parsePresentationReceipt({ kind: 'applied', transactionId: '', ok: true }),
     ).toThrow(AttentionExchangeValidationError);
+
+    expect(() =>
+      parseObservationExchange({
+        kind: 'append',
+        deliveryGeneration: 'generation-a',
+        scope: {
+          invocationId: 'invocation-a',
+          connectionId: 'connection-a',
+          authorityEpoch: 'epoch-a',
+        },
+        fromSequence: 1,
+        observations: [
+          {
+            kind: 'turn-start',
+            sourceSequence: 1,
+            turnKey: '\ud800',
+            returnTarget: 'opaque:return-target',
+          },
+        ],
+      }),
+    ).toThrow(/Unicode scalar/i);
   });
 
   it('preserves canonical Unicode exactly and derives a separately filtered display copy', () => {

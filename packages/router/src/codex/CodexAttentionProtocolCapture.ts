@@ -318,7 +318,10 @@ export class CodexAttentionProtocolCapture {
 }
 
 function boundedIdentifier(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= 200
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    hasOnlyUnicodeScalars(value) &&
+    Buffer.byteLength(value, 'utf8') <= 200
     ? value
     : undefined;
 }
@@ -400,13 +403,21 @@ function boundedServerUserAgent(value: unknown): string | undefined {
 }
 
 function boundedProtocolText(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= 4_096
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    hasOnlyUnicodeScalars(value) &&
+    Buffer.byteLength(value, 'utf8') <= 4_096
     ? value
     : undefined;
 }
 
 function boundedOptOutNotification(value: unknown): string | undefined {
-  return typeof value === 'string' && Buffer.byteLength(value, 'utf8') <= 200 ? value : undefined;
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    hasOnlyUnicodeScalars(value) &&
+    Buffer.byteLength(value, 'utf8') <= 200
+    ? value
+    : undefined;
 }
 
 function isAbsoluteProtocolPath(value: string): boolean {
@@ -505,6 +516,23 @@ function boundCanonicalUtf8(value: string, maximumBytes: number): string {
 function validRequestId(value: unknown): value is number | string {
   return (
     (typeof value === 'number' && Number.isSafeInteger(value)) ||
-    (typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= 200)
+    (typeof value === 'string' &&
+      value.length > 0 &&
+      hasOnlyUnicodeScalars(value) &&
+      Buffer.byteLength(value, 'utf8') <= 200)
   );
+}
+
+function hasOnlyUnicodeScalars(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
 }
