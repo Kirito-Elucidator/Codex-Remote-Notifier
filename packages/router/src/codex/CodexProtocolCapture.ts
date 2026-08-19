@@ -58,6 +58,7 @@ export class JsonLineFramer {
 
 export class CodexProtocolCapture {
   private readonly pendingRequests = new Map<string, RequestContext>();
+  private readonly descendantThreadIds = new Set<string>();
   private activeThreadId?: string;
   private activeTurnId?: string;
   private errorOccurrenceSequence = 0;
@@ -93,6 +94,7 @@ export class CodexProtocolCapture {
         readString(params.threadId) ?? readString(params.conversationId) ?? this.activeThreadId;
       if (
         requestId === undefined ||
+        (threadId !== undefined && this.descendantThreadIds.has(threadId)) ||
         (!threadId && requestMethod !== 'mcpServer/elicitation/request')
       ) {
         return [];
@@ -116,6 +118,14 @@ export class CodexProtocolCapture {
         if (!isRecord(params.thread)) return [];
         const threadId = readString(params.thread.id);
         if (!threadId) return [];
+        if (isDescendantThread(params.thread)) {
+          this.descendantThreadIds.add(threadId);
+          if (this.activeThreadId === threadId) {
+            this.activeThreadId = undefined;
+            this.activeTurnId = undefined;
+          }
+          return [];
+        }
         const cwd = boundedText(params.thread.cwd, MAX_PREVIEW_LENGTH);
         const sessionTitle = boundedText(params.thread.name, MAX_PREVIEW_LENGTH);
         this.activeThreadId = threadId;
@@ -132,7 +142,7 @@ export class CodexProtocolCapture {
         if (!isRecord(params.turn)) return [];
         const threadId = readString(params.threadId);
         const turnId = readString(params.turn.id);
-        if (!threadId || !turnId) return [];
+        if (!threadId || !turnId || this.descendantThreadIds.has(threadId)) return [];
         this.activeThreadId = threadId;
         this.activeTurnId = turnId;
         return [this.event('turn/started', { thread_id: threadId, turn_id: turnId })];
@@ -140,7 +150,13 @@ export class CodexProtocolCapture {
       case 'model/safetyBuffering/updated': {
         const threadId = readString(params.threadId);
         const turnId = readString(params.turnId);
-        if (!threadId || !turnId || typeof params.showBufferingUi !== 'boolean') return [];
+        if (
+          !threadId ||
+          !turnId ||
+          this.descendantThreadIds.has(threadId) ||
+          typeof params.showBufferingUi !== 'boolean'
+        )
+          return [];
         return [
           this.event('model/safetyBuffering/updated', {
             thread_id: threadId,
@@ -196,7 +212,14 @@ export class CodexProtocolCapture {
     const threadId = readString(params.threadId);
     const turnId = readString(params.turnId);
     const error = normalizeProtocolError(params.error);
-    if (!threadId || !turnId || !error || typeof params.willRetry !== 'boolean') return [];
+    if (
+      !threadId ||
+      !turnId ||
+      this.descendantThreadIds.has(threadId) ||
+      !error ||
+      typeof params.willRetry !== 'boolean'
+    )
+      return [];
     return [
       this.event('error', {
         thread_id: threadId,
@@ -213,7 +236,7 @@ export class CodexProtocolCapture {
     const threadId = readString(params.threadId);
     const turnId = readString(params.turn.id);
     const status = readTurnStatus(params.turn.status);
-    if (!threadId || !turnId || !status) return [];
+    if (!threadId || !turnId || !status || this.descendantThreadIds.has(threadId)) return [];
 
     const items = Array.isArray(params.turn.items) ? params.turn.items : [];
     let preview: string | undefined;
@@ -318,6 +341,14 @@ function readTurnStatus(value: unknown): CodexProtocolEvent['status'] | undefine
 
 function requestKey(value: string | number): string {
   return `${typeof value}:${String(value)}`;
+}
+
+function isDescendantThread(thread: Record<string, unknown>): boolean {
+  if (thread.parentThreadId !== undefined && thread.parentThreadId !== null) return true;
+  return (
+    thread.source === 'subAgent' ||
+    (isRecord(thread.source) && Object.prototype.hasOwnProperty.call(thread.source, 'subAgent'))
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

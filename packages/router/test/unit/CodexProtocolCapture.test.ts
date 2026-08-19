@@ -41,6 +41,54 @@ describe('CodexProtocolCapture', () => {
     expect(capture.threadEstablished).toBe(true);
   });
 
+  it('rejects structured descendant activity before the compatibility event journal', () => {
+    const capture = new CodexProtocolCapture('instance-1', ancestry);
+
+    expect(
+      capture.observeServerMessage({
+        method: 'thread/started',
+        params: {
+          thread: {
+            id: 'descendant-source',
+            parentThreadId: null,
+            source: { subAgent: {} },
+          },
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      capture.observeServerMessage({
+        method: 'thread/started',
+        params: {
+          thread: { id: 'descendant-parent', parentThreadId: 'foreground', source: 'cli' },
+        },
+      }),
+    ).toEqual([]);
+
+    for (const threadId of ['descendant-source', 'descendant-parent']) {
+      expect(
+        capture.observeServerMessage({
+          method: 'turn/started',
+          params: { threadId, turn: { id: 'same-turn' } },
+        }),
+      ).toEqual([]);
+      expect(
+        capture.observeServerMessage({
+          id: 'same-request',
+          method: 'item/fileChange/requestApproval',
+          params: { threadId, turnId: 'same-turn' },
+        }),
+      ).toEqual([]);
+      expect(
+        capture.observeServerMessage({
+          method: 'turn/completed',
+          params: { threadId, turn: { id: 'same-turn', status: 'completed' } },
+        }),
+      ).toEqual([]);
+    }
+    expect(capture.threadEstablished).toBe(false);
+  });
+
   it('whitelists request identity without forwarding questions, commands, prompts, or tokens', () => {
     const capture = new CodexProtocolCapture('instance-1', ancestry);
     const events = capture.observeServerMessage({

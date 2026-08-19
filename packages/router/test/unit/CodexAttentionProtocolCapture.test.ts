@@ -79,7 +79,7 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
   });
 
-  it('rejects auxiliary and unaudited shapes while direct ownership wins over old ancestry', () => {
+  it('rejects auxiliary, unaudited, and structurally descendant observations before sequencing', () => {
     for (const capture of [
       new CodexAttentionProtocolCapture({
         invocationId: 'invocation-1',
@@ -121,14 +121,17 @@ describe('CodexAttentionProtocolCapture', () => {
       descendant.observeServerText(
         '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":"parent-1","source":{"subAgent":{}}}}}',
       ),
-    ).toEqual([
-      expect.objectContaining({
-        kind: 'connection-qualification',
-        evidence: expect.objectContaining({
-          foregroundSource: 'subAgent',
-          foregroundParentKey: 'parent-1',
-        }),
-      }),
+    ).toEqual([]);
+    expect(descendant.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}')).toEqual(
+      [],
+    );
+
+    descendant.observeClientText('{"id":3,"method":"thread/start","params":{}}');
+    descendant.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-2","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    expect(descendant.observeServerText('{"id":3,"result":{"thread":{"id":"thread-2"}}}')).toEqual([
+      expect.objectContaining({ kind: 'connection-qualification', sourceSequence: 1 }),
     ]);
 
     const ambiguousSource = initializedCapture();
@@ -165,9 +168,7 @@ describe('CodexAttentionProtocolCapture', () => {
     frozen.observeServerText(
       '{"method":"thread/started","params":{"thread":{"id":"thread-2","sessionId":"session-2","parentThreadId":null,"source":"cli"}}}',
     );
-    expect(
-      frozen.observeServerText('{"id":3,"result":{"thread":{"id":"thread-2"}}}'),
-    ).toEqual([]);
+    expect(frozen.observeServerText('{"id":3,"result":{"thread":{"id":"thread-2"}}}')).toEqual([]);
     expect(
       frozen.observeServerText(
         '{"method":"turn/started","params":{"threadId":"thread-2","turn":{"id":"turn-2"}}}',
@@ -201,6 +202,54 @@ describe('CodexAttentionProtocolCapture', () => {
         evidence: expect.objectContaining({ optedOutNotifications: ['model/rerouted'] }),
       }),
     ]);
+  });
+
+  it('preserves numeric and string JSON-RPC request identities as distinct typed keys', () => {
+    const numeric = initializedCapture();
+    numeric.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    numeric.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    const [numericQualification] = numeric.observeServerText(
+      '{"id":2,"result":{"thread":{"id":"thread-1"}}}',
+    );
+
+    const string = new CodexAttentionProtocolCapture({
+      invocationId: 'invocation-string',
+      connectionId: 'primary-string',
+      authorityEpoch: 'authority-string',
+      version: 'codex-cli 0.146.0',
+      primary: true,
+    });
+    string.observeClientText(initializeRequest('1', '0.146.0'));
+    string.observeServerText(initializeResponse('1', '0.146.0'));
+    string.observeClientText('{"method":"initialized"}');
+    string.observeClientText('{"id":"2","method":"thread/start","params":{}}');
+    string.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    const [stringQualification] = string.observeServerText(
+      '{"id":"2","result":{"thread":{"id":"thread-1"}}}',
+    );
+
+    expect(numericQualification).toMatchObject({
+      kind: 'connection-qualification',
+      evidence: {
+        initializationRequestKey: 'number:1',
+        initializationResponseKey: 'number:1',
+        foregroundRequestKey: 'number:2',
+        foregroundResponseKey: 'number:2',
+      },
+    });
+    expect(stringQualification).toMatchObject({
+      kind: 'connection-qualification',
+      evidence: {
+        initializationRequestKey: 'string:1',
+        initializationResponseKey: 'string:1',
+        foregroundRequestKey: 'string:2',
+        foregroundResponseKey: 'string:2',
+      },
+    });
   });
 
   it('does not qualify incomplete initialization or foreground ownership metadata', () => {
@@ -405,9 +454,43 @@ describe('CodexAttentionProtocolCapture', () => {
       canonicalTitle: 'Codex completed',
     });
   });
+
+  it('keeps overlapping foreground turns independently observable on one connection', () => {
+    const capture = qualifiedCapture();
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-2"}}}',
+      ),
+    ).toEqual([
+      expect.objectContaining({ kind: 'turn-start', sourceSequence: 3, turnKey: 'turn-2' }),
+    ]);
+
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'terminal-result',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+      }),
+    ]);
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-2","status":"completed","items":[]}}}',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'terminal-result',
+        sourceSequence: 5,
+        turnKey: 'turn-2',
+      }),
+    ]);
+  });
 });
 
-function initializeResponse(id: number, version: string): string {
+function initializeResponse(id: number | string, version: string): string {
   return JSON.stringify({
     id,
     result: {
@@ -419,7 +502,7 @@ function initializeResponse(id: number, version: string): string {
   });
 }
 
-function initializeRequest(id: number, version: string, optOut?: string[]): string {
+function initializeRequest(id: number | string, version: string, optOut?: string[]): string {
   return JSON.stringify({
     id,
     method: 'initialize',

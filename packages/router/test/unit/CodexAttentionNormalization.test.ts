@@ -243,6 +243,250 @@ describe('CodexAttentionNormalization.exchange', () => {
     ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'degraded' });
     expect(presentation.exchange).not.toHaveBeenCalled();
   });
+
+  it('rejects descendant qualification before it can establish normalization state', async () => {
+    const presentation: AttentionPresentationPort = { exchange: vi.fn() };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await expect(
+      normalization.exchange(
+        append([
+          {
+            kind: 'connection-qualification',
+            sourceSequence: 1,
+            initialized: true,
+            primary: true,
+            capabilities: 'audited',
+            foregroundOwnership: 'confirmed',
+            evidence: qualificationEvidence({
+              foregroundSource: 'subAgent',
+              foregroundParentKey: 'parent-thread',
+            }),
+          },
+          {
+            kind: 'turn-start',
+            sourceSequence: 2,
+            turnKey: 'turn-1',
+            returnTarget: 'descendant-route',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 3,
+            turnKey: 'turn-1',
+            result: 'success',
+            occurrenceKey: 'turn-1:success',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'degraded' });
+    expect(presentation.exchange).not.toHaveBeenCalled();
+  });
+
+  it('isolates repeated identities and return routes across concurrent invocations', async () => {
+    let releaseSlow: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        const mutation = input.kind === 'apply' ? input.mutations[0] : undefined;
+        if (
+          mutation?.kind === 'create' &&
+          mutation.record.returnTarget === '{"origin":"slow-local"}'
+        ) {
+          await slow;
+        }
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+    const repeated = (invocationId: string, returnTarget: string): ObservationExchange => ({
+      kind: 'append',
+      deliveryGeneration: 'same-delivery',
+      scope: { ...scope, invocationId },
+      fromSequence: 1,
+      observations: [
+        {
+          kind: 'connection-qualification',
+          sourceSequence: 1,
+          initialized: true,
+          primary: true,
+          capabilities: 'audited',
+          foregroundOwnership: 'confirmed',
+          evidence: qualificationEvidence(),
+        },
+        { kind: 'turn-start', sourceSequence: 2, turnKey: 'same-turn', returnTarget },
+        {
+          kind: 'terminal-result',
+          sourceSequence: 3,
+          turnKey: 'same-turn',
+          result: 'success',
+          occurrenceKey: 'same-turn:success',
+          canonicalTitle: 'Same title',
+          canonicalBody: 'Same body',
+        },
+      ],
+    });
+
+    const slowResult = normalization.exchange(
+      repeated('11111111111111111111111111111111', '{"origin":"slow-local"}'),
+    );
+    await vi.waitFor(() => expect(exchanged).toHaveLength(1));
+    await expect(
+      normalization.exchange(repeated('22222222222222222222222222222222', '{"origin":"remote"}')),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'exact' });
+
+    expect(exchanged).toHaveLength(2);
+    const records = exchanged.flatMap((exchange) =>
+      exchange.kind === 'apply'
+        ? exchange.mutations.flatMap((mutation) =>
+            mutation.kind === 'create' ? [mutation.record] : [],
+          )
+        : [],
+    );
+    expect(records.map(({ returnTarget }) => returnTarget)).toEqual([
+      '{"origin":"slow-local"}',
+      '{"origin":"remote"}',
+    ]);
+    expect(new Set(records.map(({ key }) => key)).size).toBe(2);
+
+    releaseSlow?.();
+    await expect(slowResult).resolves.toEqual({
+      receivedThrough: 3,
+      appliedThrough: 3,
+      monitoring: 'exact',
+    });
+  });
+
+  it('keeps an unfinished older turn separately reconcilable from a newer turn', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await expect(
+      normalization.exchange(
+        append([
+          {
+            kind: 'connection-qualification',
+            sourceSequence: 1,
+            initialized: true,
+            primary: true,
+            capabilities: 'audited',
+            foregroundOwnership: 'confirmed',
+            evidence: qualificationEvidence(),
+          },
+          {
+            kind: 'turn-start',
+            sourceSequence: 2,
+            turnKey: 'older-turn',
+            returnTarget: 'older-route',
+          },
+          {
+            kind: 'turn-start',
+            sourceSequence: 3,
+            turnKey: 'newer-turn',
+            returnTarget: 'newer-route',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 4,
+            turnKey: 'older-turn',
+            result: 'success',
+            occurrenceKey: 'same-occurrence',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 5,
+            turnKey: 'newer-turn',
+            result: 'success',
+            occurrenceKey: 'same-occurrence',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 5, appliedThrough: 5, monitoring: 'exact' });
+
+    const records = exchanged.flatMap((exchange) =>
+      exchange.kind === 'apply'
+        ? exchange.mutations.flatMap((mutation) =>
+            mutation.kind === 'create' ? [mutation.record] : [],
+          )
+        : [],
+    );
+    expect(records.map(({ returnTarget }) => returnTarget)).toEqual(['older-route', 'newer-route']);
+    expect(new Set(records.map(({ key }) => key)).size).toBe(2);
+  });
+
+  it('keys outcomes by invocation, connection, authority, foreground thread, and turn', async () => {
+    const recordKeys: string[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        if (input.kind === 'apply' && input.mutations[0]?.kind === 'create') {
+          recordKeys.push(input.mutations[0].record.key);
+        }
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const variants = [
+      {},
+      { invocationId: 'different-invocation' },
+      { connectionId: 'different-connection' },
+      { authorityEpoch: 'different-authority' },
+      { foregroundThreadKey: 'different-thread' },
+      { turnKey: 'different-turn' },
+    ];
+
+    for (const variant of variants) {
+      const variantScope = {
+        ...scope,
+        ...(variant.invocationId === undefined ? {} : { invocationId: variant.invocationId }),
+        ...(variant.connectionId === undefined ? {} : { connectionId: variant.connectionId }),
+        ...(variant.authorityEpoch === undefined ? {} : { authorityEpoch: variant.authorityEpoch }),
+      };
+      const foregroundThreadKey = variant.foregroundThreadKey ?? 'thread-1';
+      const turnKey = variant.turnKey ?? 'turn-1';
+      const normalization = new CodexAttentionNormalizationRegistry(presentation);
+      await normalization.exchange({
+        kind: 'append',
+        deliveryGeneration: 'delivery-1',
+        scope: variantScope,
+        fromSequence: 1,
+        observations: [
+          {
+            kind: 'connection-qualification',
+            sourceSequence: 1,
+            initialized: true,
+            primary: true,
+            capabilities: 'audited',
+            foregroundOwnership: 'confirmed',
+            evidence: qualificationEvidence({
+              requestedThreadKey: foregroundThreadKey,
+              announcedThreadKey: foregroundThreadKey,
+            }),
+          },
+          { kind: 'turn-start', sourceSequence: 2, turnKey, returnTarget: 'same-route' },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 3,
+            turnKey,
+            result: 'success',
+            occurrenceKey: 'same-occurrence',
+            canonicalTitle: 'Same title',
+            canonicalBody: 'Same body',
+          },
+        ],
+      });
+    }
+
+    expect(recordKeys).toHaveLength(variants.length);
+    expect(new Set(recordKeys).size).toBe(variants.length);
+  });
 });
 
 function qualificationEvidence(

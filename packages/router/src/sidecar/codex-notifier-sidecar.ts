@@ -54,6 +54,8 @@ interface ExitResult {
 
 interface BridgeConnection {
   readonly attentionCapture?: CodexAttentionProtocolCapture;
+  readonly connectionId: string;
+  readonly protocolCapture?: CodexProtocolCapture;
   readonly primary: boolean;
   readonly framer: JsonLineFramer;
   pendingClientLines: string[];
@@ -281,13 +283,15 @@ export class CodexWebSocketBridge {
   private primaryConnection?: BridgeConnection;
   private createAdditionalAppServer?: () => Promise<ChildProcess>;
   private closing = false;
+  private primaryProtocolCapture?: CodexProtocolCapture;
 
   constructor(
     private readonly token: string,
-    private readonly capture: CodexProtocolCapture,
+    capture: CodexProtocolCapture,
     private readonly router: CodexRouterClient,
     private readonly attention?: CodexAttentionBridgeOptions,
   ) {
+    this.primaryProtocolCapture = capture;
     this.server.on('upgrade', (request, socket, head) => {
       if (!this.authorized(request.headers.authorization)) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
@@ -321,7 +325,7 @@ export class CodexWebSocketBridge {
   }
 
   get threadEstablished(): boolean {
-    return this.capture.threadEstablished;
+    return this.primaryConnection?.protocolCapture?.threadEstablished ?? false;
   }
 
   attach(appServer: ChildProcess, createAdditionalAppServer?: () => Promise<ChildProcess>): void {
@@ -362,8 +366,12 @@ export class CodexWebSocketBridge {
   private createConnection(primary: boolean): BridgeConnection {
     const connectionId = randomBytes(16).toString('hex');
     const authorityEpoch = randomBytes(16).toString('hex');
+    const protocolCapture = primary ? this.primaryProtocolCapture : undefined;
+    if (primary) this.primaryProtocolCapture = undefined;
     return {
       primary,
+      connectionId,
+      ...(protocolCapture === undefined ? {} : { protocolCapture }),
       ...(this.attention === undefined
         ? {}
         : {
@@ -447,7 +455,9 @@ export class CodexWebSocketBridge {
       }
       const text = data.toString();
       this.postAttention(connection, connection.attentionCapture?.observeClientText(text) ?? []);
-      for (const event of this.capture.observeClientText(text)) this.router.post(event);
+      for (const event of connection.protocolCapture?.observeClientText(text) ?? []) {
+        this.router.post(event);
+      }
       this.forwardClientLine(connection, text);
     });
     webSocket.on('close', () => {
@@ -519,7 +529,7 @@ export class CodexWebSocketBridge {
     const exactSuccess = observations.some(
       (observation) => observation.kind === 'terminal-result' && observation.result === 'success',
     );
-    for (const event of this.capture.observeServerText(line)) {
+    for (const event of connection.protocolCapture?.observeServerText(line) ?? []) {
       if (exactSuccess && event.method === 'turn/completed' && event.status === 'completed')
         continue;
       this.router.post(event);

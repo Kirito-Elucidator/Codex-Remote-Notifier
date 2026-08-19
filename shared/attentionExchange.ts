@@ -155,7 +155,9 @@ export function isExactConnectionQualification(
       !/^0\.(?:145|146|147)\.\d+$/.test(evidence.runtimeVersion) ||
       evidence.initializationRequestKey !== evidence.initializationResponseKey ||
       evidence.foregroundRequestKey !== evidence.foregroundResponseKey ||
-      evidence.requestedThreadKey !== evidence.announcedThreadKey
+      evidence.requestedThreadKey !== evidence.announcedThreadKey ||
+      evidence.foregroundParentKey !== null ||
+      evidence.foregroundSource === 'subAgent'
     ) {
       return false;
     }

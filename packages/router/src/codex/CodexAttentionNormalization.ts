@@ -22,8 +22,13 @@ const MAXIMUM_INVOCATION_OBSERVATIONS = 4_096;
 
 interface PendingOutcome {
   exchange: PresentationExchange;
-  occurrenceKey: string;
+  outcomeKey: string;
   sequence: number;
+}
+
+interface TurnState {
+  foregroundThreadKey: string;
+  returnTarget: string;
 }
 
 interface ScopeState {
@@ -31,13 +36,14 @@ interface ScopeState {
   appliedThrough: number;
   deliveryGeneration: string;
   fingerprints: Map<number, string>;
+  foregroundThreadKey?: string;
   monitoring: MonitoringMode;
   outcomes: Set<string>;
   pendingOutcome?: PendingOutcome;
   qualified: boolean;
   receivedThrough: number;
   retainedBytes: number;
-  turns: Map<string, { returnTarget: string }>;
+  turns: Map<string, TurnState>;
 }
 
 export class CodexAttentionNormalizationRegistry implements CodexAttentionNormalization {
@@ -146,17 +152,42 @@ class InvocationActor {
     observation: SanitizedAttentionObservation,
   ): Promise<boolean> {
     switch (observation.kind) {
-      case 'connection-qualification':
+      case 'connection-qualification': {
         state.qualified = isExactConnectionQualification(observation);
+        if (state.qualified) {
+          const foregroundThreadKey = observation.evidence?.requestedThreadKey;
+          if (
+            foregroundThreadKey === undefined ||
+            (state.foregroundThreadKey !== undefined &&
+              state.foregroundThreadKey !== foregroundThreadKey)
+          ) {
+            state.qualified = false;
+            state.monitoring = 'degraded';
+            return true;
+          }
+          state.foregroundThreadKey = foregroundThreadKey;
+        }
         state.monitoring = state.qualified ? 'exact' : 'compatibility';
         return true;
-      case 'turn-start':
-        if (!state.qualified) {
+      }
+      case 'turn-start': {
+        if (!state.qualified || state.foregroundThreadKey === undefined) {
           state.monitoring = 'degraded';
           return true;
         }
-        state.turns.set(observation.turnKey, { returnTarget: observation.returnTarget });
+        const existingTurn = state.turns.get(observation.turnKey);
+        if (existingTurn !== undefined) {
+          if (existingTurn.returnTarget !== observation.returnTarget) {
+            state.monitoring = 'degraded';
+          }
+          return true;
+        }
+        state.turns.set(observation.turnKey, {
+          foregroundThreadKey: state.foregroundThreadKey,
+          returnTarget: observation.returnTarget,
+        });
         return true;
+      }
       case 'terminal-result':
         if (observation.result !== 'success') return true;
         return this.applySuccess(scope, state, observation);
@@ -174,17 +205,30 @@ class InvocationActor {
       state.monitoring = 'degraded';
       return true;
     }
-    if (state.outcomes.has(observation.occurrenceKey)) return true;
+    const turn = state.turns.get(observation.turnKey);
+    const foregroundThreadKey = turn?.foregroundThreadKey ?? state.foregroundThreadKey;
+    if (foregroundThreadKey === undefined) {
+      state.monitoring = 'degraded';
+      return true;
+    }
+    const outcomeKey = stableIdentity('outcome', [
+      scope.invocationId,
+      scope.connectionId,
+      scope.authorityEpoch,
+      foregroundThreadKey,
+      observation.turnKey,
+      observation.occurrenceKey,
+    ]);
+    if (state.outcomes.has(outcomeKey)) return true;
 
     let pending = state.pendingOutcome;
     if (pending === undefined) {
-      const turn = state.turns.get(observation.turnKey);
       if (turn === undefined) {
         state.monitoring = 'degraded';
         return true;
       }
       const record: PresentationRecord = {
-        key: stableIdentity('outcome', scope, observation.occurrenceKey),
+        key: outcomeKey,
         revision: 1,
         appearance: 'information',
         canonicalTitle: observation.canonicalTitle ?? 'Codex completed',
@@ -193,12 +237,19 @@ class InvocationActor {
       };
       const exchange: PresentationExchange = {
         kind: 'apply',
-        transactionId: stableIdentity('transaction', scope, String(observation.sourceSequence)),
+        transactionId: stableIdentity('transaction', [
+          scope.invocationId,
+          scope.connectionId,
+          scope.authorityEpoch,
+          foregroundThreadKey,
+          observation.turnKey,
+          String(observation.sourceSequence),
+        ]),
         mutations: [{ kind: 'create', record }],
       };
       pending = {
         exchange,
-        occurrenceKey: observation.occurrenceKey,
+        outcomeKey,
         sequence: observation.sourceSequence,
       };
       state.pendingOutcome = pending;
@@ -221,7 +272,7 @@ class InvocationActor {
       return false;
     }
 
-    state.outcomes.add(pending.occurrenceKey);
+    state.outcomes.add(pending.outcomeKey);
     state.turns.delete(observation.turnKey);
     state.pendingOutcome = undefined;
     return true;
@@ -286,15 +337,10 @@ function retainedObservationCount(scopes: Map<string, ScopeState>): number {
 }
 
 function scopeKey(scope: SourceScope): string {
-  return `${scope.connectionId}\0${scope.authorityEpoch}`;
+  return JSON.stringify([scope.connectionId, scope.authorityEpoch]);
 }
 
-function stableIdentity(prefix: string, scope: SourceScope, semanticKey: string): string {
-  const digest = createHash('sha256')
-    .update(
-      `${scope.invocationId}\0${scope.connectionId}\0${scope.authorityEpoch}\0${semanticKey}`,
-      'utf8',
-    )
-    .digest('hex');
+function stableIdentity(prefix: string, identity: string[]): string {
+  const digest = createHash('sha256').update(JSON.stringify(identity), 'utf8').digest('hex');
   return `${prefix}:${digest}`.slice(0, ATTENTION_EXCHANGE_LIMITS.stableKeyBytes);
 }

@@ -103,9 +103,22 @@ describe('CodexWebSocketBridge', () => {
     picker.stdout.write('{"id":1,"result":{"picker":true}}\n');
     await waitFor(() => pickerMessages.length === 1);
 
-    expect(pickerMessages).toEqual(['{"id":1,"result":{"picker":true}}']);
+    picker.stdout.write(
+      [
+        '{"method":"thread/started","params":{"thread":{"id":"picker-thread"}}}',
+        '{"id":"approval","method":"item/fileChange/requestApproval","params":{"reason":"private"}}',
+      ].join('\n') + '\n',
+    );
+    await waitFor(() => pickerMessages.length === 3);
+
+    expect(pickerMessages).toEqual([
+      '{"id":1,"result":{"picker":true}}',
+      '{"method":"thread/started","params":{"thread":{"id":"picker-thread"}}}',
+      '{"id":"approval","method":"item/fileChange/requestApproval","params":{"reason":"private"}}',
+    ]);
     expect(tuiMessages).toEqual([]);
     expect(tui.readyState).toBe(WebSocket.OPEN);
+    expect(router.post).not.toHaveBeenCalled();
 
     tui.close();
     sessionPicker.close();

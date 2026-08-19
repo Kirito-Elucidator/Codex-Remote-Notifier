@@ -47,7 +47,7 @@ interface BoundForegroundThread {
 }
 
 export class CodexAttentionProtocolCapture {
-  private activeTurnId?: string;
+  private readonly activeTurnIds = new Set<string>();
   private boundForegroundThread?: BoundForegroundThread;
   private foregroundThreadCandidate?: ForegroundThreadCandidate;
   private foregroundThreadId?: string;
@@ -57,7 +57,7 @@ export class CodexAttentionProtocolCapture {
   private initializeResponseValidated = false;
   private initialized = false;
   private readonly pendingThreadRequests = new Map<string, ForegroundRequestKind>();
-  private pendingTurnId?: string;
+  private readonly pendingTurnIds = new Set<string>();
   private qualificationEvidence?: ConnectionQualificationEvidence;
   private qualified = false;
   private serverUserAgent?: string;
@@ -152,6 +152,7 @@ export class CodexAttentionProtocolCapture {
         requestKeys.add(this.boundForegroundThread.requestKey);
       }
       if (requestKeys.size === 0) return [];
+      if (candidate.parentId !== null || candidate.source === 'subAgent') return [];
       this.foregroundThreadCandidate = { ...candidate, requestKeys };
       this.bindForegroundCandidate();
       observations.push(...this.qualify());
@@ -166,10 +167,11 @@ export class CodexAttentionProtocolCapture {
       const turnId = turn && boundedIdentifier(turn.id);
       if (!threadId || !turnId || threadId !== this.foregroundThreadId) return [];
       if (!this.qualified) {
-        this.pendingTurnId = turnId;
+        this.pendingTurnIds.add(turnId);
         return [];
       }
-      this.activeTurnId = turnId;
+      if (this.activeTurnIds.has(turnId)) return [];
+      this.activeTurnIds.add(turnId);
       return [this.turnStart(turnId)];
     }
 
@@ -189,13 +191,13 @@ export class CodexAttentionProtocolCapture {
       !threadId ||
       !turnId ||
       threadId !== this.foregroundThreadId ||
-      turnId !== this.activeTurnId ||
+      !this.activeTurnIds.has(turnId) ||
       turn?.status !== 'completed'
     ) {
       return [];
     }
 
-    this.activeTurnId = undefined;
+    this.activeTurnIds.delete(turnId);
     const preview = successPreview(turn.items);
     return [
       {
@@ -211,11 +213,15 @@ export class CodexAttentionProtocolCapture {
   }
 
   private emitPendingTurn(): SanitizedAttentionObservation[] {
-    if (!this.qualified || this.pendingTurnId === undefined) return [];
-    const turnId = this.pendingTurnId;
-    this.pendingTurnId = undefined;
-    this.activeTurnId = turnId;
-    return [this.turnStart(turnId)];
+    if (!this.qualified || this.pendingTurnIds.size === 0) return [];
+    const observations: SanitizedAttentionObservation[] = [];
+    for (const turnId of this.pendingTurnIds) {
+      if (this.activeTurnIds.has(turnId)) continue;
+      this.activeTurnIds.add(turnId);
+      observations.push(this.turnStart(turnId));
+    }
+    this.pendingTurnIds.clear();
+    return observations;
   }
 
   private bindForegroundCandidate(): void {
