@@ -34,7 +34,7 @@ describe('CodexAttentionNormalization.exchange', () => {
         primary: true,
         capabilities: 'audited',
         foregroundOwnership: 'confirmed',
-        evidence: qualificationEvidence(),
+        evidence: qualificationEvidence({ optedOutNotifications: ['model/rerouted'] }),
       },
       {
         kind: 'turn-start',

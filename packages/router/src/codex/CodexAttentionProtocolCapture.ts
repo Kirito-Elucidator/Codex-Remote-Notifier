@@ -3,7 +3,10 @@ import type {
   SanitizedAttentionObservation,
   SourceScope,
 } from 'remote-notifier-shared/attentionExchange';
-import { ATTENTION_EXCHANGE_LIMITS } from 'remote-notifier-shared/attentionExchange';
+import {
+  ATTENTION_EXCHANGE_LIMITS,
+  isExactConnectionQualification,
+} from 'remote-notifier-shared/attentionExchange';
 import { createCodexReturnTarget } from 'remote-notifier-shared/codexReturnTarget';
 
 import { isAuditedCodexProtocolVersion, parseCodexProtocolVersion } from './CodexShimArguments';
@@ -25,6 +28,17 @@ interface AuditedThread {
   parentId: string | null;
 }
 
+interface ForegroundThreadCandidate extends AuditedThread {
+  requestKeys: ReadonlySet<string>;
+}
+
+interface BoundedInitialization {
+  clientName: string;
+  clientVersion: string;
+  experimentalApi: boolean;
+  optedOutNotifications: string[];
+}
+
 interface BoundForegroundThread {
   id: string;
   requestKey: string;
@@ -34,9 +48,9 @@ interface BoundForegroundThread {
 export class CodexAttentionProtocolCapture {
   private activeTurnId?: string;
   private boundForegroundThread?: BoundForegroundThread;
-  private foregroundThreadCandidate?: AuditedThread;
+  private foregroundThreadCandidate?: ForegroundThreadCandidate;
   private foregroundThreadId?: string;
-  private initializeClientVersion?: string;
+  private initialization?: BoundedInitialization;
   private initializeRequestId?: string;
   private initializeResponseId?: string;
   private initializeResponseValidated = false;
@@ -68,16 +82,14 @@ export class CodexAttentionProtocolCapture {
     }
     if (!validRequestId(message.id)) return [];
     if (message.method === 'initialize') {
-      this.initializeClientVersion = auditedInitializeClientVersion(
-        message.params,
-        this.options.version,
-      );
+      if (this.initializeRequestId !== undefined || this.initialized) return [];
+      this.initialization = boundedInitialization(message.params);
       this.initializeRequestId =
-        this.initializeClientVersion === undefined ? undefined : requestIdKey(message.id);
+        this.initialization === undefined ? undefined : requestIdKey(message.id);
       return [];
     }
     const requestKind = foregroundRequestKind(message.method);
-    if (requestKind !== undefined) {
+    if (this.initialized && requestKind !== undefined) {
       this.rememberThreadRequest(requestIdKey(message.id), requestKind);
     }
     return [];
@@ -90,9 +102,10 @@ export class CodexAttentionProtocolCapture {
     const observations: SanitizedAttentionObservation[] = [];
     const responseKey = requestIdKey(message.id);
     const userAgent = isSuccessfulResponse(message)
-      ? auditedServerUserAgent(message.result, this.options.version)
+      ? boundedServerUserAgent(message.result)
       : undefined;
     if (
+      !this.initializeResponseValidated &&
       this.initializeRequestId !== undefined &&
       responseKey === this.initializeRequestId &&
       userAgent !== undefined
@@ -113,6 +126,15 @@ export class CodexAttentionProtocolCapture {
       if (threadId !== undefined && requestKind !== undefined) {
         this.boundForegroundThread = { id: threadId, requestKey: responseKey, requestKind };
       }
+      if (
+        this.foregroundThreadCandidate?.requestKeys.has(responseKey) &&
+        this.foregroundThreadCandidate.id !== threadId
+      ) {
+        const requestKeys = new Set(this.foregroundThreadCandidate.requestKeys);
+        requestKeys.delete(responseKey);
+        this.foregroundThreadCandidate =
+          requestKeys.size === 0 ? undefined : { ...this.foregroundThreadCandidate, requestKeys };
+      }
       this.bindForegroundCandidate();
       observations.push(...this.qualify());
       observations.push(...this.emitPendingTurn());
@@ -123,8 +145,13 @@ export class CodexAttentionProtocolCapture {
       const params = isRecord(message.params) ? message.params : undefined;
       const thread = params && isRecord(params.thread) ? params.thread : undefined;
       const candidate = thread && auditedThread(thread);
-      if (candidate === undefined) return [];
-      this.foregroundThreadCandidate = candidate;
+      if (!this.initialized || candidate === undefined) return [];
+      const requestKeys = new Set(this.pendingThreadRequests.keys());
+      if (this.boundForegroundThread?.id === candidate.id) {
+        requestKeys.add(this.boundForegroundThread.requestKey);
+      }
+      if (requestKeys.size === 0) return [];
+      this.foregroundThreadCandidate = { ...candidate, requestKeys };
       this.bindForegroundCandidate();
       observations.push(...this.qualify());
       observations.push(...this.emitPendingTurn());
@@ -191,6 +218,7 @@ export class CodexAttentionProtocolCapture {
   }
 
   private bindForegroundCandidate(): void {
+    if (this.qualified) return;
     const bound = this.boundForegroundThread;
     const candidate = this.foregroundThreadCandidate;
     const runtimeVersion = parseCodexProtocolVersion(this.options.version);
@@ -198,8 +226,9 @@ export class CodexAttentionProtocolCapture {
       bound === undefined ||
       candidate === undefined ||
       bound.id !== candidate.id ||
+      !candidate.requestKeys.has(bound.requestKey) ||
       runtimeVersion === undefined ||
-      this.initializeClientVersion === undefined ||
+      this.initialization === undefined ||
       this.initializeRequestId === undefined ||
       this.initializeResponseId === undefined ||
       this.serverUserAgent === undefined
@@ -208,10 +237,10 @@ export class CodexAttentionProtocolCapture {
     this.foregroundThreadId = bound.id;
     this.qualificationEvidence = {
       runtimeVersion,
-      clientName: 'codex-tui',
-      clientVersion: this.initializeClientVersion,
-      experimentalApi: true,
-      optedOutNotifications: [],
+      clientName: this.initialization.clientName,
+      clientVersion: this.initialization.clientVersion,
+      experimentalApi: this.initialization.experimentalApi,
+      optedOutNotifications: this.initialization.optedOutNotifications,
       serverUserAgent: this.serverUserAgent,
       initializationRequestKey: this.initializeRequestId,
       initializationResponseKey: this.initializeResponseId,
@@ -256,19 +285,24 @@ export class CodexAttentionProtocolCapture {
       this.qualificationEvidence === undefined
     )
       return [];
-    this.qualificationEvidence.initializationAcknowledged = true;
+    const evidence = { ...this.qualificationEvidence, initializationAcknowledged: true };
+    const qualification: Extract<
+      SanitizedAttentionObservation,
+      { kind: 'connection-qualification' }
+    > = {
+      kind: 'connection-qualification',
+      sourceSequence: this.sourceSequence + 1,
+      initialized: true,
+      primary: true,
+      capabilities: 'audited',
+      foregroundOwnership: 'confirmed',
+      evidence,
+    };
+    if (!isExactConnectionQualification(qualification)) return [];
+    this.qualificationEvidence = evidence;
     this.qualified = true;
-    return [
-      {
-        kind: 'connection-qualification',
-        sourceSequence: this.nextSequence(),
-        initialized: true,
-        primary: true,
-        capabilities: 'audited',
-        foregroundOwnership: 'confirmed',
-        evidence: this.qualificationEvidence,
-      },
-    ];
+    this.nextSequence();
+    return [qualification];
   }
 
   private turnStart(turnId: string): SanitizedAttentionObservation {
@@ -284,7 +318,9 @@ export class CodexAttentionProtocolCapture {
 }
 
 function boundedIdentifier(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : undefined;
+  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= 200
+    ? value
+    : undefined;
 }
 
 function foregroundRequestKind(method: unknown): ForegroundRequestKind | undefined {
@@ -319,21 +355,40 @@ function isSuccessfulResponse(message: Record<string, unknown>): boolean {
   );
 }
 
-function auditedInitializeClientVersion(value: unknown, versionOutput: string): string | undefined {
+function boundedInitialization(value: unknown): BoundedInitialization | undefined {
   if (!isRecord(value) || !isRecord(value.clientInfo) || !isRecord(value.capabilities))
     return undefined;
-  const clientVersion = boundedProtocolText(value.clientInfo.version);
-  if (value.clientInfo.name !== 'codex-tui' || !clientVersion) return undefined;
+  const clientName = boundedIdentifier(value.clientInfo.name);
+  const clientVersion = boundedIdentifier(value.clientInfo.version);
+  const experimentalApi = value.capabilities.experimentalApi;
+  if (!clientName || !clientVersion || typeof experimentalApi !== 'boolean') return undefined;
   const parsedClientVersion = parseCodexProtocolVersion(clientVersion);
-  if (parsedClientVersion !== parseCodexProtocolVersion(versionOutput)) return undefined;
-  if (value.capabilities.experimentalApi !== true) return undefined;
+  if (parsedClientVersion === undefined) return undefined;
   const optedOut = value.capabilities.optOutNotificationMethods;
-  if (optedOut !== undefined && optedOut !== null && (!Array.isArray(optedOut) || optedOut.length))
-    return undefined;
-  return parsedClientVersion;
+  if (optedOut !== undefined && optedOut !== null) {
+    if (!Array.isArray(optedOut) || optedOut.length > 32) return undefined;
+    const boundedOptedOut: string[] = [];
+    for (const entry of optedOut) {
+      const method = boundedOptOutNotification(entry);
+      if (method === undefined) return undefined;
+      boundedOptedOut.push(method);
+    }
+    return {
+      clientName,
+      clientVersion: parsedClientVersion,
+      experimentalApi,
+      optedOutNotifications: boundedOptedOut,
+    };
+  }
+  return {
+    clientName,
+    clientVersion: parsedClientVersion,
+    experimentalApi,
+    optedOutNotifications: [],
+  };
 }
 
-function auditedServerUserAgent(value: unknown, versionOutput: string): string | undefined {
+function boundedServerUserAgent(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
   const userAgent = boundedProtocolText(value.userAgent);
   const codexHome = boundedProtocolText(value.codexHome);
@@ -341,14 +396,17 @@ function auditedServerUserAgent(value: unknown, versionOutput: string): string |
   const platformOs = boundedProtocolText(value.platformOs);
   if (!userAgent || !codexHome || !platformFamily || !platformOs) return undefined;
   if (!isAbsoluteProtocolPath(codexHome)) return undefined;
-  const version = parseCodexProtocolVersion(versionOutput);
-  if (version === undefined || !userAgent.startsWith(`codex_cli_rs/${version}`)) return undefined;
-  const suffix = userAgent.slice(`codex_cli_rs/${version}`.length);
-  return suffix.length === 0 || /^\s/.test(suffix) ? userAgent : undefined;
+  return userAgent;
 }
 
 function boundedProtocolText(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 && value.length <= 4_096 ? value : undefined;
+  return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= 4_096
+    ? value
+    : undefined;
+}
+
+function boundedOptOutNotification(value: unknown): string | undefined {
+  return typeof value === 'string' && Buffer.byteLength(value, 'utf8') <= 200 ? value : undefined;
 }
 
 function isAbsoluteProtocolPath(value: string): boolean {
@@ -375,8 +433,10 @@ function foregroundSource(value: unknown): ForegroundSource | undefined {
     return value as ForegroundSource;
   }
   if (!isRecord(value)) return undefined;
-  if (boundedIdentifier(value.custom) !== undefined) return 'custom';
-  if (isRecord(value.subAgent)) return 'subAgent';
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return undefined;
+  if (keys[0] === 'custom' && boundedIdentifier(value.custom) !== undefined) return 'custom';
+  if (keys[0] === 'subAgent' && isRecord(value.subAgent)) return 'subAgent';
   return undefined;
 }
 
@@ -445,6 +505,6 @@ function boundCanonicalUtf8(value: string, maximumBytes: number): string {
 function validRequestId(value: unknown): value is number | string {
   return (
     (typeof value === 'number' && Number.isSafeInteger(value)) ||
-    (typeof value === 'string' && value.length > 0 && value.length <= 200)
+    (typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= 200)
   );
 }

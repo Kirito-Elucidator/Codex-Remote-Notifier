@@ -16,15 +16,15 @@ describe('CodexAttentionProtocolCapture', () => {
     });
 
     expect(capture.observeClientText(initializeRequest(1, '0.147.2'))).toEqual([]);
-    expect(
-      capture.observeServerText(
-        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
-      ),
-    ).toEqual([]);
     expect(capture.observeServerText(initializeResponse(1, '0.147.2'))).toEqual([]);
     expect(capture.observeClientText('{"method":"initialized"}')).toEqual([]);
     expect(
       capture.observeClientText('{"id":2,"method":"thread/start","params":{"cwd":"/repo"}}'),
+    ).toEqual([]);
+    expect(
+      capture.observeServerText(
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+      ),
     ).toEqual([]);
     expect(capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}')).toEqual([
       expect.objectContaining({
@@ -130,6 +130,77 @@ describe('CodexAttentionProtocolCapture', () => {
         }),
       }),
     ]);
+
+    const ambiguousSource = initializedCapture();
+    ambiguousSource.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    ambiguousSource.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":{"custom":"manual","subAgent":{}}}}}',
+    );
+    expect(
+      ambiguousSource.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}'),
+    ).toEqual([]);
+  });
+
+  it('does not retrospectively qualify announcements or replace qualified foreground ownership', () => {
+    const retrospective = new CodexAttentionProtocolCapture({
+      invocationId: 'invocation-1',
+      connectionId: 'primary',
+      authorityEpoch: 'authority-1',
+      version: 'codex-cli 0.147.0',
+      primary: true,
+    });
+    retrospective.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    retrospective.observeClientText(initializeRequest(1, '0.147.0'));
+    retrospective.observeServerText(initializeResponse(1, '0.147.0'));
+    retrospective.observeClientText('{"method":"initialized"}');
+    retrospective.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    expect(
+      retrospective.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}'),
+    ).toEqual([]);
+
+    const frozen = qualifiedCapture();
+    frozen.observeClientText('{"id":3,"method":"thread/start","params":{}}');
+    frozen.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-2","sessionId":"session-2","parentThreadId":null,"source":"cli"}}}',
+    );
+    expect(
+      frozen.observeServerText('{"id":3,"result":{"thread":{"id":"thread-2"}}}'),
+    ).toEqual([]);
+    expect(
+      frozen.observeServerText(
+        '{"method":"turn/started","params":{"threadId":"thread-2","turn":{"id":"turn-2"}}}',
+      ),
+    ).toEqual([]);
+    expect(
+      frozen.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}',
+      ),
+    ).toEqual([expect.objectContaining({ kind: 'terminal-result', turnKey: 'turn-1' })]);
+  });
+
+  it('permits unrelated notification opt-outs while retaining the shared evidence contract', () => {
+    const capture = new CodexAttentionProtocolCapture({
+      invocationId: 'invocation-1',
+      connectionId: 'primary',
+      authorityEpoch: 'authority-1',
+      version: 'codex-cli 0.147.0',
+      primary: true,
+    });
+    capture.observeClientText(initializeRequest(1, '0.147.0', ['model/rerouted']));
+    capture.observeServerText(initializeResponse(1, '0.147.0'));
+    capture.observeClientText('{"method":"initialized"}');
+    capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
+    capture.observeServerText(
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+    );
+    expect(capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}')).toEqual([
+      expect.objectContaining({
+        kind: 'connection-qualification',
+        evidence: expect.objectContaining({ optedOutNotifications: ['model/rerouted'] }),
+      }),
+    ]);
   });
 
   it('does not qualify incomplete initialization or foreground ownership metadata', () => {
@@ -162,6 +233,18 @@ describe('CodexAttentionProtocolCapture', () => {
       [
         initializeRequest(1, '0.147.0'),
         '{"id":1,"result":{"userAgent":"not-codex/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}',
+      ],
+      [
+        initializeRequest(1, '0.147.0'),
+        JSON.stringify({
+          id: 1,
+          result: {
+            userAgent: `codex_cli_rs/0.147.0 ${'界'.repeat(1_400)}`,
+            codexHome: '/home/test/.codex',
+            platformFamily: 'unix',
+            platformOs: 'linux',
+          },
+        }),
       ],
       ['{"id":1,"method":"initialize","params":{}}', initializeResponse(1, '0.147.0')],
       [initializeRequest(1, '0.147.0', ['turn/completed']), initializeResponse(1, '0.147.0')],

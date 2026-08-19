@@ -1,3 +1,5 @@
+import { createCodexReturnTarget } from './codexReturnTarget';
+
 export const ATTENTION_EXCHANGE_LIMITS = Object.freeze({
   canonicalBodyBytes: 16_384,
   canonicalTitleBytes: 4_096,
@@ -42,6 +44,12 @@ export interface ConnectionQualificationEvidence {
   foregroundSource: 'appServer' | 'cli' | 'custom' | 'exec' | 'subAgent' | 'unknown' | 'vscode';
   foregroundParentKey: string | null;
 }
+
+const REQUIRED_EXACT_NOTIFICATION_METHODS = new Set([
+  'thread/started',
+  'turn/started',
+  'turn/completed',
+]);
 
 export type SanitizedAttentionObservation =
   | {
@@ -117,6 +125,55 @@ export type SanitizedAttentionObservation =
       canonicalTitle?: string;
       canonicalBody?: string;
     };
+
+export function isExactConnectionQualification(
+  observation: Extract<SanitizedAttentionObservation, { kind: 'connection-qualification' }>,
+): boolean {
+  if (
+    !observation.initialized ||
+    !observation.primary ||
+    observation.capabilities !== 'audited' ||
+    observation.foregroundOwnership !== 'confirmed' ||
+    observation.evidence === undefined
+  ) {
+    return false;
+  }
+
+  try {
+    const evidence = parseConnectionQualificationEvidence(
+      observation.evidence,
+      'connectionQualification.evidence',
+    );
+    if (
+      evidence.clientName !== 'codex-tui' ||
+      !evidence.experimentalApi ||
+      evidence.optedOutNotifications.some((method) =>
+        REQUIRED_EXACT_NOTIFICATION_METHODS.has(method),
+      ) ||
+      !evidence.initializationAcknowledged ||
+      evidence.runtimeVersion !== evidence.clientVersion ||
+      !/^0\.(?:145|146|147)\.\d+$/.test(evidence.runtimeVersion) ||
+      evidence.initializationRequestKey !== evidence.initializationResponseKey ||
+      evidence.foregroundRequestKey !== evidence.foregroundResponseKey ||
+      evidence.requestedThreadKey !== evidence.announcedThreadKey
+    ) {
+      return false;
+    }
+
+    const prefix = `codex_cli_rs/${evidence.runtimeVersion}`;
+    const suffix = evidence.serverUserAgent.slice(prefix.length);
+    if (
+      !evidence.serverUserAgent.startsWith(prefix) ||
+      (suffix.length > 0 && suffix[0] !== ' ' && suffix[0] !== '\t')
+    ) {
+      return false;
+    }
+    createCodexReturnTarget({ sessionId: evidence.requestedThreadKey });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface ObservationCheckpoint {
   throughSequence: number;
