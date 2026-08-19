@@ -54,7 +54,6 @@ interface ExitResult {
 
 interface BridgeConnection {
   readonly attentionCapture?: CodexAttentionProtocolCapture;
-  readonly connectionId: string;
   readonly protocolCapture?: CodexProtocolCapture;
   readonly primary: boolean;
   readonly framer: JsonLineFramer;
@@ -370,7 +369,6 @@ export class CodexWebSocketBridge {
     if (primary) this.primaryProtocolCapture = undefined;
     return {
       primary,
-      connectionId,
       ...(protocolCapture === undefined ? {} : { protocolCapture }),
       ...(this.attention === undefined
         ? {}
