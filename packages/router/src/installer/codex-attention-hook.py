@@ -203,6 +203,11 @@ def _minimal_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "hook_event_name": event_name,
         "process_ancestry": _process_ancestry(),
     }
+    invocation_id = _bounded_string(
+        os.environ.get("REMOTE_NOTIFIER_CODEX_INVOCATION_ID"), 200
+    )
+    if invocation_id:
+        body["invocation_id"] = invocation_id
     fields = {
         "session_id": (event.get("session_id"), 200),
         "turn_id": (event.get("turn_id"), 200),

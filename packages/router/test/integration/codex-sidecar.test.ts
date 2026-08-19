@@ -127,11 +127,13 @@ describe('CodexWebSocketBridge', () => {
 
   it('replays an audited primary protocol success as scoped source-neutral observations', async () => {
     const attention = { post: vi.fn() };
+    const protocol = { post: vi.fn() };
     const bridge = new CodexWebSocketBridge(
       'token',
       new CodexProtocolCapture('0123456789abcdef0123456789abcdef', []),
-      { post: vi.fn() } as unknown as CodexRouterClient,
+      protocol as unknown as CodexRouterClient,
       {
+        hookAvailable: true,
         invocationId: '0123456789abcdef0123456789abcdef',
         version: 'codex-cli 0.147.0',
         router: attention as unknown as CodexAttentionRouterClient,
@@ -158,21 +160,30 @@ describe('CodexWebSocketBridge', () => {
         '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
         '{"id":2,"result":{"thread":{"id":"thread-1"}}}',
         '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
+        '{"id":"approval-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","reason":"private"}}',
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"audited success"}]}}}',
       ].join('\n') + '\n',
     );
 
-    await waitFor(() => attention.post.mock.calls.length === 3);
+    await waitFor(() => attention.post.mock.calls.length === 4);
     const calls = attention.post.mock.calls;
     expect(calls.map(([, observation]) => observation)).toEqual([
       expect.objectContaining({ kind: 'connection-qualification', sourceSequence: 1 }),
       expect.objectContaining({ kind: 'turn-start', sourceSequence: 2, turnKey: 'turn-1' }),
       expect.objectContaining({
-        kind: 'terminal-result',
+        kind: 'human-action-request',
         sourceSequence: 3,
+        requestKey: 'string:approval-1',
+      }),
+      expect.objectContaining({
+        kind: 'terminal-result',
+        sourceSequence: 4,
         canonicalBody: 'audited success',
       }),
     ]);
+    expect(protocol.post).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'item/fileChange/requestApproval' }),
+    );
     const scopes = calls.map(([scope]) => scope);
     expect(new Set(scopes.map((scope) => scope.connectionId)).size).toBe(1);
     expect(scopes[0]).toEqual({
@@ -183,10 +194,10 @@ describe('CodexWebSocketBridge', () => {
 
     client.close();
     await onceClose(client);
-    await waitFor(() => attention.post.mock.calls.length === 4);
-    expect(attention.post.mock.calls[3]).toEqual([
+    await waitFor(() => attention.post.mock.calls.length === 5);
+    expect(attention.post.mock.calls[4]).toEqual([
       scopes[0],
-      { kind: 'authority-change', sourceSequence: 4, monitoring: 'compatibility' },
+      { kind: 'authority-change', sourceSequence: 5, monitoring: 'compatibility' },
     ]);
   });
 
@@ -487,6 +498,7 @@ describe('runSidecar passthrough', () => {
       REMOTE_NOTIFIER_TOKEN: 'router-token',
       REMOTE_NOTIFIER_SESSION_FILE: undefined,
       REMOTE_NOTIFIER_CODEX_ELECTRON_NODE_SHIM: '1',
+      REMOTE_NOTIFIER_CODEX_HOOK_AVAILABLE: '1',
       ELECTRON_RUN_AS_NODE: '1',
       FAKE_CODEX_LOG: fake.logPath,
       FAKE_REMOTE_EXIT_CODE: '23',
@@ -510,7 +522,6 @@ describe('runSidecar passthrough', () => {
           'session/started',
           'thread/started',
           'turn/started',
-          'item/commandExecution/requestApproval',
           'session/ended',
         ]),
       );
@@ -521,6 +532,7 @@ describe('runSidecar passthrough', () => {
       expect(exactObservations.map((observation) => observation.kind)).toEqual([
         'connection-qualification',
         'turn-start',
+        'human-action-request',
         'terminal-result',
         'authority-change',
       ]);

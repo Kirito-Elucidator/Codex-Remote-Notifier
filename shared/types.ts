@@ -27,6 +27,7 @@ export interface CodexHookEvent {
   version: 1;
   kind: 'hook';
   hook_event_name: CodexHookEventName;
+  invocation_id?: string;
   session_id?: string;
   turn_id?: string;
   request_id?: string;

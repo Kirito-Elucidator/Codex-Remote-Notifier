@@ -101,6 +101,9 @@ export class CodexAttentionProtocolCapture {
     const message = parseMessage(text);
     if (!this.eligible || message === undefined) return [];
 
+    const request = this.captureHumanActionRequest(message);
+    if (request !== undefined) return [request];
+
     const observations: SanitizedAttentionObservation[] = [];
     const responseKey = requestIdKey(message.id);
     const userAgent = isSuccessfulResponse(message)
@@ -190,6 +193,33 @@ export class CodexAttentionProtocolCapture {
     this.qualified = false;
     this.pendingTurnIds.clear();
     return [{ kind: 'authority-change', sourceSequence: this.nextSequence(), monitoring }];
+  }
+
+  private captureHumanActionRequest(
+    message: Record<string, unknown>,
+  ): Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }> | undefined {
+    if (!this.qualified) return undefined;
+    const requestKind = attentionRequestKind(message.method);
+    const requestKey = requestIdKey(message.id);
+    const params = isRecord(message.params) ? message.params : undefined;
+    const threadId = params && boundedIdentifier(params.threadId);
+    const turnId = params && boundedIdentifier(params.turnId);
+    if (
+      requestKind === undefined ||
+      requestKey === undefined ||
+      threadId !== this.foregroundThreadId ||
+      turnId === undefined ||
+      !this.activeTurnIds.has(turnId)
+    ) {
+      return undefined;
+    }
+    return {
+      kind: 'human-action-request',
+      sourceSequence: this.nextSequence(),
+      turnKey: turnId,
+      requestKey,
+      requestKind,
+    };
   }
 
   private captureSuccess(message: Record<string, unknown>): SanitizedAttentionObservation[] {
@@ -350,6 +380,26 @@ function foregroundRequestKind(method: unknown): ForegroundRequestKind | undefin
   if (method === 'thread/resume') return 'resume';
   if (method === 'thread/start') return 'start';
   return undefined;
+}
+
+function attentionRequestKind(
+  method: unknown,
+):
+  | Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }>['requestKind']
+  | undefined {
+  switch (method) {
+    case 'item/tool/requestUserInput':
+      return 'input';
+    case 'item/commandExecution/requestApproval':
+    case 'item/fileChange/requestApproval':
+      return 'approval';
+    case 'item/permissions/requestApproval':
+      return 'permission';
+    case 'mcpServer/elicitation/request':
+      return 'elicitation';
+    default:
+      return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

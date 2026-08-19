@@ -17,6 +17,8 @@ import {
   SourceScope,
 } from 'remote-notifier-shared';
 
+import { compatibilityTitle } from './CodexMonitoringPresentation';
+
 const MAXIMUM_INVOCATION_BYTES = 8 * 1024 * 1024;
 const MAXIMUM_INVOCATION_OBSERVATIONS = 4_096;
 
@@ -28,6 +30,7 @@ interface PendingOutcome {
 
 interface TurnState {
   foregroundThreadKey?: string;
+  requests: Map<string, string>;
   returnTarget: string;
 }
 
@@ -49,10 +52,17 @@ interface ScopeState {
   turns: Map<string, TurnState>;
 }
 
+export type CodexMonitoringReason =
+  | 'protocol-qualified'
+  | 'protocol-unavailable'
+  | 'no-source'
+  | 'authoritative-input-gap'
+  | 'hook-observed';
+
 export interface CodexMonitoringChange {
   invocationId: string;
   monitoring: MonitoringMode;
-  reason: string;
+  reason: CodexMonitoringReason;
   foregroundThreadKey?: string;
 }
 
@@ -88,6 +98,8 @@ class InvocationActor {
   private monitoring: MonitoringMode = 'compatibility';
   private recoveryBoundaryRequired = false;
   private recoveryCandidateScopeKey?: string;
+  private recoveryReconciledScopeKey?: string;
+  private readonly recoveryExcludedTurnKeys = new Set<string>();
   private readonly scopes = new Map<string, ScopeState>();
 
   constructor(
@@ -206,6 +218,7 @@ class InvocationActor {
             this.recoveryCandidateScopeKey = key;
           } else {
             this.exactScopeKey = key;
+            this.exactTurnKeys.clear();
             this.setMonitoring('exact');
           }
         } else if (isMalformedAuditedQualification(observation)) {
@@ -231,10 +244,17 @@ class InvocationActor {
           return true;
         }
         if (this.exactScopeKey === scopeKey(scope)) {
-          if (state.turns.size > 0) this.recoveryBoundaryRequired = true;
+          if (state.turns.size > 0) {
+            const withdrawn = await this.withdrawProtocolRequests(scope, state, observation);
+            if (!withdrawn) return false;
+            this.recoveryBoundaryRequired = true;
+            for (const turnKey of state.turns.keys()) this.recoveryExcludedTurnKeys.add(turnKey);
+          }
           this.exactScopeKey = undefined;
           state.qualified = false;
           state.closed = true;
+          this.recoveryCandidateScopeKey = undefined;
+          this.recoveryReconciledScopeKey = undefined;
         }
         this.setMonitoring(observation.monitoring);
         return true;
@@ -249,7 +269,10 @@ class InvocationActor {
             this.setMonitoring('degraded');
             return true;
           }
-          state.turns.set(observation.turnKey, { returnTarget: observation.returnTarget });
+          state.turns.set(observation.turnKey, {
+            requests: new Map(),
+            returnTarget: observation.returnTarget,
+          });
           return true;
         }
         const key = scopeKey(scope);
@@ -258,10 +281,19 @@ class InvocationActor {
           this.recoveryBoundaryRequired &&
           this.recoveryCandidateScopeKey === key
         ) {
-          if (this.exactTurnKeys.has(observation.turnKey)) return true;
+          if (
+            this.recoveryReconciledScopeKey !== key ||
+            this.recoveryExcludedTurnKeys.has(observation.turnKey)
+          ) {
+            this.recoveryExcludedTurnKeys.add(observation.turnKey);
+            return true;
+          }
           this.exactScopeKey = key;
+          this.exactTurnKeys.clear();
           this.recoveryBoundaryRequired = false;
           this.recoveryCandidateScopeKey = undefined;
+          this.recoveryReconciledScopeKey = undefined;
+          this.recoveryExcludedTurnKeys.clear();
           this.setMonitoring('exact');
         }
         if (
@@ -281,16 +313,113 @@ class InvocationActor {
         }
         state.turns.set(observation.turnKey, {
           foregroundThreadKey: state.foregroundThreadKey,
+          requests: new Map(),
           returnTarget: observation.returnTarget,
         });
         this.exactTurnKeys.add(observation.turnKey);
         return true;
       }
+      case 'human-action-request':
+        return this.applyRequest(scope, state, observation);
       case 'terminal-result':
         if (observation.result !== 'success') return true;
         return this.applySuccess(scope, state, observation);
       default:
         return true;
+    }
+  }
+
+  private async applyRequest(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }>,
+  ): Promise<boolean> {
+    if (state.role === 'compatibility') return true;
+    if (!state.qualified || this.exactScopeKey !== scopeKey(scope)) {
+      this.setMonitoring('degraded');
+      return true;
+    }
+    const turn = state.turns.get(observation.turnKey);
+    if (turn === undefined || turn.foregroundThreadKey === undefined) {
+      this.setMonitoring('degraded');
+      return true;
+    }
+    if (turn.requests.has(observation.requestKey)) return true;
+
+    const recordKey = stableIdentity('request', [
+      scope.invocationId,
+      scope.connectionId,
+      scope.authorityEpoch,
+      turn.foregroundThreadKey,
+      observation.turnKey,
+      observation.requestKind,
+      observation.requestKey,
+    ]);
+    const exchange: PresentationExchange = {
+      kind: 'apply',
+      transactionId: stableIdentity('transaction', [
+        scope.invocationId,
+        scope.connectionId,
+        scope.authorityEpoch,
+        observation.turnKey,
+        String(observation.sourceSequence),
+        'request-create',
+      ]),
+      mutations: [
+        {
+          kind: 'create',
+          record: {
+            key: recordKey,
+            revision: 1,
+            appearance: 'action',
+            canonicalTitle: observation.canonicalTitle ?? requestTitle(observation.requestKind),
+            canonicalBody: observation.canonicalBody ?? 'Return to Codex to respond',
+            returnTarget: turn.returnTarget,
+          },
+        },
+      ],
+    };
+    if (!(await this.applyPresentation(exchange))) return false;
+    turn.requests.set(observation.requestKey, recordKey);
+    return true;
+  }
+
+  private async withdrawProtocolRequests(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'authority-change' }>,
+  ): Promise<boolean> {
+    const keys = [...state.turns.values()].flatMap((turn) => [...turn.requests.values()]);
+    if (keys.length === 0) return true;
+    const exchange: PresentationExchange = {
+      kind: 'apply',
+      transactionId: stableIdentity('transaction', [
+        scope.invocationId,
+        scope.connectionId,
+        scope.authorityEpoch,
+        String(observation.sourceSequence),
+        'authority-loss',
+      ]),
+      mutations: keys.map((key) => ({ kind: 'withdraw' as const, key })),
+    };
+    if (!(await this.applyPresentation(exchange))) return false;
+    for (const turn of state.turns.values()) turn.requests.clear();
+    return true;
+  }
+
+  private async applyPresentation(exchange: PresentationExchange): Promise<boolean> {
+    try {
+      const presentationReceipt = parsePresentationReceipt(
+        await this.presentation.exchange(exchange),
+      );
+      assertMatchingPresentationReceipt(exchange, presentationReceipt);
+      if (presentationReceipt.kind !== 'applied' && presentationReceipt.kind !== 'replay') {
+        if (presentationReceipt.kind === 'rejected') this.setMonitoring('degraded');
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -366,18 +495,7 @@ class InvocationActor {
       return true;
     }
 
-    try {
-      const presentationReceipt = parsePresentationReceipt(
-        await this.presentation.exchange(pending.exchange),
-      );
-      assertMatchingPresentationReceipt(pending.exchange, presentationReceipt);
-      if (presentationReceipt.kind !== 'applied' && presentationReceipt.kind !== 'replay') {
-        if (presentationReceipt.kind === 'rejected') this.setMonitoring('degraded');
-        return false;
-      }
-    } catch {
-      return false;
-    }
+    if (!(await this.applyPresentation(pending.exchange))) return false;
 
     state.outcomes.add(pending.outcomeKey);
     state.turns.delete(observation.turnKey);
@@ -394,6 +512,23 @@ class InvocationActor {
     }
 
     if (input.kind === 'reconcile') {
+      if (state.deliveryGeneration !== input.deliveryGeneration) {
+        this.setMonitoring('degraded');
+        return receipt(state, this.monitoring, state.receivedThrough + 1);
+      }
+      if (
+        this.recoveryCandidateScopeKey === key &&
+        input.checkpoint.monitoring === 'exact' &&
+        input.checkpoint.observations.some(
+          (observation) =>
+            observation.kind === 'connection-qualification' &&
+            isExactConnectionQualification(observation) &&
+            observation.evidence?.requestedThreadKey === state.foregroundThreadKey,
+        )
+      ) {
+        this.recoveryReconciledScopeKey = key;
+        return receipt(state, this.monitoring);
+      }
       return receipt(state, this.monitoring, state.receivedThrough + 1);
     }
     const admissionReceipt = this.admitAppend(input, state);
@@ -451,11 +586,7 @@ function receipt(
   };
 }
 
-function compatibilityTitle(title: string): string {
-  return title.startsWith('[Compatibility]') ? title : `[Compatibility] ${title}`;
-}
-
-function monitoringReason(monitoring: MonitoringMode): string {
+function monitoringReason(monitoring: MonitoringMode): CodexMonitoringReason {
   switch (monitoring) {
     case 'exact':
       return 'protocol-qualified';
@@ -465,6 +596,24 @@ function monitoringReason(monitoring: MonitoringMode): string {
       return 'no-source';
     case 'degraded':
       return 'authoritative-input-gap';
+  }
+}
+
+function requestTitle(
+  requestKind: Extract<
+    SanitizedAttentionObservation,
+    { kind: 'human-action-request' }
+  >['requestKind'],
+): string {
+  switch (requestKind) {
+    case 'approval':
+      return 'Codex is waiting for approval';
+    case 'input':
+      return 'Codex is waiting for your answer';
+    case 'permission':
+      return 'Codex is waiting for permission';
+    case 'elicitation':
+      return 'Codex is waiting for an MCP response';
   }
 }
 

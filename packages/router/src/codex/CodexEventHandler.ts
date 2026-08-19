@@ -24,6 +24,7 @@ import {
   truncateCanonicalText,
   truncateVisible,
 } from './CodexMetadataResolver';
+import { compatibilityTitle } from './CodexMonitoringPresentation';
 import { CodexTranscriptMonitor, CodexTranscriptTerminalFailure } from './CodexTranscriptMonitor';
 
 const MAX_THREAD_STATES = 128;
@@ -43,8 +44,8 @@ interface ThreadState {
 }
 
 export interface CodexMonitoringAuthority {
-  isExactForeground(foregroundThreadKey: string): boolean;
-  observeHook(foregroundThreadKey: string): void;
+  isExactForeground(foregroundThreadKey: string, invocationId?: string): boolean;
+  observeHook(foregroundThreadKey: string, invocationId?: string): void;
 }
 
 export class CodexEventHandler implements vscode.Disposable {
@@ -146,18 +147,13 @@ export class CodexEventHandler implements vscode.Disposable {
     if (sessionId && event.process_ancestry) {
       await this.notifications.trackCodexSession(sessionId, event.process_ancestry);
     }
-    if (sessionId) this.monitoring?.observeHook(sessionId);
+    if (sessionId) this.monitoring?.observeHook(sessionId, event.invocation_id);
     if (sessionId && event.hook_event_name === 'SessionStart' && !event.protocol_authoritative) {
       // Recover Hook fallback if a previous sidecar could not deliver session/ended.
       this.authoritativeSessions.delete(sessionId);
       this.threads.delete(sessionId);
     }
-    const protocolAuthoritative =
-      sessionId !== undefined && this.monitoring !== undefined
-        ? this.monitoring.isExactForeground(sessionId)
-        : event.protocol_authoritative ||
-          (sessionId !== undefined && this.authoritativeSessions.has(sessionId));
-    if (protocolAuthoritative) {
+    if (this.isProtocolAuthoritativeHook(event)) {
       this.log?.appendLine(
         `[CodexEventHandler] Ignored ${event.hook_event_name} hook for protocol session`,
       );
@@ -183,6 +179,10 @@ export class CodexEventHandler implements vscode.Disposable {
     if (event.hook_event_name !== 'Stop') return;
 
     const transcript = await this.readPersistedStop(event);
+    if (this.isProtocolAuthoritativeHook(event)) {
+      this.log?.appendLine('[CodexEventHandler] Ignored Stop hook after protocol qualification');
+      return;
+    }
     if (transcript.terminalError) {
       await this.presentTerminalError(
         event.session_id,
@@ -191,6 +191,7 @@ export class CodexEventHandler implements vscode.Disposable {
         transcript.terminalError,
         event.process_ancestry,
         true,
+        event.invocation_id,
       );
       return;
     }
@@ -212,9 +213,11 @@ export class CodexEventHandler implements vscode.Disposable {
         : transcript.isPlanMode
           ? 'plan-continue'
           : 'task-complete';
+    const message = await this.buildMessage(event.session_id, event.cwd, stripPlanTags(rawAnswer));
+    if (this.isProtocolAuthoritativeHook(event)) return;
     await this.presentCodex({
       title: compatibilityTitle(title),
-      message: await this.buildMessage(event.session_id, event.cwd, stripPlanTags(rawAnswer)),
+      message,
       level: 'information',
       sessionId: event.session_id,
       turnId: event.turn_id,
@@ -381,6 +384,7 @@ export class CodexEventHandler implements vscode.Disposable {
     error: CodexProtocolError,
     processAncestry: number[] | undefined,
     compatibility = false,
+    invocationId?: string,
   ): Promise<void> {
     if (!sessionId || !turnId) return;
     const key = this.turnKey(sessionId, turnId);
@@ -391,9 +395,11 @@ export class CodexEventHandler implements vscode.Disposable {
     }
 
     const details = this.errorPresentationDetails(error);
+    const message = await this.buildMessage(sessionId, cwd, details.message, MAX_ERROR_PREVIEW);
+    if (compatibility && this.monitoring?.isExactForeground(sessionId, invocationId)) return;
     await this.presentCodex({
       title: compatibility ? compatibilityTitle(details.title) : details.title,
-      message: await this.buildMessage(sessionId, cwd, details.message, MAX_ERROR_PREVIEW),
+      message,
       level: 'error',
       sessionId,
       turnId,
@@ -421,6 +427,7 @@ export class CodexEventHandler implements vscode.Disposable {
   private async watchHookTurn(event: CodexHookEvent): Promise<void> {
     if (!event.session_id || !event.turn_id || !event.transcript_path) return;
     await this.transcriptMonitor.watchTurn({
+      ...(event.invocation_id ? { invocationId: event.invocation_id } : {}),
       sessionId: event.session_id,
       turnId: event.turn_id,
       transcriptPath: event.transcript_path,
@@ -445,8 +452,8 @@ export class CodexEventHandler implements vscode.Disposable {
     if (failure.processAncestry) {
       await this.notifications.trackCodexSession(failure.sessionId, failure.processAncestry);
     }
-    if (this.monitoring?.isExactForeground(failure.sessionId)) return;
-    this.monitoring?.observeHook(failure.sessionId);
+    if (this.monitoring?.isExactForeground(failure.sessionId, failure.invocationId)) return;
+    this.monitoring?.observeHook(failure.sessionId, failure.invocationId);
     await this.presentTerminalError(
       failure.sessionId,
       failure.turnId,
@@ -454,6 +461,7 @@ export class CodexEventHandler implements vscode.Disposable {
       failure.error,
       failure.processAncestry,
       true,
+      failure.invocationId,
     );
   }
 
@@ -464,9 +472,11 @@ export class CodexEventHandler implements vscode.Disposable {
   ): Promise<void> {
     const requestKey = this.hookRequestKey(event);
     if (requestKey && this.seenRequests.has(requestKey)) return;
+    const message = await this.buildMessage(event.session_id, event.cwd);
+    if (this.isProtocolAuthoritativeHook(event)) return;
     await this.presentCodex({
       title: compatibilityTitle(title),
-      message: await this.buildMessage(event.session_id, event.cwd),
+      message,
       level: 'information',
       sessionId: event.session_id,
       turnId: event.turn_id,
@@ -474,6 +484,16 @@ export class CodexEventHandler implements vscode.Disposable {
       processAncestry: event.process_ancestry,
     });
     if (requestKey) this.remember(this.seenRequests, requestKey, MAX_SEEN_REQUESTS);
+  }
+
+  private isProtocolAuthoritativeHook(event: CodexHookEvent): boolean {
+    const sessionId = event.session_id;
+    return sessionId !== undefined && this.monitoring !== undefined
+      ? this.monitoring.isExactForeground(sessionId, event.invocation_id)
+      : Boolean(
+          event.protocol_authoritative ||
+          (sessionId !== undefined && this.authoritativeSessions.has(sessionId)),
+        );
   }
 
   private async readPersistedStop(event: CodexHookEvent): Promise<CodexTranscriptInfo> {
@@ -566,7 +586,7 @@ export class CodexEventHandler implements vscode.Disposable {
 
   private hookRequestKey(event: CodexHookEvent): string | undefined {
     return event.request_id
-      ? `hook\u0000${event.session_id ?? ''}\u0000${event.request_id}`
+      ? `hook\u0000${event.invocation_id ?? ''}\u0000${event.session_id ?? ''}\u0000${event.request_id}`
       : undefined;
   }
 
@@ -908,10 +928,6 @@ function boundEventKey(value: string): string {
   if (value.length <= 200) return value;
   const digest = createHash('sha256').update(value).digest('hex').slice(0, 16);
   return `${value.slice(0, 182)}:${digest}`;
-}
-
-function compatibilityTitle(title: string): string {
-  return title.startsWith('[Compatibility]') ? title : `[Compatibility] ${title}`;
 }
 
 function delay(milliseconds: number): Promise<void> {

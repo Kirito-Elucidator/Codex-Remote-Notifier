@@ -64,12 +64,25 @@ describe('CodexAttentionProtocolCapture', () => {
     ).toEqual({ sessionId: 'thread-1' });
     expect(
       capture.observeServerText(
+        '{"id":"approval-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","reason":"private"}}',
+      ),
+    ).toEqual([
+      {
+        kind: 'human-action-request',
+        sourceSequence: 3,
+        turnKey: 'turn-1',
+        requestKey: 'string:approval-1',
+        requestKind: 'approval',
+      },
+    ]);
+    expect(
+      capture.observeServerText(
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"已完成 🙂"}]}}}',
       ),
     ).toEqual([
       {
         kind: 'terminal-result',
-        sourceSequence: 3,
+        sourceSequence: 4,
         turnKey: 'turn-1',
         result: 'success',
         occurrenceKey: 'turn-1:success',
@@ -91,6 +104,14 @@ describe('CodexAttentionProtocolCapture', () => {
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}',
       ),
     ).toEqual([]);
+  });
+
+  it('reports unavailable when authority is lost without a usable Hook', () => {
+    const capture = qualifiedCapture();
+
+    expect(capture.authorityLost('unavailable')).toEqual([
+      { kind: 'authority-change', sourceSequence: 3, monitoring: 'unavailable' },
+    ]);
   });
 
   it('rejects auxiliary, unaudited, and structurally descendant observations before sequencing', () => {

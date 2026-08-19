@@ -22,7 +22,7 @@ interface InvocationMonitoringState {
 }
 
 export class CodexMonitoringStatus {
-  private readonly exactForeground = new Map<string, string>();
+  private readonly exactForeground = new Set<string>();
   private readonly invocations = new Map<string, InvocationMonitoringState>();
   private onChange: (summary: CodexMonitoringSummary) => void;
 
@@ -35,13 +35,15 @@ export class CodexMonitoringStatus {
 
   setOnChange(onChange: (summary: CodexMonitoringSummary) => void): void {
     this.onChange = onChange;
-    if (this.invocations.size > 0) onChange(this.summary());
+    onChange(this.summary());
   }
 
   update(change: CodexMonitoringChange): void {
     const previous = this.invocations.get(change.invocationId);
     if (previous?.foregroundThreadKey !== undefined) {
-      this.exactForeground.delete(previous.foregroundThreadKey);
+      this.exactForeground.delete(
+        exactForegroundKey(change.invocationId, previous.foregroundThreadKey),
+      );
     }
     const state: InvocationMonitoringState = {
       monitoring: change.monitoring,
@@ -51,9 +53,12 @@ export class CodexMonitoringStatus {
     };
     this.invocations.delete(change.invocationId);
     this.invocations.set(change.invocationId, state);
-    if (change.monitoring === 'exact' && change.foregroundThreadKey !== undefined) {
+    if (
+      (change.monitoring === 'exact' || change.monitoring === 'degraded') &&
+      change.foregroundThreadKey !== undefined
+    ) {
       this.invocations.delete(hookInvocationId(change.foregroundThreadKey));
-      this.exactForeground.set(change.foregroundThreadKey, change.invocationId);
+      this.exactForeground.add(exactForegroundKey(change.invocationId, change.foregroundThreadKey));
     }
     this.enforceBound();
     this.log?.appendLine(
@@ -62,20 +67,23 @@ export class CodexMonitoringStatus {
     this.onChange(this.summary());
   }
 
-  observeHook(foregroundThreadKey: string): void {
-    if (this.isExactForeground(foregroundThreadKey)) return;
-    const invocationId = hookInvocationId(foregroundThreadKey);
-    const previous = this.invocations.get(invocationId);
+  observeHook(foregroundThreadKey: string, invocationId?: string): void {
+    if (this.isExactForeground(foregroundThreadKey, invocationId)) return;
+    const hookId = invocationId ?? hookInvocationId(foregroundThreadKey);
+    const previous = this.invocations.get(hookId);
     if (previous?.monitoring === 'compatibility') return;
     this.update({
-      invocationId,
+      invocationId: hookId,
       monitoring: 'compatibility',
       reason: 'hook-observed',
     });
   }
 
-  isExactForeground(foregroundThreadKey: string): boolean {
-    return this.exactForeground.has(foregroundThreadKey);
+  isExactForeground(foregroundThreadKey: string, invocationId?: string): boolean {
+    return (
+      invocationId !== undefined &&
+      this.exactForeground.has(exactForegroundKey(invocationId, foregroundThreadKey))
+    );
   }
 
   summary(): CodexMonitoringSummary {
@@ -101,7 +109,7 @@ export class CodexMonitoringStatus {
       const [invocationId, state] = oldest;
       this.invocations.delete(invocationId);
       if (state.foregroundThreadKey !== undefined) {
-        this.exactForeground.delete(state.foregroundThreadKey);
+        this.exactForeground.delete(exactForegroundKey(invocationId, state.foregroundThreadKey));
       }
     }
   }
@@ -120,6 +128,10 @@ function shortHash(value: string): string {
 
 function hookInvocationId(foregroundThreadKey: string): string {
   return `hook:${shortHash(foregroundThreadKey)}`;
+}
+
+function exactForegroundKey(invocationId: string, foregroundThreadKey: string): string {
+  return JSON.stringify([invocationId, foregroundThreadKey]);
 }
 
 function shortOpaqueId(value: string): string {

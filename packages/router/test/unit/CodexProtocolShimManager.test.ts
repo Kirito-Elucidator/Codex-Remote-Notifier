@@ -46,6 +46,10 @@ describe('CodexProtocolShimManager', () => {
       'PATH',
       `${manager.shimDirectory}${process.platform === 'win32' ? ';' : ':'}`,
     );
+    expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
+      shared.ENV_CODEX_HOOK_AVAILABLE,
+      '1',
+    );
   });
 
   it('does not modify PATH when the packaged sidecar is missing', async () => {
@@ -65,6 +69,9 @@ describe('CodexProtocolShimManager', () => {
     await manager.disable(true);
 
     expect(context.environmentVariableCollection.delete).toHaveBeenCalledWith('PATH');
+    expect(context.environmentVariableCollection.delete).toHaveBeenCalledWith(
+      shared.ENV_CODEX_HOOK_AVAILABLE,
+    );
     expect(fs.unlink).toHaveBeenCalledTimes(2);
   });
 

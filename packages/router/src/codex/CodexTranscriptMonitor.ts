@@ -14,6 +14,7 @@ const MAX_JSONL_LINE_BYTES = 1024 * 1024;
 const MAX_MONITORED_FILES = 128;
 
 export interface CodexTranscriptTurn {
+  invocationId?: string;
   sessionId: string;
   turnId: string;
   transcriptPath: string;

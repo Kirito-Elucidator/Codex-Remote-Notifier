@@ -14,7 +14,11 @@ import type {
   SourceScope,
 } from 'remote-notifier-shared';
 import { parseObservationExchangeReceipt } from 'remote-notifier-shared/attentionExchange';
-import { ENV_CODEX_PROTOCOL_SESSION } from 'remote-notifier-shared/constants';
+import {
+  ENV_CODEX_HOOK_AVAILABLE,
+  ENV_CODEX_INVOCATION_ID,
+  ENV_CODEX_PROTOCOL_SESSION,
+} from 'remote-notifier-shared/constants';
 
 import { CodexAttentionProtocolCapture } from '../codex/CodexAttentionProtocolCapture';
 import { CodexProtocolCapture, JsonLineFramer } from '../codex/CodexProtocolCapture';
@@ -72,6 +76,7 @@ interface BridgeConnection {
 type AppendObservationExchange = Extract<ObservationExchange, { kind: 'append' }>;
 
 export interface CodexAttentionBridgeOptions {
+  hookAvailable: boolean;
   invocationId: string;
   router: Pick<CodexAttentionRouterClient, 'post'>;
   version: string;
@@ -461,7 +466,9 @@ export class CodexWebSocketBridge {
     webSocket.on('close', () => {
       this.postAttention(
         connection,
-        connection.attentionCapture?.authorityLost('compatibility') ?? [],
+        connection.attentionCapture?.authorityLost(
+          this.attention?.hookAvailable ? 'compatibility' : 'unavailable',
+        ) ?? [],
       );
       if (connection.webSocket === webSocket) connection.webSocket = undefined;
       connection.closed = true;
@@ -531,9 +538,13 @@ export class CodexWebSocketBridge {
     const exactSuccess = observations.some(
       (observation) => observation.kind === 'terminal-result' && observation.result === 'success',
     );
+    const exactHumanAction = observations.some(
+      (observation) => observation.kind === 'human-action-request',
+    );
     for (const event of connection.protocolCapture?.observeServerText(line) ?? []) {
       if (exactSuccess && event.method === 'turn/completed' && event.status === 'completed')
         continue;
+      if (exactHumanAction && isHumanActionRequestMethod(event.method)) continue;
       this.router.post(event);
     }
     if (!connection.webSocket || connection.webSocket.readyState !== WebSocket.OPEN) {
@@ -680,6 +691,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
     process.stderr.write(`[remote-notifier] ${message}\n`),
   );
   const bridge = new CodexWebSocketBridge(token, capture, router, {
+    hookAvailable: environment[ENV_CODEX_HOOK_AVAILABLE] === '1',
     invocationId,
     version,
     router: attentionRouter,
@@ -699,6 +711,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
   const appServerEnvironment = { ...environment };
   const tuiEnvironment = {
     ...appServerEnvironment,
+    [ENV_CODEX_INVOCATION_ID]: invocationId,
     [TOKEN_ENVIRONMENT_VARIABLE]: token,
   };
   const startAppServer = async (): Promise<ChildProcess> => {
@@ -1246,6 +1259,16 @@ async function resolveRouterEndpoint(
   } catch {
     return undefined;
   }
+}
+
+function isHumanActionRequestMethod(method: string): boolean {
+  return (
+    method === 'item/tool/requestUserInput' ||
+    method === 'item/commandExecution/requestApproval' ||
+    method === 'item/fileChange/requestApproval' ||
+    method === 'item/permissions/requestApproval' ||
+    method === 'mcpServer/elicitation/request'
+  );
 }
 
 function delay(milliseconds: number): Promise<void> {

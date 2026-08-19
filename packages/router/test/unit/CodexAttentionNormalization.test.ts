@@ -324,6 +324,9 @@ describe('CodexAttentionNormalization.exchange', () => {
       ),
     ).resolves.toEqual({ receivedThrough: 1, appliedThrough: 1, monitoring: 'compatibility' });
     await expect(
+      normalization.exchange(reconcileFor(recoveredScope, qualification(1))),
+    ).resolves.toEqual({ receivedThrough: 1, appliedThrough: 1, monitoring: 'compatibility' });
+    await expect(
       normalization.exchange(
         appendFor(
           recoveredScope,
@@ -358,6 +361,85 @@ describe('CodexAttentionNormalization.exchange', () => {
       { canonicalTitle: '[Compatibility] Codex completed', returnTarget: 'hook-route' },
       { canonicalTitle: 'Codex completed', returnTarget: 'protocol-new-route' },
     ]);
+  });
+
+  it('withdraws protocol-owned requests before closing authority', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        {
+          kind: 'turn-start',
+          sourceSequence: 2,
+          turnKey: 'active-turn',
+          returnTarget: 'protocol-route',
+        },
+        {
+          kind: 'human-action-request',
+          sourceSequence: 3,
+          turnKey: 'active-turn',
+          requestKey: 'string:approval-1',
+          requestKind: 'approval',
+        },
+      ]),
+    );
+    await expect(
+      normalization.exchange(
+        append([{ kind: 'authority-change', sourceSequence: 4, monitoring: 'compatibility' }], 4),
+      ),
+    ).resolves.toEqual({ receivedThrough: 4, appliedThrough: 4, monitoring: 'compatibility' });
+
+    expect(exchanged).toHaveLength(2);
+    const create = exchanged[0].kind === 'apply' ? exchanged[0].mutations[0] : undefined;
+    expect(create).toMatchObject({
+      kind: 'create',
+      record: { appearance: 'action', returnTarget: 'protocol-route' },
+    });
+    const requestKey = create?.kind === 'create' ? create.record.key : undefined;
+    expect(exchanged[1]).toMatchObject({
+      kind: 'apply',
+      mutations: [{ kind: 'withdraw', key: requestKey }],
+    });
+  });
+
+  it('does not restore exact authority for an interrupted turn identity', async () => {
+    const presentation: AttentionPresentationPort = { exchange: vi.fn() };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+    await normalization.exchange(
+      append([
+        qualification(1),
+        { kind: 'turn-start', sourceSequence: 2, turnKey: 'same-turn', returnTarget: 'old-route' },
+        { kind: 'authority-change', sourceSequence: 3, monitoring: 'compatibility' },
+      ]),
+    );
+    const recoveredScope = { ...scope, connectionId: 'recovered', authorityEpoch: 'authority-2' };
+    await normalization.exchange(appendFor(recoveredScope, [qualification(1)]));
+    await normalization.exchange(reconcileFor(recoveredScope, qualification(1)));
+
+    await expect(
+      normalization.exchange(
+        appendFor(
+          recoveredScope,
+          [
+            {
+              kind: 'turn-start',
+              sourceSequence: 2,
+              turnKey: 'same-turn',
+              returnTarget: 'new-route',
+            },
+          ],
+          2,
+        ),
+      ),
+    ).resolves.toEqual({ receivedThrough: 2, appliedThrough: 2, monitoring: 'compatibility' });
   });
 
   it('keeps a qualified turn start silent and applies one stable success outcome', async () => {
@@ -857,6 +939,23 @@ function qualificationEvidence(
   };
 }
 
+function qualification(
+  sourceSequence: number,
+): Extract<
+  Extract<ObservationExchange, { kind: 'append' }>['observations'][number],
+  { kind: 'connection-qualification' }
+> {
+  return {
+    kind: 'connection-qualification',
+    sourceSequence,
+    initialized: true,
+    primary: true,
+    capabilities: 'audited',
+    foregroundOwnership: 'confirmed',
+    evidence: qualificationEvidence(),
+  };
+}
+
 function append(
   observations: Extract<ObservationExchange, { kind: 'append' }>['observations'],
   fromSequence = 1,
@@ -881,5 +980,26 @@ function appendFor(
     scope: exchangeScope,
     fromSequence,
     observations,
+  };
+}
+
+function reconcileFor(
+  exchangeScope: ObservationExchange['scope'],
+  qualificationObservation: Extract<
+    Extract<ObservationExchange, { kind: 'append' }>['observations'][number],
+    { kind: 'connection-qualification' }
+  >,
+): ObservationExchange {
+  return {
+    kind: 'reconcile',
+    deliveryGeneration: 'delivery-1',
+    scope: exchangeScope,
+    retainedRange: { fromSequence: 1, throughSequence: qualificationObservation.sourceSequence },
+    checkpoint: {
+      throughSequence: qualificationObservation.sourceSequence,
+      monitoring: 'exact',
+      observations: [qualificationObservation],
+    },
+    tail: [],
   };
 }

@@ -3,6 +3,21 @@ import { describe, expect, it, vi } from 'vitest';
 import { CodexMonitoringStatus } from '../../src/codex/CodexMonitoringStatus';
 
 describe('CodexMonitoringStatus', () => {
+  it('reports Notifier unavailable before any source is observed', () => {
+    const changes = vi.fn();
+    const status = new CodexMonitoringStatus();
+
+    status.setOnChange(changes);
+
+    expect(changes).toHaveBeenCalledWith({
+      monitoring: 'unavailable',
+      exact: 0,
+      compatibility: 0,
+      unavailable: 0,
+      degraded: 0,
+    });
+  });
+
   it('tracks exact foreground ownership and summarizes mixed invocation modes', () => {
     const log = { appendLine: vi.fn() };
     const changes = vi.fn();
@@ -14,9 +29,11 @@ describe('CodexMonitoringStatus', () => {
       monitoring: 'exact',
       reason: 'protocol-qualified',
     });
-    status.observeHook('hook-only-session');
+    status.observeHook('hook-only-session', 'hook-only-invocation');
 
-    expect(status.isExactForeground('private-thread-value')).toBe(true);
+    expect(
+      status.isExactForeground('private-thread-value', '11111111111111111111111111111111'),
+    ).toBe(true);
     expect(status.summary()).toEqual({
       monitoring: 'compatibility',
       exact: 1,
@@ -35,7 +52,9 @@ describe('CodexMonitoringStatus', () => {
       monitoring: 'degraded',
       reason: 'authoritative-input-gap',
     });
-    expect(status.isExactForeground('private-thread-value')).toBe(false);
+    expect(
+      status.isExactForeground('private-thread-value', '11111111111111111111111111111111'),
+    ).toBe(false);
     expect(status.summary().monitoring).toBe('degraded');
   });
 
@@ -55,6 +74,57 @@ describe('CodexMonitoringStatus', () => {
       compatibility: 0,
       unavailable: 0,
       degraded: 0,
+    });
+  });
+
+  it('matches exact authority by invocation and foreground identity', () => {
+    const status = new CodexMonitoringStatus();
+    status.update({
+      invocationId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      foregroundThreadKey: 'reused-thread',
+      monitoring: 'exact',
+      reason: 'protocol-qualified',
+    });
+
+    expect(status.isExactForeground('reused-thread', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBe(
+      true,
+    );
+    expect(status.isExactForeground('reused-thread', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toBe(
+      false,
+    );
+    expect(status.isExactForeground('reused-thread')).toBe(false);
+
+    status.observeHook('reused-thread', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(status.summary()).toEqual({
+      monitoring: 'compatibility',
+      exact: 1,
+      compatibility: 1,
+      unavailable: 0,
+      degraded: 0,
+    });
+  });
+
+  it('keeps Hook suppressed while an established protocol authority is degraded', () => {
+    const status = new CodexMonitoringStatus();
+    status.update({
+      invocationId: 'cccccccccccccccccccccccccccccccc',
+      foregroundThreadKey: 'thread-1',
+      monitoring: 'exact',
+      reason: 'protocol-qualified',
+    });
+    status.update({
+      invocationId: 'cccccccccccccccccccccccccccccccc',
+      foregroundThreadKey: 'thread-1',
+      monitoring: 'degraded',
+      reason: 'authoritative-input-gap',
+    });
+
+    expect(status.isExactForeground('thread-1', 'cccccccccccccccccccccccccccccccc')).toBe(true);
+    status.observeHook('thread-1', 'cccccccccccccccccccccccccccccccc');
+    expect(status.summary()).toMatchObject({
+      monitoring: 'degraded',
+      degraded: 1,
+      compatibility: 0,
     });
   });
 });

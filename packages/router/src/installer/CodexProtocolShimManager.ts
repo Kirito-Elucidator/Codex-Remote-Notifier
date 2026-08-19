@@ -3,7 +3,7 @@ import * as path from 'path';
 
 import * as vscode from 'vscode';
 
-import { fileExists } from 'remote-notifier-shared';
+import { ENV_CODEX_HOOK_AVAILABLE, fileExists } from 'remote-notifier-shared';
 
 const UNIX_SHIM_NAME = 'codex';
 const WINDOWS_SHIM_NAME = 'codex.cmd';
@@ -31,6 +31,7 @@ export class CodexProtocolShimManager {
     const collection = this.context.environmentVariableCollection;
     collection.delete('PATH');
     collection.prepend('PATH', `${this.shimDirectory}${path.delimiter}`);
+    collection.replace(ENV_CODEX_HOOK_AVAILABLE, '1');
     this.log?.appendLine(
       `[CodexProtocolShim] Enabled for new integrated terminals via ${this.shimDirectory}`,
     );
@@ -38,6 +39,7 @@ export class CodexProtocolShimManager {
 
   async disable(removeFiles = false): Promise<void> {
     this.context.environmentVariableCollection.delete('PATH');
+    this.context.environmentVariableCollection.delete(ENV_CODEX_HOOK_AVAILABLE);
     if (removeFiles) {
       await Promise.all([
         unlinkIfPresent(this.unixShimPath),

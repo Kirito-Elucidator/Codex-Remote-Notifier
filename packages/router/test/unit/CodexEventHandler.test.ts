@@ -659,6 +659,7 @@ describe('CodexEventHandler', () => {
       version: 1,
       kind: 'hook',
       hook_event_name: 'PermissionRequest',
+      invocation_id: 'invocation-1',
       session_id: 'thread-1',
       turn_id: 'turn-before-qualification',
       request_id: 'request-before-qualification',
@@ -669,6 +670,7 @@ describe('CodexEventHandler', () => {
       version: 1,
       kind: 'hook',
       hook_event_name: 'PermissionRequest',
+      invocation_id: 'invocation-1',
       session_id: 'thread-1',
       turn_id: 'turn-after-qualification',
       request_id: 'request-after-qualification',
@@ -680,7 +682,45 @@ describe('CodexEventHandler', () => {
         event_key: 'waiting-permission:request-before-qualification',
       }),
     ]);
-    expect(monitoring.observeHook).toHaveBeenCalledWith('thread-1');
+    expect(monitoring.observeHook).toHaveBeenCalledWith('thread-1', 'invocation-1');
+  });
+
+  it('rechecks exact authority after reading a persisted Stop', async () => {
+    let exact = false;
+    let finishRead: ((value: { isPlanMode: boolean; hasPlanItem: boolean }) => void) | undefined;
+    metadata.readTranscript.mockReturnValue(
+      new Promise((resolve) => {
+        finishRead = resolve;
+      }),
+    );
+    const monitoring = {
+      isExactForeground: vi.fn(() => exact),
+      observeHook: vi.fn(),
+    };
+    handler.dispose();
+    handler = new CodexEventHandler(
+      notifications as unknown as NotificationHandler,
+      { codexPreviewLength: 32 } as Configuration,
+      metadata as unknown as CodexMetadataResolver,
+      undefined,
+      monitoring,
+    );
+
+    const handling = handler.handle({
+      version: 1,
+      kind: 'hook',
+      hook_event_name: 'Stop',
+      invocation_id: 'invocation-1',
+      session_id: 'thread-1',
+      turn_id: 'turn-1',
+      transcript_path: 'rollout.jsonl',
+    });
+    await vi.waitFor(() => expect(metadata.readTranscript).toHaveBeenCalled());
+    exact = true;
+    finishRead?.({ isPlanMode: false, hasPlanItem: false });
+    await handling;
+
+    expect(delivered).toEqual([]);
   });
 
   it('ignores Hook presentation for protocol-authoritative sessions but still tracks focus', async () => {

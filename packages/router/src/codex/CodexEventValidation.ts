@@ -16,6 +16,7 @@ const HOOK_FIELDS = new Set([
   'version',
   'kind',
   'hook_event_name',
+  'invocation_id',
   'session_id',
   'turn_id',
   'request_id',
@@ -126,6 +127,7 @@ function parseHookEvent(payload: Record<string, unknown>): CodexEventParseResult
   }
 
   const stringError = validateOptionalStrings(payload, [
+    ['invocation_id', MAX_ID_LENGTH],
     ['session_id', MAX_ID_LENGTH],
     ['turn_id', MAX_ID_LENGTH],
     ['request_id', MAX_ID_LENGTH],
