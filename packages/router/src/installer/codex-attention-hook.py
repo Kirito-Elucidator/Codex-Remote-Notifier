@@ -223,8 +223,6 @@ def _minimal_event(event: dict[str, Any]) -> dict[str, Any] | None:
     )
     if request_id:
         body["request_id"] = request_id
-    if os.environ.get("REMOTE_NOTIFIER_CODEX_PROTOCOL_SESSION") == "1":
-        body["protocol_authoritative"] = True
     return body
 
 

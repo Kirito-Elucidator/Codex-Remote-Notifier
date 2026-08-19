@@ -459,6 +459,10 @@ export class CodexWebSocketBridge {
       this.forwardClientLine(connection, text);
     });
     webSocket.on('close', () => {
+      this.postAttention(
+        connection,
+        connection.attentionCapture?.authorityLost('compatibility') ?? [],
+      );
       if (connection.webSocket === webSocket) connection.webSocket = undefined;
       connection.closed = true;
       this.connections.delete(connection);
@@ -645,6 +649,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
   const environment = withoutShimPath(process.env, shimDirectory);
   const launcher = await resolveCodexLauncher(environment, shimDirectory);
   delete environment.REMOTE_NOTIFIER_CODEX_REAL;
+  delete environment[ENV_CODEX_PROTOCOL_SESSION];
   const invocation = planCodexInvocation(codexArgs, process.cwd());
 
   if (invocation.mode === 'passthrough') {
@@ -691,10 +696,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
     });
   }
 
-  const appServerEnvironment = {
-    ...environment,
-    [ENV_CODEX_PROTOCOL_SESSION]: '1',
-  };
+  const appServerEnvironment = { ...environment };
   const tuiEnvironment = {
     ...appServerEnvironment,
     [TOKEN_ENVIRONMENT_VARIABLE]: token,

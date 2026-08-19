@@ -183,6 +183,11 @@ describe('CodexWebSocketBridge', () => {
 
     client.close();
     await onceClose(client);
+    await waitFor(() => attention.post.mock.calls.length === 4);
+    expect(attention.post.mock.calls[3]).toEqual([
+      scopes[0],
+      { kind: 'authority-change', sourceSequence: 4, monitoring: 'compatibility' },
+    ]);
   });
 
   it('closes a stalled client when the bounded outbound queue is exhausted', async () => {
@@ -517,8 +522,11 @@ describe('runSidecar passthrough', () => {
         'connection-qualification',
         'turn-start',
         'terminal-result',
+        'authority-change',
       ]);
-      expect(exactObservations.at(-1)).toMatchObject({
+      expect(
+        exactObservations.find((observation) => observation.kind === 'terminal-result'),
+      ).toMatchObject({
         result: 'success',
         canonicalBody: 'audited success',
       });
@@ -536,6 +544,7 @@ describe('runSidecar passthrough', () => {
       );
       expect(log.some((entry) => entry.mode === 'ordinary')).toBe(false);
       expect(log.every((entry) => entry.electronNode === null)).toBe(true);
+      expect(log.every((entry) => entry.protocolSession === null)).toBe(true);
     } finally {
       restore();
       await closeServer(server);
@@ -615,6 +624,7 @@ describe('runSidecar passthrough', () => {
       expect(log.map((entry) => entry.mode)).toEqual(
         expect.arrayContaining(['version', 'app-server', 'remote-failed', 'ordinary']),
       );
+      expect(log.every((entry) => entry.protocolSession === null)).toBe(true);
       const appServer = log.find((entry) => entry.mode === 'app-server');
       expect(isProcessRunning(Number(appServer?.pid))).toBe(false);
     } finally {
@@ -774,7 +784,7 @@ async function createFakeCodex(): Promise<{
       "const WebSocket = require('ws');",
       'const args = process.argv.slice(2);',
       'const log = (mode, extra = {}) => {',
-      "  fs.appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify({ mode, electronNode: process.env.ELECTRON_RUN_AS_NODE || null, ...extra }) + '\\n');",
+      "  fs.appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify({ mode, electronNode: process.env.ELECTRON_RUN_AS_NODE || null, protocolSession: process.env.REMOTE_NOTIFIER_CODEX_PROTOCOL_SESSION || null, ...extra }) + '\\n');",
       '};',
       "if (args.length === 1 && args[0] === '--version') {",
       "  log('version');",

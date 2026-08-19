@@ -19,6 +19,7 @@ import { CodexAutoConfigProvider } from './autoconfig/CodexAutoConfigProvider';
 import { createAutoConfigRegistry } from './autoconfig/Registry';
 import { CodexAttentionNormalizationRegistry } from './codex/CodexAttentionNormalization';
 import { CodexEventHandler } from './codex/CodexEventHandler';
+import { CodexMonitoringStatus } from './codex/CodexMonitoringStatus';
 import { Configuration } from './config/Configuration';
 import { NotificationHandler } from './handler/NotificationHandler';
 import { CodeNotifyScriptInstaller } from './installer/CodeNotifyScriptInstaller';
@@ -51,8 +52,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const terminalFocus = new CodexTerminalFocusRegistry(context.workspaceState, log);
   const codexFocusCommand = `${COMMAND_FOCUS_CODEX_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
   const handler = new NotificationHandler(presenter, config, terminalFocus, codexFocusCommand);
-  const codexEvents = new CodexEventHandler(handler, config, undefined, log);
-  const codexAttention = new CodexAttentionNormalizationRegistry(new PresentationCommandBridge());
+  const codexMonitoring = new CodexMonitoringStatus(log);
+  const codexEvents = new CodexEventHandler(handler, config, undefined, log, codexMonitoring);
+  const codexAttention = new CodexAttentionNormalizationRegistry(
+    new PresentationCommandBridge(),
+    (change) => codexMonitoring.update(change),
+  );
   const sessionManager = new SessionManager(context, {
     codexPreviewLength: config.codexPreviewLength,
   });
@@ -78,6 +83,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log.appendLine(`[Router] Session file written, env vars set`);
 
   const statusBar = new StatusBar(server.port);
+  codexMonitoring.setOnChange((summary) => statusBar.updateMonitoring(summary));
 
   // Auto-install or update script
   const installer = new CodeNotifyScriptInstaller(log);

@@ -27,35 +27,54 @@ interface PendingOutcome {
 }
 
 interface TurnState {
-  foregroundThreadKey: string;
+  foregroundThreadKey?: string;
   returnTarget: string;
 }
+
+type ScopeRole = 'compatibility' | 'protocol' | 'unknown';
 
 interface ScopeState {
   admitted: Map<number, SanitizedAttentionObservation>;
   appliedThrough: number;
+  closed: boolean;
   deliveryGeneration: string;
   fingerprints: Map<number, string>;
   foregroundThreadKey?: string;
-  monitoring: MonitoringMode;
   outcomes: Set<string>;
   pendingOutcome?: PendingOutcome;
   qualified: boolean;
   receivedThrough: number;
   retainedBytes: number;
+  role: ScopeRole;
   turns: Map<string, TurnState>;
 }
+
+export interface CodexMonitoringChange {
+  invocationId: string;
+  monitoring: MonitoringMode;
+  reason: string;
+  foregroundThreadKey?: string;
+}
+
+export type CodexMonitoringListener = (change: CodexMonitoringChange) => void;
 
 export class CodexAttentionNormalizationRegistry implements CodexAttentionNormalization {
   private readonly actors = new Map<string, InvocationActor>();
 
-  constructor(private readonly presentation: AttentionPresentationPort) {}
+  constructor(
+    private readonly presentation: AttentionPresentationPort,
+    private readonly onMonitoringChange: CodexMonitoringListener = () => {},
+  ) {}
 
   exchange(input: ObservationExchange): Promise<ExchangeReceipt> {
     const exchange = parseObservationExchange(input);
     let actor = this.actors.get(exchange.scope.invocationId);
     if (actor === undefined) {
-      actor = new InvocationActor(this.presentation);
+      actor = new InvocationActor(
+        this.presentation,
+        exchange.scope.invocationId,
+        this.onMonitoringChange,
+      );
       this.actors.set(exchange.scope.invocationId, actor);
     }
     return actor.exchange(exchange);
@@ -63,10 +82,19 @@ export class CodexAttentionNormalizationRegistry implements CodexAttentionNormal
 }
 
 class InvocationActor {
+  private exactScopeKey?: string;
+  private readonly exactTurnKeys = new Set<string>();
   private mailbox = Promise.resolve();
+  private monitoring: MonitoringMode = 'compatibility';
+  private recoveryBoundaryRequired = false;
+  private recoveryCandidateScopeKey?: string;
   private readonly scopes = new Map<string, ScopeState>();
 
-  constructor(private readonly presentation: AttentionPresentationPort) {}
+  constructor(
+    private readonly presentation: AttentionPresentationPort,
+    private readonly invocationId: string,
+    private readonly onMonitoringChange: CodexMonitoringListener,
+  ) {}
 
   exchange(input: ObservationExchange): Promise<ExchangeReceipt> {
     const result = this.mailbox.then(() => this.process(input));
@@ -83,11 +111,11 @@ class InvocationActor {
   ): ExchangeReceipt | undefined {
     const expectedSequence = state.receivedThrough + 1;
     if (input.fromSequence > expectedSequence) {
-      return receipt(state, expectedSequence);
+      return receipt(state, this.monitoring, expectedSequence);
     }
     if (state.deliveryGeneration !== input.deliveryGeneration) {
-      state.monitoring = 'degraded';
-      return receipt(state, expectedSequence);
+      this.setMonitoring('degraded');
+      return receipt(state, this.monitoring, expectedSequence);
     }
 
     const additions: Array<{
@@ -100,13 +128,13 @@ class InvocationActor {
       const fingerprint = fingerprintValue(observation);
       if (observation.sourceSequence < nextSequence) {
         if (state.fingerprints.get(observation.sourceSequence) !== fingerprint) {
-          state.monitoring = 'degraded';
-          return receipt(state);
+          this.setMonitoring('degraded');
+          return receipt(state, this.monitoring);
         }
         continue;
       }
       if (observation.sourceSequence !== nextSequence) {
-        return receipt(state, nextSequence);
+        return receipt(state, this.monitoring, nextSequence);
       }
       additions.push({
         bytes: Buffer.byteLength(JSON.stringify(observation), 'utf8'),
@@ -121,8 +149,8 @@ class InvocationActor {
       retainedObservationCount(this.scopes) + additions.length > MAXIMUM_INVOCATION_OBSERVATIONS ||
       retainedObservationBytes(this.scopes) + additionBytes > MAXIMUM_INVOCATION_BYTES
     ) {
-      state.monitoring = 'degraded';
-      return receipt(state, expectedSequence);
+      this.setMonitoring('degraded');
+      return receipt(state, this.monitoring, expectedSequence);
     }
 
     for (const addition of additions) {
@@ -153,6 +181,7 @@ class InvocationActor {
   ): Promise<boolean> {
     switch (observation.kind) {
       case 'connection-qualification': {
+        state.role = 'protocol';
         state.qualified = isExactConnectionQualification(observation);
         if (state.qualified) {
           const foregroundThreadKey = observation.evidence?.requestedThreadKey;
@@ -162,23 +191,91 @@ class InvocationActor {
               state.foregroundThreadKey !== foregroundThreadKey)
           ) {
             state.qualified = false;
-            state.monitoring = 'degraded';
+            this.setMonitoring('degraded');
             return true;
           }
           state.foregroundThreadKey = foregroundThreadKey;
+          const key = scopeKey(scope);
+          if (this.exactScopeKey !== undefined && this.exactScopeKey !== key) {
+            state.qualified = false;
+            this.setMonitoring('degraded');
+          } else if (state.closed) {
+            state.qualified = false;
+            if (this.exactScopeKey === undefined) this.setMonitoring('compatibility');
+          } else if (this.recoveryBoundaryRequired) {
+            this.recoveryCandidateScopeKey = key;
+          } else {
+            this.exactScopeKey = key;
+            this.setMonitoring('exact');
+          }
+        } else if (isMalformedAuditedQualification(observation)) {
+          this.setMonitoring('degraded');
+        } else if (this.exactScopeKey === scopeKey(scope)) {
+          this.exactScopeKey = undefined;
+          this.setMonitoring('compatibility');
+        } else if (this.exactScopeKey === undefined) {
+          this.setMonitoring('compatibility');
         }
-        state.monitoring = state.qualified ? 'exact' : 'compatibility';
+        return true;
+      }
+      case 'authority-change': {
+        if (observation.monitoring === 'exact') {
+          if (!state.qualified || this.exactScopeKey !== scopeKey(scope)) {
+            this.setMonitoring('degraded');
+          }
+          return true;
+        }
+        if (state.role === 'unknown' && observation.monitoring === 'compatibility') {
+          state.role = 'compatibility';
+          if (this.exactScopeKey === undefined) this.setMonitoring('compatibility');
+          return true;
+        }
+        if (this.exactScopeKey === scopeKey(scope)) {
+          if (state.turns.size > 0) this.recoveryBoundaryRequired = true;
+          this.exactScopeKey = undefined;
+          state.qualified = false;
+          state.closed = true;
+        }
+        this.setMonitoring(observation.monitoring);
         return true;
       }
       case 'turn-start': {
-        if (!state.qualified || state.foregroundThreadKey === undefined) {
-          state.monitoring = 'degraded';
+        if (state.role === 'compatibility') {
+          const existingTurn = state.turns.get(observation.turnKey);
+          if (
+            existingTurn !== undefined &&
+            existingTurn.returnTarget !== observation.returnTarget
+          ) {
+            this.setMonitoring('degraded');
+            return true;
+          }
+          state.turns.set(observation.turnKey, { returnTarget: observation.returnTarget });
+          return true;
+        }
+        const key = scopeKey(scope);
+        if (
+          state.qualified &&
+          this.recoveryBoundaryRequired &&
+          this.recoveryCandidateScopeKey === key
+        ) {
+          if (this.exactTurnKeys.has(observation.turnKey)) return true;
+          this.exactScopeKey = key;
+          this.recoveryBoundaryRequired = false;
+          this.recoveryCandidateScopeKey = undefined;
+          this.setMonitoring('exact');
+        }
+        if (
+          !state.qualified ||
+          state.foregroundThreadKey === undefined ||
+          this.exactScopeKey !== key
+        ) {
+          this.setMonitoring('degraded');
           return true;
         }
         const existingTurn = state.turns.get(observation.turnKey);
         if (existingTurn !== undefined) {
           if (existingTurn.returnTarget !== observation.returnTarget) {
-            state.monitoring = 'degraded';
+            this.setMonitoring('degraded');
           }
           return true;
         }
@@ -186,6 +283,7 @@ class InvocationActor {
           foregroundThreadKey: state.foregroundThreadKey,
           returnTarget: observation.returnTarget,
         });
+        this.exactTurnKeys.add(observation.turnKey);
         return true;
       }
       case 'terminal-result':
@@ -201,21 +299,28 @@ class InvocationActor {
     state: ScopeState,
     observation: Extract<SanitizedAttentionObservation, { kind: 'terminal-result' }>,
   ): Promise<boolean> {
-    if (!state.qualified) {
-      state.monitoring = 'degraded';
+    const compatibility = state.role === 'compatibility';
+    if (
+      compatibility &&
+      this.exactScopeKey !== undefined &&
+      this.exactTurnKeys.has(observation.turnKey)
+    )
+      return true;
+    if (!compatibility && (!state.qualified || this.exactScopeKey !== scopeKey(scope))) {
+      this.setMonitoring('degraded');
       return true;
     }
     const turn = state.turns.get(observation.turnKey);
     const foregroundThreadKey = turn?.foregroundThreadKey ?? state.foregroundThreadKey;
-    if (foregroundThreadKey === undefined) {
-      state.monitoring = 'degraded';
+    if (!compatibility && foregroundThreadKey === undefined) {
+      this.setMonitoring('degraded');
       return true;
     }
     const outcomeKey = stableIdentity('outcome', [
       scope.invocationId,
       scope.connectionId,
       scope.authorityEpoch,
-      foregroundThreadKey,
+      foregroundThreadKey ?? 'compatibility',
       observation.turnKey,
       observation.occurrenceKey,
     ]);
@@ -224,14 +329,16 @@ class InvocationActor {
     let pending = state.pendingOutcome;
     if (pending === undefined) {
       if (turn === undefined) {
-        state.monitoring = 'degraded';
+        this.setMonitoring('degraded');
         return true;
       }
       const record: PresentationRecord = {
         key: outcomeKey,
         revision: 1,
         appearance: 'information',
-        canonicalTitle: observation.canonicalTitle ?? 'Codex completed',
+        canonicalTitle: compatibility
+          ? compatibilityTitle(observation.canonicalTitle ?? 'Codex completed')
+          : (observation.canonicalTitle ?? 'Codex completed'),
         canonicalBody: observation.canonicalBody ?? 'Return to Codex to view details',
         returnTarget: turn.returnTarget,
       };
@@ -241,7 +348,7 @@ class InvocationActor {
           scope.invocationId,
           scope.connectionId,
           scope.authorityEpoch,
-          foregroundThreadKey,
+          foregroundThreadKey ?? 'compatibility',
           observation.turnKey,
           String(observation.sourceSequence),
         ]),
@@ -255,7 +362,7 @@ class InvocationActor {
       state.pendingOutcome = pending;
     }
     if (pending.sequence !== observation.sourceSequence) {
-      state.monitoring = 'degraded';
+      this.setMonitoring('degraded');
       return true;
     }
 
@@ -265,7 +372,7 @@ class InvocationActor {
       );
       assertMatchingPresentationReceipt(pending.exchange, presentationReceipt);
       if (presentationReceipt.kind !== 'applied' && presentationReceipt.kind !== 'replay') {
-        if (presentationReceipt.kind === 'rejected') state.monitoring = 'degraded';
+        if (presentationReceipt.kind === 'rejected') this.setMonitoring('degraded');
         return false;
       }
     } catch {
@@ -287,12 +394,27 @@ class InvocationActor {
     }
 
     if (input.kind === 'reconcile') {
-      return receipt(state, state.receivedThrough + 1);
+      return receipt(state, this.monitoring, state.receivedThrough + 1);
     }
     const admissionReceipt = this.admitAppend(input, state);
     if (admissionReceipt !== undefined) return admissionReceipt;
     await this.applyAdmitted(input, state);
-    return receipt(state);
+    return receipt(state, this.monitoring);
+  }
+
+  private setMonitoring(monitoring: MonitoringMode): void {
+    if (this.monitoring === monitoring) return;
+    this.monitoring = monitoring;
+    const exactState =
+      this.exactScopeKey === undefined ? undefined : this.scopes.get(this.exactScopeKey);
+    this.onMonitoringChange({
+      invocationId: this.invocationId,
+      monitoring,
+      reason: monitoringReason(monitoring),
+      ...(exactState?.foregroundThreadKey === undefined
+        ? {}
+        : { foregroundThreadKey: exactState.foregroundThreadKey }),
+    });
   }
 }
 
@@ -300,13 +422,14 @@ function createScopeState(deliveryGeneration: string): ScopeState {
   return {
     admitted: new Map(),
     appliedThrough: 0,
+    closed: false,
     deliveryGeneration,
     fingerprints: new Map(),
-    monitoring: 'compatibility',
     outcomes: new Set(),
     qualified: false,
     receivedThrough: 0,
     retainedBytes: 0,
+    role: 'unknown',
     turns: new Map(),
   };
 }
@@ -315,13 +438,47 @@ function fingerprintValue(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value), 'utf8').digest('hex');
 }
 
-function receipt(state: ScopeState, replayFrom?: number): ExchangeReceipt {
+function receipt(
+  state: ScopeState,
+  monitoring: MonitoringMode,
+  replayFrom?: number,
+): ExchangeReceipt {
   return {
     receivedThrough: state.receivedThrough,
     appliedThrough: state.appliedThrough,
     ...(replayFrom === undefined ? {} : { replayFrom }),
-    monitoring: state.monitoring,
+    monitoring,
   };
+}
+
+function compatibilityTitle(title: string): string {
+  return title.startsWith('[Compatibility]') ? title : `[Compatibility] ${title}`;
+}
+
+function monitoringReason(monitoring: MonitoringMode): string {
+  switch (monitoring) {
+    case 'exact':
+      return 'protocol-qualified';
+    case 'compatibility':
+      return 'protocol-unavailable';
+    case 'unavailable':
+      return 'no-source';
+    case 'degraded':
+      return 'authoritative-input-gap';
+  }
+}
+
+function isMalformedAuditedQualification(
+  observation: Extract<SanitizedAttentionObservation, { kind: 'connection-qualification' }>,
+): boolean {
+  return (
+    observation.initialized &&
+    observation.primary &&
+    observation.capabilities === 'audited' &&
+    observation.foregroundOwnership === 'confirmed' &&
+    observation.evidence !== undefined &&
+    /^0\.(?:145|146|147)\.\d+$/.test(observation.evidence.runtimeVersion)
+  );
 }
 
 function retainedObservationBytes(scopes: Map<string, ScopeState>): number {

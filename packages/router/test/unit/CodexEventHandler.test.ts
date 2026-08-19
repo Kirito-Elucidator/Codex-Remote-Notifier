@@ -486,7 +486,7 @@ describe('CodexEventHandler', () => {
         () => {
           expect(delivered).toEqual([
             expect.objectContaining({
-              title: '[网络错误]',
+              title: '[Compatibility] [网络错误]',
               level: 'error',
               event_key: 'terminal-error:hook-error-turn',
             }),
@@ -634,10 +634,53 @@ describe('CodexEventHandler', () => {
 
     expect(delivered).toEqual([
       expect.objectContaining({
-        title: '[等待授权]',
+        title: '[Compatibility] [等待授权]',
         event_key: 'waiting-permission:hook-request',
       }),
     ]);
+  });
+
+  it('uses Router-qualified authority instead of a startup-wide Hook marker', async () => {
+    let exact = false;
+    const monitoring = {
+      isExactForeground: vi.fn(() => exact),
+      observeHook: vi.fn(),
+    };
+    handler.dispose();
+    handler = new CodexEventHandler(
+      notifications as unknown as NotificationHandler,
+      { codexPreviewLength: 32 } as Configuration,
+      metadata as unknown as CodexMetadataResolver,
+      undefined,
+      monitoring,
+    );
+
+    await handler.handle({
+      version: 1,
+      kind: 'hook',
+      hook_event_name: 'PermissionRequest',
+      session_id: 'thread-1',
+      turn_id: 'turn-before-qualification',
+      request_id: 'request-before-qualification',
+      protocol_authoritative: true,
+    });
+    exact = true;
+    await handler.handle({
+      version: 1,
+      kind: 'hook',
+      hook_event_name: 'PermissionRequest',
+      session_id: 'thread-1',
+      turn_id: 'turn-after-qualification',
+      request_id: 'request-after-qualification',
+    });
+
+    expect(delivered).toEqual([
+      expect.objectContaining({
+        title: '[Compatibility] [等待授权]',
+        event_key: 'waiting-permission:request-before-qualification',
+      }),
+    ]);
+    expect(monitoring.observeHook).toHaveBeenCalledWith('thread-1');
   });
 
   it('ignores Hook presentation for protocol-authoritative sessions but still tracks focus', async () => {
@@ -711,7 +754,7 @@ describe('CodexEventHandler', () => {
       expect(metadata.readTranscript).toHaveBeenCalledTimes(2);
       expect(delivered).toEqual([
         expect.objectContaining({
-          title: '[网络错误]',
+          title: '[Compatibility] [网络错误]',
           event_key: 'terminal-error:hook-turn',
         }),
       ]);

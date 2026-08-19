@@ -79,6 +79,20 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
   });
 
+  it('emits one ordered Compatibility transition when qualified protocol authority is lost', () => {
+    const capture = qualifiedCapture();
+
+    expect(capture.authorityLost('compatibility')).toEqual([
+      { kind: 'authority-change', sourceSequence: 3, monitoring: 'compatibility' },
+    ]);
+    expect(capture.authorityLost('compatibility')).toEqual([]);
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}',
+      ),
+    ).toEqual([]);
+  });
+
   it('rejects auxiliary, unaudited, and structurally descendant observations before sequencing', () => {
     for (const capture of [
       new CodexAttentionProtocolCapture({

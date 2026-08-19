@@ -17,6 +17,349 @@ const scope = {
 };
 
 describe('CodexAttentionNormalization.exchange', () => {
+  it('labels Hook-derived attention as Compatibility and reports a no-source state', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await expect(
+      normalization.exchange(
+        append([
+          { kind: 'authority-change', sourceSequence: 1, monitoring: 'compatibility' },
+          {
+            kind: 'turn-start',
+            sourceSequence: 2,
+            turnKey: 'hook-turn',
+            returnTarget: 'hook-route',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 3,
+            turnKey: 'hook-turn',
+            result: 'success',
+            occurrenceKey: 'hook-stop',
+            canonicalTitle: 'Codex completed',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'compatibility' });
+
+    expect(exchanged).toMatchObject([
+      {
+        kind: 'apply',
+        mutations: [
+          {
+            kind: 'create',
+            record: {
+              canonicalTitle: '[Compatibility] Codex completed',
+              returnTarget: 'hook-route',
+            },
+          },
+        ],
+      },
+    ]);
+
+    await expect(
+      normalization.exchange(
+        append([{ kind: 'authority-change', sourceSequence: 4, monitoring: 'unavailable' }], 4),
+      ),
+    ).resolves.toEqual({ receivedThrough: 4, appliedThrough: 4, monitoring: 'unavailable' });
+    expect(exchanged).toHaveLength(1);
+  });
+
+  it('keeps unsupported and upgraded protocol shapes in Compatibility', async () => {
+    const presentation: AttentionPresentationPort = { exchange: vi.fn() };
+
+    for (const runtimeVersion of ['0.144.9', '0.148.0', '1.0.0']) {
+      const normalization = new CodexAttentionNormalizationRegistry(presentation);
+      await expect(
+        normalization.exchange(
+          append([
+            {
+              kind: 'connection-qualification',
+              sourceSequence: 1,
+              initialized: true,
+              primary: true,
+              capabilities: 'audited',
+              foregroundOwnership: 'confirmed',
+              evidence: qualificationEvidence({
+                runtimeVersion,
+                clientVersion: runtimeVersion,
+                serverUserAgent: `codex_cli_rs/${runtimeVersion}`,
+              }),
+            },
+          ]),
+        ),
+      ).resolves.toEqual({ receivedThrough: 1, appliedThrough: 1, monitoring: 'compatibility' });
+    }
+
+    expect(presentation.exchange).not.toHaveBeenCalled();
+  });
+
+  it('publishes bounded monitoring changes without presenting attention', async () => {
+    const monitoring = vi.fn();
+    const presentation: AttentionPresentationPort = { exchange: vi.fn() };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation, monitoring);
+
+    await normalization.exchange(
+      append([
+        {
+          kind: 'connection-qualification',
+          sourceSequence: 1,
+          initialized: true,
+          primary: true,
+          capabilities: 'audited',
+          foregroundOwnership: 'confirmed',
+          evidence: qualificationEvidence(),
+        },
+        { kind: 'authority-change', sourceSequence: 2, monitoring: 'unavailable' },
+      ]),
+    );
+
+    expect(monitoring.mock.calls).toEqual([
+      [
+        {
+          invocationId: scope.invocationId,
+          foregroundThreadKey: 'thread-1',
+          monitoring: 'exact',
+          reason: 'protocol-qualified',
+        },
+      ],
+      [
+        {
+          invocationId: scope.invocationId,
+          monitoring: 'unavailable',
+          reason: 'no-source',
+        },
+      ],
+    ]);
+    expect(presentation.exchange).not.toHaveBeenCalled();
+  });
+
+  it('hands matching Hook observations to qualified protocol authority by identity', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+    const hookScope = {
+      ...scope,
+      connectionId: 'hook-compatibility',
+      authorityEpoch: 'hook-epoch-1',
+    };
+
+    await expect(
+      normalization.exchange(
+        appendFor(hookScope, [
+          { kind: 'authority-change', sourceSequence: 1, monitoring: 'compatibility' },
+          {
+            kind: 'turn-start',
+            sourceSequence: 2,
+            turnKey: 'shared-turn',
+            returnTarget: 'hook-route',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 2, appliedThrough: 2, monitoring: 'compatibility' });
+
+    await expect(
+      normalization.exchange(
+        append([
+          {
+            kind: 'connection-qualification',
+            sourceSequence: 1,
+            initialized: true,
+            primary: true,
+            capabilities: 'audited',
+            foregroundOwnership: 'confirmed',
+            evidence: qualificationEvidence(),
+          },
+          {
+            kind: 'turn-start',
+            sourceSequence: 2,
+            turnKey: 'shared-turn',
+            returnTarget: 'protocol-route',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 3,
+            turnKey: 'shared-turn',
+            result: 'success',
+            occurrenceKey: 'protocol-success',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'exact' });
+
+    await expect(
+      normalization.exchange(
+        appendFor(
+          hookScope,
+          [
+            {
+              kind: 'terminal-result',
+              sourceSequence: 3,
+              turnKey: 'shared-turn',
+              result: 'success',
+              occurrenceKey: 'hook-stop',
+            },
+          ],
+          3,
+        ),
+      ),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'exact' });
+
+    expect(exchanged).toHaveLength(1);
+    expect(exchanged[0]).toMatchObject({
+      kind: 'apply',
+      mutations: [{ kind: 'create', record: { returnTarget: 'protocol-route' } }],
+    });
+  });
+
+  it('closes a lost exact epoch and recovers only at a later turn boundary', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await normalization.exchange(
+      append([
+        {
+          kind: 'connection-qualification',
+          sourceSequence: 1,
+          initialized: true,
+          primary: true,
+          capabilities: 'audited',
+          foregroundOwnership: 'confirmed',
+          evidence: qualificationEvidence(),
+        },
+        {
+          kind: 'turn-start',
+          sourceSequence: 2,
+          turnKey: 'interrupted-turn',
+          returnTarget: 'protocol-old-route',
+        },
+      ]),
+    );
+    await expect(
+      normalization.exchange(
+        append([{ kind: 'authority-change', sourceSequence: 3, monitoring: 'compatibility' }], 3),
+      ),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'compatibility' });
+    await expect(
+      normalization.exchange(
+        append(
+          [
+            {
+              kind: 'connection-qualification',
+              sourceSequence: 4,
+              initialized: true,
+              primary: true,
+              capabilities: 'audited',
+              foregroundOwnership: 'confirmed',
+              evidence: qualificationEvidence(),
+            },
+          ],
+          4,
+        ),
+      ),
+    ).resolves.toEqual({ receivedThrough: 4, appliedThrough: 4, monitoring: 'compatibility' });
+
+    const hookScope = {
+      ...scope,
+      connectionId: 'hook-after-loss',
+      authorityEpoch: 'hook-epoch-after-loss',
+    };
+    await expect(
+      normalization.exchange(
+        appendFor(hookScope, [
+          { kind: 'authority-change', sourceSequence: 1, monitoring: 'compatibility' },
+          {
+            kind: 'turn-start',
+            sourceSequence: 2,
+            turnKey: 'interrupted-turn',
+            returnTarget: 'hook-route',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 3,
+            turnKey: 'interrupted-turn',
+            result: 'success',
+            occurrenceKey: 'hook-stop',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'compatibility' });
+
+    const recoveredScope = {
+      ...scope,
+      connectionId: 'connection-recovered',
+      authorityEpoch: 'authority-2',
+    };
+    await expect(
+      normalization.exchange(
+        appendFor(recoveredScope, [
+          {
+            kind: 'connection-qualification',
+            sourceSequence: 1,
+            initialized: true,
+            primary: true,
+            capabilities: 'audited',
+            foregroundOwnership: 'confirmed',
+            evidence: qualificationEvidence(),
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 1, appliedThrough: 1, monitoring: 'compatibility' });
+    await expect(
+      normalization.exchange(
+        appendFor(
+          recoveredScope,
+          [
+            {
+              kind: 'turn-start',
+              sourceSequence: 2,
+              turnKey: 'later-turn',
+              returnTarget: 'protocol-new-route',
+            },
+            {
+              kind: 'terminal-result',
+              sourceSequence: 3,
+              turnKey: 'later-turn',
+              result: 'success',
+              occurrenceKey: 'later-success',
+            },
+          ],
+          2,
+        ),
+      ),
+    ).resolves.toEqual({ receivedThrough: 3, appliedThrough: 3, monitoring: 'exact' });
+
+    const records = exchanged.flatMap((exchange) =>
+      exchange.kind === 'apply'
+        ? exchange.mutations.flatMap((mutation) =>
+            mutation.kind === 'create' ? [mutation.record] : [],
+          )
+        : [],
+    );
+    expect(records).toMatchObject([
+      { canonicalTitle: '[Compatibility] Codex completed', returnTarget: 'hook-route' },
+      { canonicalTitle: 'Codex completed', returnTarget: 'protocol-new-route' },
+    ]);
+  });
+
   it('keeps a qualified turn start silent and applies one stable success outcome', async () => {
     const exchanged: PresentationExchange[] = [];
     const presentation: AttentionPresentationPort = {
@@ -522,6 +865,20 @@ function append(
     kind: 'append',
     deliveryGeneration: 'delivery-1',
     scope,
+    fromSequence,
+    observations,
+  };
+}
+
+function appendFor(
+  exchangeScope: ObservationExchange['scope'],
+  observations: Extract<ObservationExchange, { kind: 'append' }>['observations'],
+  fromSequence = 1,
+): ObservationExchange {
+  return {
+    kind: 'append',
+    deliveryGeneration: 'delivery-1',
+    scope: exchangeScope,
     fromSequence,
     observations,
   };

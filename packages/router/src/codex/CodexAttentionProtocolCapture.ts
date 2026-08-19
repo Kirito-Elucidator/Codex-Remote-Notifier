@@ -60,6 +60,7 @@ export class CodexAttentionProtocolCapture {
   private readonly pendingTurnIds = new Set<string>();
   private qualificationEvidence?: ConnectionQualificationEvidence;
   private qualified = false;
+  private authorityClosed = false;
   private serverUserAgent?: string;
   private sourceSequence = 0;
 
@@ -181,6 +182,16 @@ export class CodexAttentionProtocolCapture {
     return [];
   }
 
+  authorityLost(
+    monitoring: 'compatibility' | 'degraded' | 'unavailable',
+  ): SanitizedAttentionObservation[] {
+    if (!this.qualified || this.authorityClosed) return [];
+    this.authorityClosed = true;
+    this.qualified = false;
+    this.pendingTurnIds.clear();
+    return [{ kind: 'authority-change', sourceSequence: this.nextSequence(), monitoring }];
+  }
+
   private captureSuccess(message: Record<string, unknown>): SanitizedAttentionObservation[] {
     if (!this.qualified) return [];
     const params = isRecord(message.params) ? message.params : undefined;
@@ -286,6 +297,7 @@ export class CodexAttentionProtocolCapture {
 
   private qualify(): SanitizedAttentionObservation[] {
     if (
+      this.authorityClosed ||
       this.qualified ||
       !this.initialized ||
       this.foregroundThreadId === undefined ||
