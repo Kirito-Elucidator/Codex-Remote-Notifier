@@ -10,6 +10,7 @@ import {
 } from 'remote-notifier-shared/attentionExchange';
 import { createCodexReturnTarget } from 'remote-notifier-shared/codexReturnTarget';
 
+import { codexAttentionRequestKind } from './CodexAttentionRequests';
 import { isAuditedCodexProtocolVersion, parseCodexProtocolVersion } from './CodexShimArguments';
 
 const MAXIMUM_PROTOCOL_MESSAGE_BYTES = 16 * 1024 * 1024;
@@ -222,7 +223,7 @@ export class CodexAttentionProtocolCapture {
     message: Record<string, unknown>,
   ): Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }> | undefined {
     if (!this.qualified) return undefined;
-    const requestKind = attentionRequestKind(message.method);
+    const requestKind = codexAttentionRequestKind(message.method);
     const requestKey = requestIdKey(message.id);
     const params = isRecord(message.params) ? message.params : undefined;
     const legacyRequest =
@@ -411,28 +412,6 @@ function foregroundRequestKind(method: unknown): ForegroundRequestKind | undefin
   if (method === 'thread/resume') return 'resume';
   if (method === 'thread/start') return 'start';
   return undefined;
-}
-
-function attentionRequestKind(
-  method: unknown,
-):
-  | Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }>['requestKind']
-  | undefined {
-  switch (method) {
-    case 'item/tool/requestUserInput':
-      return 'input';
-    case 'item/commandExecution/requestApproval':
-    case 'item/fileChange/requestApproval':
-    case 'applyPatchApproval':
-    case 'execCommandApproval':
-      return 'approval';
-    case 'item/permissions/requestApproval':
-      return 'permission';
-    case 'mcpServer/elicitation/request':
-      return 'elicitation';
-    default:
-      return undefined;
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

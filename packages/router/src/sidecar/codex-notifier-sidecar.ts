@@ -21,6 +21,7 @@ import {
 } from 'remote-notifier-shared/constants';
 
 import { CodexAttentionProtocolCapture } from '../codex/CodexAttentionProtocolCapture';
+import { isCodexAttentionRequestMethod } from '../codex/CodexAttentionRequests';
 import { CodexProtocolCapture, JsonLineFramer } from '../codex/CodexProtocolCapture';
 import {
   injectRemoteArguments,
@@ -560,7 +561,7 @@ export class CodexWebSocketBridge {
       }
       if (exactSuccess && event.method === 'turn/completed' && event.status === 'completed')
         continue;
-      if (exactHumanAction && isHumanActionRequestMethod(event.method)) continue;
+      if (exactHumanAction && isCodexAttentionRequestMethod(event.method)) continue;
       this.router.post(event);
     }
     if (!connection.webSocket || connection.webSocket.readyState !== WebSocket.OPEN) {
@@ -1279,21 +1280,9 @@ async function resolveRouterEndpoint(
   }
 }
 
-function isHumanActionRequestMethod(method: string): boolean {
-  return (
-    method === 'item/tool/requestUserInput' ||
-    method === 'item/commandExecution/requestApproval' ||
-    method === 'item/fileChange/requestApproval' ||
-    method === 'item/permissions/requestApproval' ||
-    method === 'mcpServer/elicitation/request' ||
-    method === 'applyPatchApproval' ||
-    method === 'execCommandApproval'
-  );
-}
-
 function isProtocolAttentionMethod(method: string): boolean {
   return (
-    isHumanActionRequestMethod(method) ||
+    isCodexAttentionRequestMethod(method) ||
     method === 'model/safetyBuffering/updated' ||
     method === 'error' ||
     method === 'turn/completed'
