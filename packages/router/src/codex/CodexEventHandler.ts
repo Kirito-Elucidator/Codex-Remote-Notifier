@@ -44,7 +44,7 @@ interface ThreadState {
 }
 
 export interface CodexMonitoringAuthority {
-  isExactForeground(foregroundThreadKey: string, invocationId?: string): boolean;
+  hasProtocolAuthority(foregroundThreadKey: string, invocationId?: string): boolean;
   observeHook(foregroundThreadKey: string, invocationId?: string): void;
 }
 
@@ -396,7 +396,7 @@ export class CodexEventHandler implements vscode.Disposable {
 
     const details = this.errorPresentationDetails(error);
     const message = await this.buildMessage(sessionId, cwd, details.message, MAX_ERROR_PREVIEW);
-    if (compatibility && this.monitoring?.isExactForeground(sessionId, invocationId)) return;
+    if (compatibility && this.monitoring?.hasProtocolAuthority(sessionId, invocationId)) return;
     await this.presentCodex({
       title: compatibility ? compatibilityTitle(details.title) : details.title,
       message,
@@ -452,7 +452,7 @@ export class CodexEventHandler implements vscode.Disposable {
     if (failure.processAncestry) {
       await this.notifications.trackCodexSession(failure.sessionId, failure.processAncestry);
     }
-    if (this.monitoring?.isExactForeground(failure.sessionId, failure.invocationId)) return;
+    if (this.monitoring?.hasProtocolAuthority(failure.sessionId, failure.invocationId)) return;
     this.monitoring?.observeHook(failure.sessionId, failure.invocationId);
     await this.presentTerminalError(
       failure.sessionId,
@@ -489,7 +489,7 @@ export class CodexEventHandler implements vscode.Disposable {
   private isProtocolAuthoritativeHook(event: CodexHookEvent): boolean {
     const sessionId = event.session_id;
     return sessionId !== undefined && this.monitoring !== undefined
-      ? this.monitoring.isExactForeground(sessionId, event.invocation_id)
+      ? this.monitoring.hasProtocolAuthority(sessionId, event.invocation_id)
       : Boolean(
           event.protocol_authoritative ||
           (sessionId !== undefined && this.authoritativeSessions.has(sessionId)),

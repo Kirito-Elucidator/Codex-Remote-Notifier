@@ -206,17 +206,21 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
     expect(source).not.toContain('MAX_TRANSCRIPT');
   });
 
-  it('marks protocol-sidecar hook events so the Router can suppress duplicates', async () => {
+  it('forwards protocol-sidecar invocation identity without granting static authority', async () => {
     await runHook(
       {
         hook_event_name: 'PermissionRequest',
         session_id: 'session-protocol',
         turn_id: 'turn-protocol',
       },
-      { REMOTE_NOTIFIER_CODEX_PROTOCOL_SESSION: '1' },
+      {
+        REMOTE_NOTIFIER_CODEX_INVOCATION_ID: '0123456789abcdef0123456789abcdef',
+        REMOTE_NOTIFIER_CODEX_PROTOCOL_SESSION: '1',
+      },
     );
 
-    expect(received[0].payload.protocol_authoritative).toBe(true);
+    expect(received[0].payload.invocation_id).toBe('0123456789abcdef0123456789abcdef');
+    expect(received[0].payload.protocol_authoritative).toBeUndefined();
   });
 
   it('ignores unrelated and malformed hook input', async () => {

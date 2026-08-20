@@ -22,7 +22,7 @@ interface InvocationMonitoringState {
 }
 
 export class CodexMonitoringStatus {
-  private readonly exactForeground = new Set<string>();
+  private readonly protocolAuthority = new Set<string>();
   private readonly invocations = new Map<string, InvocationMonitoringState>();
   private onChange: (summary: CodexMonitoringSummary) => void;
 
@@ -41,8 +41,8 @@ export class CodexMonitoringStatus {
   update(change: CodexMonitoringChange): void {
     const previous = this.invocations.get(change.invocationId);
     if (previous?.foregroundThreadKey !== undefined) {
-      this.exactForeground.delete(
-        exactForegroundKey(change.invocationId, previous.foregroundThreadKey),
+      this.protocolAuthority.delete(
+        protocolAuthorityKey(change.invocationId, previous.foregroundThreadKey),
       );
     }
     const state: InvocationMonitoringState = {
@@ -58,7 +58,9 @@ export class CodexMonitoringStatus {
       change.foregroundThreadKey !== undefined
     ) {
       this.invocations.delete(hookInvocationId(change.foregroundThreadKey));
-      this.exactForeground.add(exactForegroundKey(change.invocationId, change.foregroundThreadKey));
+      this.protocolAuthority.add(
+        protocolAuthorityKey(change.invocationId, change.foregroundThreadKey),
+      );
     }
     this.enforceBound();
     this.log?.appendLine(
@@ -68,7 +70,7 @@ export class CodexMonitoringStatus {
   }
 
   observeHook(foregroundThreadKey: string, invocationId?: string): void {
-    if (this.isExactForeground(foregroundThreadKey, invocationId)) return;
+    if (this.hasProtocolAuthority(foregroundThreadKey, invocationId)) return;
     const hookId = invocationId ?? hookInvocationId(foregroundThreadKey);
     const previous = this.invocations.get(hookId);
     if (previous?.monitoring === 'compatibility') return;
@@ -79,10 +81,10 @@ export class CodexMonitoringStatus {
     });
   }
 
-  isExactForeground(foregroundThreadKey: string, invocationId?: string): boolean {
+  hasProtocolAuthority(foregroundThreadKey: string, invocationId?: string): boolean {
     return (
       invocationId !== undefined &&
-      this.exactForeground.has(exactForegroundKey(invocationId, foregroundThreadKey))
+      this.protocolAuthority.has(protocolAuthorityKey(invocationId, foregroundThreadKey))
     );
   }
 
@@ -109,7 +111,9 @@ export class CodexMonitoringStatus {
       const [invocationId, state] = oldest;
       this.invocations.delete(invocationId);
       if (state.foregroundThreadKey !== undefined) {
-        this.exactForeground.delete(exactForegroundKey(invocationId, state.foregroundThreadKey));
+        this.protocolAuthority.delete(
+          protocolAuthorityKey(invocationId, state.foregroundThreadKey),
+        );
       }
     }
   }
@@ -130,7 +134,7 @@ function hookInvocationId(foregroundThreadKey: string): string {
   return `hook:${shortHash(foregroundThreadKey)}`;
 }
 
-function exactForegroundKey(invocationId: string, foregroundThreadKey: string): string {
+function protocolAuthorityKey(invocationId: string, foregroundThreadKey: string): string {
   return JSON.stringify([invocationId, foregroundThreadKey]);
 }
 

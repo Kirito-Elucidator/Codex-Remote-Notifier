@@ -643,7 +643,7 @@ describe('CodexEventHandler', () => {
   it('uses Router-qualified authority instead of a startup-wide Hook marker', async () => {
     let exact = false;
     const monitoring = {
-      isExactForeground: vi.fn(() => exact),
+      hasProtocolAuthority: vi.fn(() => exact),
       observeHook: vi.fn(),
     };
     handler.dispose();
@@ -694,7 +694,7 @@ describe('CodexEventHandler', () => {
       }),
     );
     const monitoring = {
-      isExactForeground: vi.fn(() => exact),
+      hasProtocolAuthority: vi.fn(() => exact),
       observeHook: vi.fn(),
     };
     handler.dispose();

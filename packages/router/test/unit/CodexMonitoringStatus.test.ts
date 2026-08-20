@@ -32,7 +32,7 @@ describe('CodexMonitoringStatus', () => {
     status.observeHook('hook-only-session', 'hook-only-invocation');
 
     expect(
-      status.isExactForeground('private-thread-value', '11111111111111111111111111111111'),
+      status.hasProtocolAuthority('private-thread-value', '11111111111111111111111111111111'),
     ).toBe(true);
     expect(status.summary()).toEqual({
       monitoring: 'compatibility',
@@ -53,7 +53,7 @@ describe('CodexMonitoringStatus', () => {
       reason: 'authoritative-input-gap',
     });
     expect(
-      status.isExactForeground('private-thread-value', '11111111111111111111111111111111'),
+      status.hasProtocolAuthority('private-thread-value', '11111111111111111111111111111111'),
     ).toBe(false);
     expect(status.summary().monitoring).toBe('degraded');
   });
@@ -86,13 +86,13 @@ describe('CodexMonitoringStatus', () => {
       reason: 'protocol-qualified',
     });
 
-    expect(status.isExactForeground('reused-thread', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBe(
+    expect(status.hasProtocolAuthority('reused-thread', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toBe(
       true,
     );
-    expect(status.isExactForeground('reused-thread', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toBe(
+    expect(status.hasProtocolAuthority('reused-thread', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')).toBe(
       false,
     );
-    expect(status.isExactForeground('reused-thread')).toBe(false);
+    expect(status.hasProtocolAuthority('reused-thread')).toBe(false);
 
     status.observeHook('reused-thread', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
     expect(status.summary()).toEqual({
@@ -119,7 +119,7 @@ describe('CodexMonitoringStatus', () => {
       reason: 'authoritative-input-gap',
     });
 
-    expect(status.isExactForeground('thread-1', 'cccccccccccccccccccccccccccccccc')).toBe(true);
+    expect(status.hasProtocolAuthority('thread-1', 'cccccccccccccccccccccccccccccccc')).toBe(true);
     status.observeHook('thread-1', 'cccccccccccccccccccccccccccccccc');
     expect(status.summary()).toMatchObject({
       monitoring: 'degraded',
