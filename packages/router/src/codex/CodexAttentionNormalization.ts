@@ -392,7 +392,6 @@ class InvocationActor {
       scope.authorityEpoch,
       turn.foregroundThreadKey,
       observation.turnKey,
-      observation.requestKind,
       observation.requestKey,
     ]);
     const exchange: PresentationExchange = {

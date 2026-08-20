@@ -239,6 +239,13 @@ describe('CodexAttentionProtocolCapture', () => {
         '{"id":"approval-2","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1"}}',
       ),
     ).toEqual([]);
+
+    const missingTurn = qualifiedCapture();
+    expect(
+      missingTurn.observeServerText(
+        '{"id":"approval-3","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1"}}',
+      ),
+    ).toEqual([{ kind: 'authority-change', sourceSequence: 3, monitoring: 'degraded' }]);
   });
 
   it('ends an idle invocation instead of retaining a historical fallback mode', () => {

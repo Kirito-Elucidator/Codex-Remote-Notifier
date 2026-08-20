@@ -261,7 +261,8 @@ export class CodexAttentionProtocolCapture {
     ) {
       return undefined;
     }
-    if (turnId === undefined || !this.activeTurnIds.has(turnId)) return null;
+    if (turnId === undefined) return inferSoleActiveTurn ? null : undefined;
+    if (!this.activeTurnIds.has(turnId)) return null;
     const blocking = requestBlockingEligibility(
       message.method,
       params,
