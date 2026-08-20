@@ -127,6 +127,21 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
   });
 
+  it('degrades instead of inferring ownership for a malformed exact request', () => {
+    const capture = qualifiedCapture();
+
+    expect(
+      capture.observeServerText(
+        '{"id":"approval-1","method":"item/fileChange/requestApproval","params":{"reason":"private"}}',
+      ),
+    ).toEqual([{ kind: 'authority-change', sourceSequence: 3, monitoring: 'degraded' }]);
+    expect(
+      capture.observeServerText(
+        '{"id":"approval-2","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1"}}',
+      ),
+    ).toEqual([]);
+  });
+
   it('ends an idle invocation instead of retaining a historical fallback mode', () => {
     const capture = qualifiedCapture();
     capture.observeServerText(

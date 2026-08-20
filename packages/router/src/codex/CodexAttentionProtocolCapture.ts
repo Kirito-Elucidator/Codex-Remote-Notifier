@@ -10,7 +10,7 @@ import {
 } from 'remote-notifier-shared/attentionExchange';
 import { createCodexReturnTarget } from 'remote-notifier-shared/codexReturnTarget';
 
-import { codexAttentionRequestKind } from './CodexAttentionRequests';
+import { codexAttentionRequestKind, isCodexAttentionRequestMethod } from './CodexAttentionRequests';
 import { isAuditedCodexProtocolVersion, parseCodexProtocolVersion } from './CodexShimArguments';
 
 const MAXIMUM_PROTOCOL_MESSAGE_BYTES = 16 * 1024 * 1024;
@@ -109,6 +109,9 @@ export class CodexAttentionProtocolCapture {
 
     const request = this.captureHumanActionRequest(message);
     if (request !== undefined) return [request];
+    if (this.hasExactAuthority && isCodexAttentionRequestMethod(message.method)) {
+      return this.authorityLost('degraded');
+    }
 
     const observations: SanitizedAttentionObservation[] = [];
     const responseKey = requestIdKey(message.id);
