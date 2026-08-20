@@ -57,14 +57,21 @@ export type CodexMonitoringReason =
   | 'protocol-unavailable'
   | 'no-source'
   | 'authoritative-input-gap'
-  | 'hook-observed';
+  | 'hook-observed'
+  | 'invocation-ended';
 
-export interface CodexMonitoringChange {
-  invocationId: string;
-  monitoring: MonitoringMode;
-  reason: CodexMonitoringReason;
-  foregroundThreadKey?: string;
-}
+export type CodexMonitoringChange =
+  | {
+      invocationId: string;
+      monitoring: MonitoringMode;
+      reason: Exclude<CodexMonitoringReason, 'invocation-ended'>;
+      foregroundThreadKey?: string;
+    }
+  | {
+      invocationId: string;
+      ended: true;
+      reason: 'invocation-ended';
+    };
 
 export type CodexMonitoringListener = (change: CodexMonitoringChange) => void;
 
@@ -259,6 +266,26 @@ class InvocationActor {
         this.setMonitoring(observation.monitoring);
         return true;
       }
+      case 'invocation-end': {
+        if (this.exactScopeKey === scopeKey(scope)) {
+          const withdrawn = await this.withdrawProtocolRequests(scope, state, observation);
+          if (!withdrawn) return false;
+          this.exactScopeKey = undefined;
+        }
+        state.qualified = false;
+        state.closed = true;
+        this.recoveryBoundaryRequired = false;
+        this.recoveryCandidateScopeKey = undefined;
+        this.recoveryReconciledScopeKey = undefined;
+        this.recoveryExcludedTurnKeys.clear();
+        this.monitoring = 'unavailable';
+        this.onMonitoringChange({
+          invocationId: this.invocationId,
+          ended: true,
+          reason: 'invocation-ended',
+        });
+        return true;
+      }
       case 'turn-start': {
         if (state.role === 'compatibility') {
           const existingTurn = state.turns.get(observation.turnKey);
@@ -387,7 +414,7 @@ class InvocationActor {
   private async withdrawProtocolRequests(
     scope: SourceScope,
     state: ScopeState,
-    observation: Extract<SanitizedAttentionObservation, { kind: 'authority-change' }>,
+    observation: { sourceSequence: number },
   ): Promise<boolean> {
     const keys = [...state.turns.values()].flatMap((turn) => [...turn.requests.values()]);
     if (keys.length === 0) return true;
@@ -586,7 +613,9 @@ function receipt(
   };
 }
 
-function monitoringReason(monitoring: MonitoringMode): CodexMonitoringReason {
+function monitoringReason(
+  monitoring: MonitoringMode,
+): Exclude<CodexMonitoringReason, 'invocation-ended' | 'hook-observed'> {
   switch (monitoring) {
     case 'exact':
       return 'protocol-qualified';

@@ -367,6 +367,15 @@ export class CodexWebSocketBridge {
     ]);
   }
 
+  endInvocation(): void {
+    const connection = this.primaryConnection;
+    if (connection === undefined) return;
+    this.postAttention(
+      connection,
+      connection.attentionCapture?.invocationEnded('foreground-tui-exit') ?? [],
+    );
+  }
+
   private createConnection(primary: boolean): BridgeConnection {
     const connectionId = randomBytes(16).toString('hex');
     const authorityEpoch = randomBytes(16).toString('hex');
@@ -466,7 +475,7 @@ export class CodexWebSocketBridge {
     webSocket.on('close', () => {
       this.postAttention(
         connection,
-        connection.attentionCapture?.authorityLost(
+        connection.attentionCapture?.connectionClosed(
           this.attention?.hookAvailable ? 'compatibility' : 'unavailable',
         ) ?? [],
       );
@@ -542,6 +551,13 @@ export class CodexWebSocketBridge {
       (observation) => observation.kind === 'human-action-request',
     );
     for (const event of connection.protocolCapture?.observeServerText(line) ?? []) {
+      if (
+        connection.attentionCapture !== undefined &&
+        !connection.attentionCapture.hasExactAuthority &&
+        isProtocolAttentionMethod(event.method)
+      ) {
+        continue;
+      }
       if (exactSuccess && event.method === 'turn/completed' && event.status === 'completed')
         continue;
       if (exactHumanAction && isHumanActionRequestMethod(event.method)) continue;
@@ -660,6 +676,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
   const environment = withoutShimPath(process.env, shimDirectory);
   const launcher = await resolveCodexLauncher(environment, shimDirectory);
   delete environment.REMOTE_NOTIFIER_CODEX_REAL;
+  delete environment[ENV_CODEX_INVOCATION_ID];
   delete environment[ENV_CODEX_PROTOCOL_SESSION];
   const invocation = planCodexInvocation(codexArgs, process.cwd());
 
@@ -786,6 +803,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
     disposeSignals();
   }
   const shouldFailOpen = result.code !== null && result.code !== 0 && !bridge.threadEstablished;
+  bridge.endInvocation();
   await stopChild(appServer);
   await bridge.close().catch(() => {});
   router.post(capture.lifecycle('session/ended'));
@@ -1268,6 +1286,15 @@ function isHumanActionRequestMethod(method: string): boolean {
     method === 'item/fileChange/requestApproval' ||
     method === 'item/permissions/requestApproval' ||
     method === 'mcpServer/elicitation/request'
+  );
+}
+
+function isProtocolAttentionMethod(method: string): boolean {
+  return (
+    isHumanActionRequestMethod(method) ||
+    method === 'model/safetyBuffering/updated' ||
+    method === 'error' ||
+    method === 'turn/completed'
   );
 }
 

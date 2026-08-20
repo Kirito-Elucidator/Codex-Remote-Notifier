@@ -197,8 +197,41 @@ describe('CodexWebSocketBridge', () => {
     await waitFor(() => attention.post.mock.calls.length === 5);
     expect(attention.post.mock.calls[4]).toEqual([
       scopes[0],
-      { kind: 'authority-change', sourceSequence: 5, monitoring: 'compatibility' },
+      { kind: 'invocation-end', sourceSequence: 5, endKey: 'foreground-connection-closed' },
     ]);
+  });
+
+  it('keeps unsupported protocol attention on the Hook Compatibility path', async () => {
+    const protocol = { post: vi.fn() };
+    const attention = { post: vi.fn() };
+    const bridge = new CodexWebSocketBridge(
+      'token',
+      new CodexProtocolCapture('unsupported-invocation', []),
+      protocol as unknown as CodexRouterClient,
+      {
+        hookAvailable: true,
+        invocationId: 'unsupported-invocation',
+        version: 'codex-cli 0.148.0',
+        router: attention as unknown as CodexAttentionRouterClient,
+      },
+    );
+    bridges.push(bridge);
+    const address = await bridge.listen();
+    const appServer = fakeAppServer();
+    bridge.attach(appServer.process);
+    const client = await connectWebSocket(address, 'token');
+    const received: string[] = [];
+    client.on('message', (value) => received.push(value.toString()));
+
+    appServer.stdout.write(
+      '{"id":"approval-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","reason":"private"}}\n',
+    );
+    await waitFor(() => received.length === 1);
+
+    expect(protocol.post).not.toHaveBeenCalled();
+    expect(attention.post).not.toHaveBeenCalled();
+    client.close();
+    await onceClose(client);
   });
 
   it('closes a stalled client when the bounded outbound queue is exhausted', async () => {
@@ -534,7 +567,7 @@ describe('runSidecar passthrough', () => {
         'turn-start',
         'human-action-request',
         'terminal-result',
-        'authority-change',
+        'invocation-end',
       ]);
       expect(
         exactObservations.find((observation) => observation.kind === 'terminal-result'),
@@ -557,6 +590,8 @@ describe('runSidecar passthrough', () => {
       expect(log.some((entry) => entry.mode === 'ordinary')).toBe(false);
       expect(log.every((entry) => entry.electronNode === null)).toBe(true);
       expect(log.every((entry) => entry.protocolSession === null)).toBe(true);
+      expect(log.find((entry) => entry.mode === 'remote')?.invocationId).toMatch(/^[0-9a-f]{32}$/);
+      expect(log.find((entry) => entry.mode === 'app-server')?.invocationId).toBeNull();
     } finally {
       restore();
       await closeServer(server);
@@ -796,7 +831,7 @@ async function createFakeCodex(): Promise<{
       "const WebSocket = require('ws');",
       'const args = process.argv.slice(2);',
       'const log = (mode, extra = {}) => {',
-      "  fs.appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify({ mode, electronNode: process.env.ELECTRON_RUN_AS_NODE || null, protocolSession: process.env.REMOTE_NOTIFIER_CODEX_PROTOCOL_SESSION || null, ...extra }) + '\\n');",
+      "  fs.appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify({ mode, electronNode: process.env.ELECTRON_RUN_AS_NODE || null, invocationId: process.env.REMOTE_NOTIFIER_CODEX_INVOCATION_ID || null, protocolSession: process.env.REMOTE_NOTIFIER_CODEX_PROTOCOL_SESSION || null, ...extra }) + '\\n');",
       '};',
       "if (args.length === 1 && args[0] === '--version') {",
       "  log('version');",

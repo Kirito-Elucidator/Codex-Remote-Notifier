@@ -61,6 +61,7 @@ export class CodexAttentionProtocolCapture {
   private qualificationEvidence?: ConnectionQualificationEvidence;
   private qualified = false;
   private authorityClosed = false;
+  private invocationClosed = false;
   private serverUserAgent?: string;
   private sourceSequence = 0;
 
@@ -72,6 +73,10 @@ export class CodexAttentionProtocolCapture {
       connectionId: options.connectionId,
       authorityEpoch: options.authorityEpoch,
     };
+  }
+
+  get hasExactAuthority(): boolean {
+    return this.qualified && !this.authorityClosed;
   }
 
   observeClientText(text: string): SanitizedAttentionObservation[] {
@@ -193,6 +198,24 @@ export class CodexAttentionProtocolCapture {
     this.qualified = false;
     this.pendingTurnIds.clear();
     return [{ kind: 'authority-change', sourceSequence: this.nextSequence(), monitoring }];
+  }
+
+  connectionClosed(
+    monitoring: 'compatibility' | 'degraded' | 'unavailable',
+  ): SanitizedAttentionObservation[] {
+    return this.activeTurnIds.size === 0
+      ? this.invocationEnded('foreground-connection-closed')
+      : this.authorityLost(monitoring);
+  }
+
+  invocationEnded(endKey: string): SanitizedAttentionObservation[] {
+    if (!this.options.primary || this.invocationClosed) return [];
+    this.invocationClosed = true;
+    this.authorityClosed = true;
+    this.qualified = false;
+    this.activeTurnIds.clear();
+    this.pendingTurnIds.clear();
+    return [{ kind: 'invocation-end', sourceSequence: this.nextSequence(), endKey }];
   }
 
   private captureHumanActionRequest(

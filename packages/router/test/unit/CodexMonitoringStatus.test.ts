@@ -127,4 +127,32 @@ describe('CodexMonitoringStatus', () => {
       compatibility: 0,
     });
   });
+
+  it('removes completed invocations and ignores their late Hook observations', () => {
+    const status = new CodexMonitoringStatus();
+    status.update({
+      invocationId: 'dddddddddddddddddddddddddddddddd',
+      foregroundThreadKey: 'thread-completed',
+      monitoring: 'exact',
+      reason: 'protocol-qualified',
+    });
+
+    status.update({
+      invocationId: 'dddddddddddddddddddddddddddddddd',
+      ended: true,
+      reason: 'invocation-ended',
+    });
+    status.observeHook('thread-completed', 'dddddddddddddddddddddddddddddddd');
+
+    expect(status.summary()).toEqual({
+      monitoring: 'unavailable',
+      exact: 0,
+      compatibility: 0,
+      unavailable: 0,
+      degraded: 0,
+    });
+    expect(
+      status.hasProtocolAuthority('thread-completed', 'dddddddddddddddddddddddddddddddd'),
+    ).toBe(false);
+  });
 });

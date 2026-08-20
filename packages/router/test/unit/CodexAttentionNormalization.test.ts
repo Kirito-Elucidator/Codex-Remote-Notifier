@@ -141,6 +141,40 @@ describe('CodexAttentionNormalization.exchange', () => {
     expect(presentation.exchange).not.toHaveBeenCalled();
   });
 
+  it('removes monitoring state when the foreground invocation ends', async () => {
+    const monitoring = vi.fn();
+    const normalization = new CodexAttentionNormalizationRegistry(
+      { exchange: vi.fn() },
+      monitoring,
+    );
+
+    await expect(
+      normalization.exchange(
+        append([
+          qualification(1),
+          { kind: 'invocation-end', sourceSequence: 2, endKey: 'foreground-tui-exit' },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 2, appliedThrough: 2, monitoring: 'unavailable' });
+    expect(monitoring.mock.calls).toEqual([
+      [
+        {
+          invocationId: scope.invocationId,
+          foregroundThreadKey: 'thread-1',
+          monitoring: 'exact',
+          reason: 'protocol-qualified',
+        },
+      ],
+      [
+        {
+          invocationId: scope.invocationId,
+          ended: true,
+          reason: 'invocation-ended',
+        },
+      ],
+    ]);
+  });
+
   it('hands matching Hook observations to qualified protocol authority by identity', async () => {
     const exchanged: PresentationExchange[] = [];
     const presentation: AttentionPresentationPort = {

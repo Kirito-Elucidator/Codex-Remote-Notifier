@@ -114,6 +114,21 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
   });
 
+  it('ends an idle invocation instead of retaining a historical fallback mode', () => {
+    const capture = qualifiedCapture();
+    capture.observeServerText(
+      '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}',
+    );
+
+    expect(capture.connectionClosed('compatibility')).toEqual([
+      {
+        kind: 'invocation-end',
+        sourceSequence: 4,
+        endKey: 'foreground-connection-closed',
+      },
+    ]);
+  });
+
   it('rejects auxiliary, unaudited, and structurally descendant observations before sequencing', () => {
     for (const capture of [
       new CodexAttentionProtocolCapture({

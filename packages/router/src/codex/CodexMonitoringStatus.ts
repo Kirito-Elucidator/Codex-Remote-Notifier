@@ -22,6 +22,7 @@ interface InvocationMonitoringState {
 }
 
 export class CodexMonitoringStatus {
+  private readonly endedInvocations = new Set<string>();
   private readonly protocolAuthority = new Set<string>();
   private readonly invocations = new Map<string, InvocationMonitoringState>();
   private onChange: (summary: CodexMonitoringSummary) => void;
@@ -45,6 +46,16 @@ export class CodexMonitoringStatus {
         protocolAuthorityKey(change.invocationId, previous.foregroundThreadKey),
       );
     }
+    if ('ended' in change) {
+      this.invocations.delete(change.invocationId);
+      this.rememberEnded(change.invocationId);
+      this.log?.appendLine(
+        `[CodexAttention] invocation=${shortOpaqueId(change.invocationId)} monitoring=ended reason=${change.reason}`,
+      );
+      this.onChange(this.summary());
+      return;
+    }
+    this.endedInvocations.delete(change.invocationId);
     const state: InvocationMonitoringState = {
       monitoring: change.monitoring,
       ...(change.foregroundThreadKey === undefined
@@ -70,6 +81,7 @@ export class CodexMonitoringStatus {
   }
 
   observeHook(foregroundThreadKey: string, invocationId?: string): void {
+    if (invocationId !== undefined && this.endedInvocations.has(invocationId)) return;
     if (this.hasProtocolAuthority(foregroundThreadKey, invocationId)) return;
     const hookId = invocationId ?? hookInvocationId(foregroundThreadKey);
     const previous = this.invocations.get(hookId);
@@ -115,6 +127,16 @@ export class CodexMonitoringStatus {
           protocolAuthorityKey(invocationId, state.foregroundThreadKey),
         );
       }
+    }
+  }
+
+  private rememberEnded(invocationId: string): void {
+    this.endedInvocations.delete(invocationId);
+    this.endedInvocations.add(invocationId);
+    while (this.endedInvocations.size > MAXIMUM_MONITORED_INVOCATIONS) {
+      const oldest = this.endedInvocations.values().next().value as string | undefined;
+      if (oldest === undefined) return;
+      this.endedInvocations.delete(oldest);
     }
   }
 }
