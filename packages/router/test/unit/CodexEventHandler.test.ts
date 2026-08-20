@@ -645,6 +645,7 @@ describe('CodexEventHandler', () => {
     const monitoring = {
       hasProtocolAuthority: vi.fn(() => exact),
       observeHook: vi.fn(),
+      retireHook: vi.fn(),
     };
     handler.dispose();
     handler = new CodexEventHandler(
@@ -696,6 +697,7 @@ describe('CodexEventHandler', () => {
     const monitoring = {
       hasProtocolAuthority: vi.fn(() => exact),
       observeHook: vi.fn(),
+      retireHook: vi.fn(),
     };
     handler.dispose();
     handler = new CodexEventHandler(
@@ -721,6 +723,32 @@ describe('CodexEventHandler', () => {
     await handling;
 
     expect(delivered).toEqual([]);
+  });
+
+  it('retires Compatibility monitoring after a Hook Stop completes', async () => {
+    const monitoring = {
+      hasProtocolAuthority: vi.fn(() => false),
+      observeHook: vi.fn(),
+      retireHook: vi.fn(),
+    };
+    handler.dispose();
+    handler = new CodexEventHandler(
+      notifications as unknown as NotificationHandler,
+      { codexPreviewLength: 32 } as Configuration,
+      metadata as unknown as CodexMetadataResolver,
+      undefined,
+      monitoring,
+    );
+
+    await handler.handle({
+      version: 1,
+      kind: 'hook',
+      hook_event_name: 'Stop',
+      session_id: 'hook-only-session',
+      turn_id: 'hook-turn',
+    });
+
+    expect(monitoring.retireHook).toHaveBeenCalledWith('hook-only-session', undefined);
   });
 
   it('ignores Hook presentation for protocol-authoritative sessions but still tracks focus', async () => {

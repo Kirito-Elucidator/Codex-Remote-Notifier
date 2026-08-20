@@ -1285,7 +1285,9 @@ function isHumanActionRequestMethod(method: string): boolean {
     method === 'item/commandExecution/requestApproval' ||
     method === 'item/fileChange/requestApproval' ||
     method === 'item/permissions/requestApproval' ||
-    method === 'mcpServer/elicitation/request'
+    method === 'mcpServer/elicitation/request' ||
+    method === 'applyPatchApproval' ||
+    method === 'execCommandApproval'
   );
 }
 

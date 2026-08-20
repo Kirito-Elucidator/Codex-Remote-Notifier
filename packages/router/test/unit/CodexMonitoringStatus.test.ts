@@ -155,4 +155,14 @@ describe('CodexMonitoringStatus', () => {
       status.hasProtocolAuthority('thread-completed', 'dddddddddddddddddddddddddddddddd'),
     ).toBe(false);
   });
+
+  it('retires completed Hook turns without preventing a later turn', () => {
+    const status = new CodexMonitoringStatus();
+    status.observeHook('hook-thread');
+    status.retireHook('hook-thread');
+    expect(status.summary().monitoring).toBe('unavailable');
+
+    status.observeHook('hook-thread');
+    expect(status.summary()).toMatchObject({ monitoring: 'compatibility', compatibility: 1 });
+  });
 });

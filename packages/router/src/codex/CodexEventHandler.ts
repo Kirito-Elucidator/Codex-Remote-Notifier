@@ -46,6 +46,7 @@ interface ThreadState {
 export interface CodexMonitoringAuthority {
   hasProtocolAuthority(foregroundThreadKey: string, invocationId?: string): boolean;
   observeHook(foregroundThreadKey: string, invocationId?: string): void;
+  retireHook(foregroundThreadKey: string, invocationId?: string): void;
 }
 
 export class CodexEventHandler implements vscode.Disposable {
@@ -184,15 +185,19 @@ export class CodexEventHandler implements vscode.Disposable {
       return;
     }
     if (transcript.terminalError) {
-      await this.presentTerminalError(
-        event.session_id,
-        event.turn_id,
-        event.cwd,
-        transcript.terminalError,
-        event.process_ancestry,
-        true,
-        event.invocation_id,
-      );
+      try {
+        await this.presentTerminalError(
+          event.session_id,
+          event.turn_id,
+          event.cwd,
+          transcript.terminalError,
+          event.process_ancestry,
+          true,
+          event.invocation_id,
+        );
+      } finally {
+        this.retireHook(event);
+      }
       return;
     }
 
@@ -215,15 +220,19 @@ export class CodexEventHandler implements vscode.Disposable {
           : 'task-complete';
     const message = await this.buildMessage(event.session_id, event.cwd, stripPlanTags(rawAnswer));
     if (this.isProtocolAuthoritativeHook(event)) return;
-    await this.presentCodex({
-      title: compatibilityTitle(title),
-      message,
-      level: 'information',
-      sessionId: event.session_id,
-      turnId: event.turn_id,
-      eventKey,
-      processAncestry: event.process_ancestry,
-    });
+    try {
+      await this.presentCodex({
+        title: compatibilityTitle(title),
+        message,
+        level: 'information',
+        sessionId: event.session_id,
+        turnId: event.turn_id,
+        eventKey,
+        processAncestry: event.process_ancestry,
+      });
+    } finally {
+      this.retireHook(event);
+    }
   }
 
   private onThreadStarted(event: CodexProtocolEvent): void {
@@ -454,15 +463,19 @@ export class CodexEventHandler implements vscode.Disposable {
     }
     if (this.monitoring?.hasProtocolAuthority(failure.sessionId, failure.invocationId)) return;
     this.monitoring?.observeHook(failure.sessionId, failure.invocationId);
-    await this.presentTerminalError(
-      failure.sessionId,
-      failure.turnId,
-      failure.cwd,
-      failure.error,
-      failure.processAncestry,
-      true,
-      failure.invocationId,
-    );
+    try {
+      await this.presentTerminalError(
+        failure.sessionId,
+        failure.turnId,
+        failure.cwd,
+        failure.error,
+        failure.processAncestry,
+        true,
+        failure.invocationId,
+      );
+    } finally {
+      this.monitoring?.retireHook(failure.sessionId, failure.invocationId);
+    }
   }
 
   private async presentAttention(
@@ -494,6 +507,12 @@ export class CodexEventHandler implements vscode.Disposable {
           event.protocol_authoritative ||
           (sessionId !== undefined && this.authoritativeSessions.has(sessionId)),
         );
+  }
+
+  private retireHook(event: CodexHookEvent): void {
+    if (event.session_id !== undefined) {
+      this.monitoring?.retireHook(event.session_id, event.invocation_id);
+    }
   }
 
   private async readPersistedStop(event: CodexHookEvent): Promise<CodexTranscriptInfo> {

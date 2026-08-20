@@ -93,6 +93,17 @@ export class CodexMonitoringStatus {
     });
   }
 
+  retireHook(foregroundThreadKey: string, invocationId?: string): void {
+    if (this.hasProtocolAuthority(foregroundThreadKey, invocationId)) return;
+    const hookId = invocationId ?? hookInvocationId(foregroundThreadKey);
+    if (this.invocations.get(hookId)?.monitoring !== 'compatibility') return;
+    this.invocations.delete(hookId);
+    this.log?.appendLine(
+      `[CodexAttention] invocation=${shortOpaqueId(hookId)} monitoring=inactive reason=hook-turn-complete`,
+    );
+    this.onChange(this.summary());
+  }
+
   hasProtocolAuthority(foregroundThreadKey: string, invocationId?: string): boolean {
     return (
       invocationId !== undefined &&

@@ -77,12 +77,25 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
     expect(
       capture.observeServerText(
+        '{"id":7,"method":"execCommandApproval","params":{"command":"private"}}',
+      ),
+    ).toEqual([
+      {
+        kind: 'human-action-request',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+        requestKey: 'number:7',
+        requestKind: 'approval',
+      },
+    ]);
+    expect(
+      capture.observeServerText(
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"已完成 🙂"}]}}}',
       ),
     ).toEqual([
       {
         kind: 'terminal-result',
-        sourceSequence: 4,
+        sourceSequence: 5,
         turnKey: 'turn-1',
         result: 'success',
         occurrenceKey: 'turn-1:success',

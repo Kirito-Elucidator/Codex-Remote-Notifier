@@ -225,8 +225,16 @@ export class CodexAttentionProtocolCapture {
     const requestKind = attentionRequestKind(message.method);
     const requestKey = requestIdKey(message.id);
     const params = isRecord(message.params) ? message.params : undefined;
-    const threadId = params && boundedIdentifier(params.threadId);
-    const turnId = params && boundedIdentifier(params.turnId);
+    const legacyRequest =
+      message.method === 'applyPatchApproval' || message.method === 'execCommandApproval';
+    const threadId =
+      (params && boundedIdentifier(params.threadId)) ??
+      (legacyRequest ? this.foregroundThreadId : undefined);
+    const turnId =
+      (params && boundedIdentifier(params.turnId)) ??
+      (legacyRequest && this.activeTurnIds.size === 1
+        ? this.activeTurnIds.values().next().value
+        : undefined);
     if (
       requestKind === undefined ||
       requestKey === undefined ||
@@ -415,6 +423,8 @@ function attentionRequestKind(
       return 'input';
     case 'item/commandExecution/requestApproval':
     case 'item/fileChange/requestApproval':
+    case 'applyPatchApproval':
+    case 'execCommandApproval':
       return 'approval';
     case 'item/permissions/requestApproval':
       return 'permission';
