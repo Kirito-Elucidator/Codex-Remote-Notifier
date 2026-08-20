@@ -119,6 +119,105 @@ describe('CodexAttentionProtocolCapture', () => {
     ).toEqual([]);
   });
 
+  it('uses structured blocking metadata and emits exact request resolutions', () => {
+    const capture = qualifiedCapture('0.147.0');
+
+    expect(
+      capture.observeServerText(
+        '{"id":"silent","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","isBlocking":false,"prompt":"this wording says blocking"}}',
+      ),
+    ).toEqual([]);
+    expect(
+      capture.observeServerText(
+        '{"id":"automatic","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","isBlocking":true,"autoResolutionMs":1000}}',
+      ),
+    ).toEqual([]);
+    expect(
+      capture.observeServerText(
+        '{"id":7,"method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","isBlocking":true}}',
+      ),
+    ).toEqual([
+      {
+        kind: 'human-action-request',
+        sourceSequence: 3,
+        turnKey: 'turn-1',
+        requestKey: 'number:7',
+        requestKind: 'input',
+      },
+    ]);
+    expect(
+      capture.observeServerText(
+        '{"id":"7","method":"item/permissions/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1"}}',
+      ),
+    ).toEqual([
+      {
+        kind: 'human-action-request',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+        requestKey: 'string:7',
+        requestKind: 'permission',
+      },
+    ]);
+    expect(
+      capture.observeServerText(
+        '{"method":"serverRequest/resolved","params":{"threadId":"thread-1","requestId":7}}',
+      ),
+    ).toEqual([
+      {
+        kind: 'request-resolution',
+        sourceSequence: 5,
+        turnKey: 'turn-1',
+        requestKey: 'number:7',
+      },
+    ]);
+    expect(
+      capture.observeServerText(
+        '{"method":"serverRequest/resolved","params":{"threadId":"thread-1","requestId":"7"}}',
+      ),
+    ).toEqual([
+      {
+        kind: 'request-resolution',
+        sourceSequence: 6,
+        turnKey: 'turn-1',
+        requestKey: 'string:7',
+      },
+    ]);
+    expect(
+      capture.observeServerText(
+        '{"id":"mcp-1","method":"mcpServer/elicitation/request","params":{"threadId":"thread-1"}}',
+      ),
+    ).toEqual([
+      {
+        kind: 'human-action-request',
+        sourceSequence: 7,
+        turnKey: 'turn-1',
+        requestKey: 'string:mcp-1',
+        requestKind: 'elicitation',
+      },
+    ]);
+  });
+
+  it('keeps automatically resolving user input silent on audited older versions', () => {
+    const capture = qualifiedCapture('0.146.0');
+
+    expect(
+      capture.observeServerText(
+        '{"id":"automatic","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","autoResolutionMs":1}}',
+      ),
+    ).toEqual([]);
+    expect(
+      capture.observeServerText(
+        '{"id":"blocking","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1"}}',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'human-action-request',
+        sourceSequence: 3,
+        requestKey: 'string:blocking',
+      }),
+    ]);
+  });
+
   it('reports unavailable when authority is lost without a usable Hook', () => {
     const capture = qualifiedCapture();
 
@@ -594,8 +693,8 @@ function initializeRequest(id: number | string, version: string, optOut?: string
   });
 }
 
-function qualifiedCapture(): CodexAttentionProtocolCapture {
-  const capture = initializedCapture();
+function qualifiedCapture(version = '0.146.0'): CodexAttentionProtocolCapture {
+  const capture = initializedCapture(true, version);
   capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
   capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}');
   capture.observeServerText(
@@ -607,16 +706,19 @@ function qualifiedCapture(): CodexAttentionProtocolCapture {
   return capture;
 }
 
-function initializedCapture(acknowledge = true): CodexAttentionProtocolCapture {
+function initializedCapture(
+  acknowledge = true,
+  version = '0.146.0',
+): CodexAttentionProtocolCapture {
   const capture = new CodexAttentionProtocolCapture({
     invocationId: 'invocation-1',
     connectionId: 'primary',
     authorityEpoch: 'authority-1',
-    version: 'codex-cli 0.146.0',
+    version: `codex-cli ${version}`,
     primary: true,
   });
-  capture.observeClientText(initializeRequest(1, '0.146.0'));
-  capture.observeServerText(initializeResponse(1, '0.146.0'));
+  capture.observeClientText(initializeRequest(1, version));
+  capture.observeServerText(initializeResponse(1, version));
   if (acknowledge) capture.observeClientText('{"method":"initialized"}');
   return capture;
 }

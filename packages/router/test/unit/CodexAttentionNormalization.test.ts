@@ -444,6 +444,228 @@ describe('CodexAttentionNormalization.exchange', () => {
     });
   });
 
+  it('keeps simultaneous typed request identities independent through denial and replay', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await expect(
+      normalization.exchange(
+        append([
+          qualification(1),
+          { kind: 'turn-start', sourceSequence: 2, turnKey: 'turn-1', returnTarget: 'route-1' },
+          {
+            kind: 'human-action-request',
+            sourceSequence: 3,
+            turnKey: 'turn-1',
+            requestKey: 'number:1',
+            requestKind: 'approval',
+            canonicalBody: 'Same visible request',
+          },
+          {
+            kind: 'human-action-request',
+            sourceSequence: 4,
+            turnKey: 'turn-1',
+            requestKey: 'string:1',
+            requestKind: 'approval',
+            canonicalBody: 'Same visible request',
+          },
+          {
+            kind: 'request-resolution',
+            sourceSequence: 5,
+            turnKey: 'turn-1',
+            requestKey: 'number:1',
+          },
+          {
+            kind: 'human-action-request',
+            sourceSequence: 6,
+            turnKey: 'turn-1',
+            requestKey: 'number:1',
+            requestKind: 'approval',
+            canonicalBody: 'Replayed after denial',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 6, appliedThrough: 6, monitoring: 'exact' });
+
+    expect(exchanged).toHaveLength(3);
+    const first = exchanged[0].kind === 'apply' ? exchanged[0].mutations[0] : undefined;
+    const second = exchanged[1].kind === 'apply' ? exchanged[1].mutations[0] : undefined;
+    expect(first).toMatchObject({
+      kind: 'create',
+      record: { canonicalBody: 'Same visible request' },
+    });
+    expect(second).toMatchObject({
+      kind: 'create',
+      record: { canonicalBody: 'Same visible request' },
+    });
+    const firstKey = first?.kind === 'create' ? first.record.key : undefined;
+    const secondKey = second?.kind === 'create' ? second.record.key : undefined;
+    expect(firstKey).not.toBe(secondKey);
+    expect(exchanged[2]).toMatchObject({
+      kind: 'apply',
+      mutations: [{ kind: 'withdraw', key: firstKey }],
+    });
+  });
+
+  it('suppresses requests delivered after their resolution or terminal turn tombstone', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await expect(
+      normalization.exchange(
+        append([
+          qualification(1),
+          { kind: 'turn-start', sourceSequence: 2, turnKey: 'turn-1', returnTarget: 'route-1' },
+          {
+            kind: 'request-resolution',
+            sourceSequence: 3,
+            turnKey: 'turn-1',
+            requestKey: 'string:late',
+          },
+          {
+            kind: 'human-action-request',
+            sourceSequence: 4,
+            turnKey: 'turn-1',
+            requestKey: 'string:late',
+            requestKind: 'input',
+          },
+          {
+            kind: 'terminal-result',
+            sourceSequence: 5,
+            turnKey: 'turn-1',
+            result: 'success',
+            occurrenceKey: 'turn-1:success',
+          },
+          {
+            kind: 'human-action-request',
+            sourceSequence: 6,
+            turnKey: 'turn-1',
+            requestKey: 'string:post-terminal',
+            requestKind: 'permission',
+          },
+        ]),
+      ),
+    ).resolves.toEqual({ receivedThrough: 6, appliedThrough: 6, monitoring: 'exact' });
+
+    expect(exchanged).toHaveLength(1);
+    expect(exchanged[0]).toMatchObject({
+      kind: 'apply',
+      mutations: [{ kind: 'create', record: { appearance: 'information' } }],
+    });
+  });
+
+  it('atomically withdraws every pending request before creating the terminal outcome', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        { kind: 'turn-start', sourceSequence: 2, turnKey: 'turn-1', returnTarget: 'route-1' },
+        {
+          kind: 'human-action-request',
+          sourceSequence: 3,
+          turnKey: 'turn-1',
+          requestKey: 'number:7',
+          requestKind: 'approval',
+        },
+        {
+          kind: 'human-action-request',
+          sourceSequence: 4,
+          turnKey: 'turn-1',
+          requestKey: 'string:7',
+          requestKind: 'elicitation',
+        },
+        {
+          kind: 'terminal-result',
+          sourceSequence: 5,
+          turnKey: 'turn-1',
+          result: 'success',
+          occurrenceKey: 'turn-1:success',
+        },
+      ]),
+    );
+
+    const requestKeys = exchanged.slice(0, 2).map((exchange) => {
+      const mutation = exchange.kind === 'apply' ? exchange.mutations[0] : undefined;
+      if (mutation?.kind !== 'create') throw new Error('expected request create');
+      return mutation.record.key;
+    });
+    expect(exchanged[2]).toMatchObject({
+      kind: 'apply',
+      mutations: [
+        { kind: 'withdraw', key: requestKeys[0] },
+        { kind: 'withdraw', key: requestKeys[1] },
+        { kind: 'create', record: { appearance: 'information', returnTarget: 'route-1' } },
+      ],
+    });
+  });
+
+  it('withdraws pending requests and suppresses stale delivery at a failed terminal boundary', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(presentation);
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        { kind: 'turn-start', sourceSequence: 2, turnKey: 'turn-1', returnTarget: 'route-1' },
+        {
+          kind: 'human-action-request',
+          sourceSequence: 3,
+          turnKey: 'turn-1',
+          requestKey: 'string:approval',
+          requestKind: 'approval',
+        },
+        {
+          kind: 'terminal-result',
+          sourceSequence: 4,
+          turnKey: 'turn-1',
+          result: 'failure',
+          occurrenceKey: 'turn-1:failure',
+        },
+        {
+          kind: 'human-action-request',
+          sourceSequence: 5,
+          turnKey: 'turn-1',
+          requestKey: 'string:late',
+          requestKind: 'approval',
+        },
+      ]),
+    );
+
+    const create = exchanged[0].kind === 'apply' ? exchanged[0].mutations[0] : undefined;
+    const requestKey = create?.kind === 'create' ? create.record.key : undefined;
+    expect(exchanged).toHaveLength(2);
+    expect(exchanged[1]).toMatchObject({
+      kind: 'apply',
+      mutations: [{ kind: 'withdraw', key: requestKey }],
+    });
+  });
+
   it('does not restore exact authority for an interrupted turn identity', async () => {
     const presentation: AttentionPresentationPort = { exchange: vi.fn() };
     const normalization = new CodexAttentionNormalizationRegistry(presentation);

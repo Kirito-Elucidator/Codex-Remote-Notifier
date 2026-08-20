@@ -193,6 +193,45 @@ describe('native presentation broker activation', () => {
     expect(events.some((event) => event.startsWith('claim:'))).toBe(false);
   });
 
+  it('acknowledges one waiting presentation without resolving or reviving its request', async () => {
+    const paths = await runtimePaths();
+    const events: string[] = [];
+    const adapter = createAdapter(events);
+    const server = trackServer(
+      new PresentationBrokerServer({ paths, presentationAdapter: adapter }),
+    );
+    await server.start();
+    const target = trackClient(createClaimingClient(paths, 'claimed', events));
+    await target.start();
+    const sender = trackClient(new PresentationBrokerClient({ paths, launch: vi.fn() }));
+    const waiting = createRecord('waiting', 1, 'claimed');
+    const independent = createRecord('independent', 1, 'claimed');
+
+    await sender.exchange(create('create-waiting', waiting));
+    await sender.exchange(create('create-independent', independent));
+    const waitingActivation = activationFor(adapter, waiting.key);
+    const independentActivation = activationFor(adapter, independent.key);
+
+    await expect(
+      sender.redeemActivation(server.presentationEpoch, waitingActivation),
+    ).resolves.toBe('focused');
+    const callsAfterAcknowledgement = vi.mocked(adapter.exchange).mock.calls.length;
+
+    await expect(
+      sender.exchange(create('unresolved-request-replay', waiting)),
+    ).resolves.toMatchObject({ kind: 'applied' });
+    expect(vi.mocked(adapter.exchange)).toHaveBeenCalledTimes(callsAfterAcknowledgement);
+    await expect(
+      sender.redeemActivation(server.presentationEpoch, waitingActivation),
+    ).resolves.toBe('failed');
+    await expect(
+      sender.redeemActivation(server.presentationEpoch, independentActivation),
+    ).resolves.toBe('focused');
+
+    expect(events.filter((event) => event === 'withdraw:waiting')).toHaveLength(1);
+    expect(events.filter((event) => event === 'claim:claimed:claimed')).toHaveLength(2);
+  });
+
   function trackClient(client: PresentationBrokerClient): PresentationBrokerClient {
     clients.push(client);
     return client;

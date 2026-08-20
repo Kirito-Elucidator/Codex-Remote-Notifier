@@ -31,6 +31,7 @@ interface PendingOutcome {
 interface TurnState {
   foregroundThreadKey?: string;
   requests: Map<string, string>;
+  resolvedRequests: Set<string>;
   returnTarget: string;
 }
 
@@ -49,6 +50,7 @@ interface ScopeState {
   receivedThrough: number;
   retainedBytes: number;
   role: ScopeRole;
+  terminalTurns: Set<string>;
   turns: Map<string, TurnState>;
 }
 
@@ -298,6 +300,7 @@ class InvocationActor {
           }
           state.turns.set(observation.turnKey, {
             requests: new Map(),
+            resolvedRequests: new Set(),
             returnTarget: observation.returnTarget,
           });
           return true;
@@ -341,6 +344,7 @@ class InvocationActor {
         state.turns.set(observation.turnKey, {
           foregroundThreadKey: state.foregroundThreadKey,
           requests: new Map(),
+          resolvedRequests: new Set(),
           returnTarget: observation.returnTarget,
         });
         this.exactTurnKeys.add(observation.turnKey);
@@ -348,9 +352,12 @@ class InvocationActor {
       }
       case 'human-action-request':
         return this.applyRequest(scope, state, observation);
+      case 'request-resolution':
+        return this.applyRequestResolution(scope, state, observation);
       case 'terminal-result':
-        if (observation.result !== 'success') return true;
-        return this.applySuccess(scope, state, observation);
+        return observation.result === 'success'
+          ? this.applySuccess(scope, state, observation)
+          : this.applyTerminalRequestCleanup(scope, state, observation);
       default:
         return true;
     }
@@ -366,12 +373,18 @@ class InvocationActor {
       this.setMonitoring('degraded');
       return true;
     }
+    if (state.terminalTurns.has(observation.turnKey)) return true;
     const turn = state.turns.get(observation.turnKey);
     if (turn === undefined || turn.foregroundThreadKey === undefined) {
       this.setMonitoring('degraded');
       return true;
     }
-    if (turn.requests.has(observation.requestKey)) return true;
+    if (
+      turn.requests.has(observation.requestKey) ||
+      turn.resolvedRequests.has(observation.requestKey)
+    ) {
+      return true;
+    }
 
     const recordKey = stableIdentity('request', [
       scope.invocationId,
@@ -408,6 +421,45 @@ class InvocationActor {
     };
     if (!(await this.applyPresentation(exchange))) return false;
     turn.requests.set(observation.requestKey, recordKey);
+    return true;
+  }
+
+  private async applyRequestResolution(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'request-resolution' }>,
+  ): Promise<boolean> {
+    if (state.role === 'compatibility') return true;
+    if (!state.qualified || this.exactScopeKey !== scopeKey(scope)) {
+      this.setMonitoring('degraded');
+      return true;
+    }
+    if (state.terminalTurns.has(observation.turnKey)) return true;
+    const turn = state.turns.get(observation.turnKey);
+    if (turn === undefined || turn.foregroundThreadKey === undefined) {
+      this.setMonitoring('degraded');
+      return true;
+    }
+    if (turn.resolvedRequests.has(observation.requestKey)) return true;
+
+    const recordKey = turn.requests.get(observation.requestKey);
+    if (recordKey !== undefined) {
+      const exchange: PresentationExchange = {
+        kind: 'apply',
+        transactionId: stableIdentity('transaction', [
+          scope.invocationId,
+          scope.connectionId,
+          scope.authorityEpoch,
+          observation.turnKey,
+          String(observation.sourceSequence),
+          'request-resolution',
+        ]),
+        mutations: [{ kind: 'withdraw', key: recordKey }],
+      };
+      if (!(await this.applyPresentation(exchange))) return false;
+      turn.requests.delete(observation.requestKey);
+    }
+    turn.resolvedRequests.add(observation.requestKey);
     return true;
   }
 
@@ -450,6 +502,43 @@ class InvocationActor {
     }
   }
 
+  private async applyTerminalRequestCleanup(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'terminal-result' }>,
+  ): Promise<boolean> {
+    if (state.role === 'compatibility') return true;
+    if (!state.qualified || this.exactScopeKey !== scopeKey(scope)) {
+      this.setMonitoring('degraded');
+      return true;
+    }
+    if (state.terminalTurns.has(observation.turnKey)) return true;
+    const turn = state.turns.get(observation.turnKey);
+    if (turn === undefined || turn.foregroundThreadKey === undefined) {
+      this.setMonitoring('degraded');
+      return true;
+    }
+    const requestKeys = [...turn.requests.values()];
+    if (requestKeys.length > 0) {
+      const exchange: PresentationExchange = {
+        kind: 'apply',
+        transactionId: stableIdentity('transaction', [
+          scope.invocationId,
+          scope.connectionId,
+          scope.authorityEpoch,
+          observation.turnKey,
+          String(observation.sourceSequence),
+          'terminal-request-cleanup',
+        ]),
+        mutations: requestKeys.map((key) => ({ kind: 'withdraw' as const, key })),
+      };
+      if (!(await this.applyPresentation(exchange))) return false;
+      turn.requests.clear();
+    }
+    state.terminalTurns.add(observation.turnKey);
+    return true;
+  }
+
   private async applySuccess(
     scope: SourceScope,
     state: ScopeState,
@@ -466,6 +555,7 @@ class InvocationActor {
       this.setMonitoring('degraded');
       return true;
     }
+    if (state.terminalTurns.has(observation.turnKey)) return true;
     const turn = state.turns.get(observation.turnKey);
     const foregroundThreadKey = turn?.foregroundThreadKey ?? state.foregroundThreadKey;
     if (!compatibility && foregroundThreadKey === undefined) {
@@ -508,7 +598,10 @@ class InvocationActor {
           observation.turnKey,
           String(observation.sourceSequence),
         ]),
-        mutations: [{ kind: 'create', record }],
+        mutations: [
+          ...[...turn.requests.values()].map((key) => ({ kind: 'withdraw' as const, key })),
+          { kind: 'create', record },
+        ],
       };
       pending = {
         exchange,
@@ -525,6 +618,8 @@ class InvocationActor {
     if (!(await this.applyPresentation(pending.exchange))) return false;
 
     state.outcomes.add(pending.outcomeKey);
+    state.terminalTurns.add(observation.turnKey);
+    turn?.requests.clear();
     state.turns.delete(observation.turnKey);
     state.pendingOutcome = undefined;
     return true;
@@ -592,6 +687,7 @@ function createScopeState(deliveryGeneration: string): ScopeState {
     receivedThrough: 0,
     retainedBytes: 0,
     role: 'unknown',
+    terminalTurns: new Set(),
     turns: new Map(),
   };
 }

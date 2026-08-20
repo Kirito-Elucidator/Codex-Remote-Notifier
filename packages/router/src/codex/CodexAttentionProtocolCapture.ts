@@ -47,6 +47,11 @@ interface BoundForegroundThread {
   requestKind: ForegroundRequestKind;
 }
 
+interface PendingHumanActionRequest {
+  threadKey: string;
+  turnKey: string;
+}
+
 export class CodexAttentionProtocolCapture {
   private readonly activeTurnIds = new Set<string>();
   private boundForegroundThread?: BoundForegroundThread;
@@ -58,6 +63,7 @@ export class CodexAttentionProtocolCapture {
   private initializeResponseValidated = false;
   private initialized = false;
   private readonly pendingThreadRequests = new Map<string, ForegroundRequestKind>();
+  private readonly pendingHumanActionRequests = new Map<string, PendingHumanActionRequest>();
   private readonly pendingTurnIds = new Set<string>();
   private qualificationEvidence?: ConnectionQualificationEvidence;
   private qualified = false;
@@ -107,10 +113,15 @@ export class CodexAttentionProtocolCapture {
     const message = parseMessage(text);
     if (!this.eligible || message === undefined) return [];
 
-    const request = this.captureHumanActionRequest(message);
-    if (request !== undefined) return [request];
-    if (this.hasExactAuthority && isCodexAttentionRequestMethod(message.method)) {
-      return this.authorityLost('degraded');
+    if (message.method === 'serverRequest/resolved') {
+      const resolution = this.captureRequestResolution(message);
+      return resolution === undefined ? [] : [resolution];
+    }
+    if (isCodexAttentionRequestMethod(message.method)) {
+      const request = this.captureHumanActionRequest(message);
+      if (request === null) return [];
+      if (request !== undefined) return [request];
+      if (this.hasExactAuthority) return this.authorityLost('degraded');
     }
 
     const observations: SanitizedAttentionObservation[] = [];
@@ -200,6 +211,7 @@ export class CodexAttentionProtocolCapture {
     if (!this.qualified || this.authorityClosed) return [];
     this.authorityClosed = true;
     this.qualified = false;
+    this.pendingHumanActionRequests.clear();
     this.pendingTurnIds.clear();
     return [{ kind: 'authority-change', sourceSequence: this.nextSequence(), monitoring }];
   }
@@ -218,42 +230,71 @@ export class CodexAttentionProtocolCapture {
     this.authorityClosed = true;
     this.qualified = false;
     this.activeTurnIds.clear();
+    this.pendingHumanActionRequests.clear();
     this.pendingTurnIds.clear();
     return [{ kind: 'invocation-end', sourceSequence: this.nextSequence(), endKey }];
   }
 
   private captureHumanActionRequest(
     message: Record<string, unknown>,
-  ): Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }> | undefined {
+  ): Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }> | null | undefined {
     if (!this.qualified) return undefined;
     const requestKind = codexAttentionRequestKind(message.method);
     const requestKey = requestIdKey(message.id);
     const params = isRecord(message.params) ? message.params : undefined;
     const legacyRequest =
       message.method === 'applyPatchApproval' || message.method === 'execCommandApproval';
+    const inferSoleActiveTurn = legacyRequest || message.method === 'mcpServer/elicitation/request';
     const threadId =
       (params && boundedIdentifier(params.threadId)) ??
       (legacyRequest ? this.foregroundThreadId : undefined);
     const turnId =
       (params && boundedIdentifier(params.turnId)) ??
-      (legacyRequest && this.activeTurnIds.size === 1
+      (inferSoleActiveTurn && this.activeTurnIds.size === 1
         ? this.activeTurnIds.values().next().value
         : undefined);
     if (
       requestKind === undefined ||
       requestKey === undefined ||
-      threadId !== this.foregroundThreadId ||
-      turnId === undefined ||
-      !this.activeTurnIds.has(turnId)
+      threadId === undefined ||
+      threadId !== this.foregroundThreadId
     ) {
       return undefined;
     }
-    return {
+    if (turnId === undefined || !this.activeTurnIds.has(turnId)) return null;
+    const blocking = requestBlockingEligibility(
+      message.method,
+      params,
+      parseCodexProtocolVersion(this.options.version),
+    );
+    if (blocking !== true) return blocking === false ? null : undefined;
+    const observation = {
       kind: 'human-action-request',
       sourceSequence: this.nextSequence(),
       turnKey: turnId,
       requestKey,
       requestKind,
+    } as const;
+    this.pendingHumanActionRequests.set(requestKey, { threadKey: threadId, turnKey: turnId });
+    return observation;
+  }
+
+  private captureRequestResolution(
+    message: Record<string, unknown>,
+  ): Extract<SanitizedAttentionObservation, { kind: 'request-resolution' }> | undefined {
+    if (!this.qualified) return undefined;
+    const params = isRecord(message.params) ? message.params : undefined;
+    const threadKey = params && boundedIdentifier(params.threadId);
+    const requestKey = params && requestIdKey(params.requestId);
+    if (threadKey === undefined || requestKey === undefined) return undefined;
+    const pending = this.pendingHumanActionRequests.get(requestKey);
+    if (pending === undefined || pending.threadKey !== threadKey) return undefined;
+    this.pendingHumanActionRequests.delete(requestKey);
+    return {
+      kind: 'request-resolution',
+      sourceSequence: this.nextSequence(),
+      turnKey: pending.turnKey,
+      requestKey,
     };
   }
 
@@ -274,6 +315,9 @@ export class CodexAttentionProtocolCapture {
     }
 
     this.activeTurnIds.delete(turnId);
+    for (const [requestKey, request] of this.pendingHumanActionRequests) {
+      if (request.turnKey === turnId) this.pendingHumanActionRequests.delete(requestKey);
+    }
     const preview = successPreview(turn.items);
     return [
       {
@@ -547,6 +591,32 @@ function parseMessage(text: string): Record<string, unknown> | undefined {
 
 function requestIdKey(value: unknown): string | undefined {
   return validRequestId(value) ? `${typeof value}:${String(value)}` : undefined;
+}
+
+function requestBlockingEligibility(
+  method: unknown,
+  params: Record<string, unknown> | undefined,
+  runtimeVersion: string | undefined,
+): boolean | undefined {
+  if (method !== 'item/tool/requestUserInput') return true;
+  if (params === undefined || runtimeVersion === undefined) return undefined;
+
+  const autoResolution = params.autoResolutionMs;
+  if (
+    autoResolution !== undefined &&
+    autoResolution !== null &&
+    (typeof autoResolution !== 'number' ||
+      !Number.isSafeInteger(autoResolution) ||
+      autoResolution < 0)
+  ) {
+    return undefined;
+  }
+  if (typeof autoResolution === 'number') return false;
+
+  if (runtimeVersion.startsWith('0.147.')) {
+    return typeof params.isBlocking === 'boolean' ? params.isBlocking : undefined;
+  }
+  return true;
 }
 
 function responseThreadId(value: unknown): string | undefined {
