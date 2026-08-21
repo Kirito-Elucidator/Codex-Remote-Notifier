@@ -218,6 +218,32 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
   });
 
+  it('tombstones a request resolution delivered before its attributable request', () => {
+    const capture = qualifiedCapture('0.147.0');
+
+    expect(
+      capture.observeServerText(
+        '{"method":"serverRequest/resolved","params":{"threadId":"thread-1","requestId":"late-input"}}',
+      ),
+    ).toEqual([]);
+    expect(
+      capture.observeServerText(
+        '{"id":"late-input","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","isBlocking":true}}',
+      ),
+    ).toEqual([]);
+    expect(
+      capture.observeServerText(
+        '{"id":"current-input","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","isBlocking":true}}',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'human-action-request',
+        sourceSequence: 3,
+        requestKey: 'string:current-input',
+      }),
+    ]);
+  });
+
   it('reports unavailable when authority is lost without a usable Hook', () => {
     const capture = qualifiedCapture();
 

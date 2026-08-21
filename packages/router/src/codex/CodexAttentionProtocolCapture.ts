@@ -52,6 +52,13 @@ interface PendingHumanActionRequest {
   turnKey: string;
 }
 
+type HumanActionRequestCapture =
+  | {
+      kind: 'captured';
+      observation: Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }>;
+    }
+  | { kind: 'malformed' | 'silent' };
+
 export class CodexAttentionProtocolCapture {
   private readonly activeTurnIds = new Set<string>();
   private boundForegroundThread?: BoundForegroundThread;
@@ -62,9 +69,11 @@ export class CodexAttentionProtocolCapture {
   private initializeResponseId?: string;
   private initializeResponseValidated = false;
   private initialized = false;
+  private readonly earlyResolvedRequestKeys = new Set<string>();
   private readonly pendingThreadRequests = new Map<string, ForegroundRequestKind>();
   private readonly pendingHumanActionRequests = new Map<string, PendingHumanActionRequest>();
   private readonly pendingTurnIds = new Set<string>();
+  private readonly resolvedHumanActionRequests = new Set<string>();
   private qualificationEvidence?: ConnectionQualificationEvidence;
   private qualified = false;
   private authorityClosed = false;
@@ -118,9 +127,9 @@ export class CodexAttentionProtocolCapture {
       return resolution === undefined ? [] : [resolution];
     }
     if (isCodexAttentionRequestMethod(message.method)) {
-      const request = this.captureHumanActionRequest(message);
-      if (request === null) return [];
-      if (request !== undefined) return [request];
+      const capture = this.captureHumanActionRequest(message);
+      if (capture.kind === 'captured') return [capture.observation];
+      if (capture.kind === 'silent') return [];
       if (this.hasExactAuthority) return this.authorityLost('degraded');
     }
 
@@ -211,8 +220,10 @@ export class CodexAttentionProtocolCapture {
     if (!this.qualified || this.authorityClosed) return [];
     this.authorityClosed = true;
     this.qualified = false;
+    this.earlyResolvedRequestKeys.clear();
     this.pendingHumanActionRequests.clear();
     this.pendingTurnIds.clear();
+    this.resolvedHumanActionRequests.clear();
     return [{ kind: 'authority-change', sourceSequence: this.nextSequence(), monitoring }];
   }
 
@@ -230,15 +241,15 @@ export class CodexAttentionProtocolCapture {
     this.authorityClosed = true;
     this.qualified = false;
     this.activeTurnIds.clear();
+    this.earlyResolvedRequestKeys.clear();
     this.pendingHumanActionRequests.clear();
     this.pendingTurnIds.clear();
+    this.resolvedHumanActionRequests.clear();
     return [{ kind: 'invocation-end', sourceSequence: this.nextSequence(), endKey }];
   }
 
-  private captureHumanActionRequest(
-    message: Record<string, unknown>,
-  ): Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }> | null | undefined {
-    if (!this.qualified) return undefined;
+  private captureHumanActionRequest(message: Record<string, unknown>): HumanActionRequestCapture {
+    if (!this.qualified) return { kind: 'malformed' };
     const requestKind = codexAttentionRequestKind(message.method);
     const requestKey = requestIdKey(message.id);
     const params = isRecord(message.params) ? message.params : undefined;
@@ -259,16 +270,24 @@ export class CodexAttentionProtocolCapture {
       threadId === undefined ||
       threadId !== this.foregroundThreadId
     ) {
-      return undefined;
+      return { kind: 'malformed' };
     }
-    if (turnId === undefined) return inferSoleActiveTurn ? null : undefined;
-    if (!this.activeTurnIds.has(turnId)) return null;
+    if (turnId === undefined) {
+      return { kind: inferSoleActiveTurn ? 'silent' : 'malformed' };
+    }
+    if (!this.activeTurnIds.has(turnId)) return { kind: 'silent' };
+    const semanticRequestKey = requestTurnKey(turnId, requestKey);
+    if (this.resolvedHumanActionRequests.has(semanticRequestKey)) return { kind: 'silent' };
+    if (this.earlyResolvedRequestKeys.delete(requestKey)) {
+      this.resolvedHumanActionRequests.add(semanticRequestKey);
+      return { kind: 'silent' };
+    }
     const blocking = requestBlockingEligibility(
       message.method,
       params,
       parseCodexProtocolVersion(this.options.version),
     );
-    if (blocking !== true) return blocking === false ? null : undefined;
+    if (blocking !== true) return { kind: blocking === false ? 'silent' : 'malformed' };
     const observation = {
       kind: 'human-action-request',
       sourceSequence: this.nextSequence(),
@@ -277,7 +296,7 @@ export class CodexAttentionProtocolCapture {
       requestKind,
     } as const;
     this.pendingHumanActionRequests.set(requestKey, { threadKey: threadId, turnKey: turnId });
-    return observation;
+    return { kind: 'captured', observation };
   }
 
   private captureRequestResolution(
@@ -287,10 +306,21 @@ export class CodexAttentionProtocolCapture {
     const params = isRecord(message.params) ? message.params : undefined;
     const threadKey = params && boundedIdentifier(params.threadId);
     const requestKey = params && requestIdKey(params.requestId);
-    if (threadKey === undefined || requestKey === undefined) return undefined;
+    if (
+      threadKey === undefined ||
+      threadKey !== this.foregroundThreadId ||
+      requestKey === undefined
+    ) {
+      return undefined;
+    }
     const pending = this.pendingHumanActionRequests.get(requestKey);
-    if (pending === undefined || pending.threadKey !== threadKey) return undefined;
+    if (pending === undefined) {
+      this.earlyResolvedRequestKeys.add(requestKey);
+      return undefined;
+    }
+    if (pending.threadKey !== threadKey) return undefined;
     this.pendingHumanActionRequests.delete(requestKey);
+    this.resolvedHumanActionRequests.add(requestTurnKey(pending.turnKey, requestKey));
     return {
       kind: 'request-resolution',
       sourceSequence: this.nextSequence(),
@@ -592,6 +622,10 @@ function parseMessage(text: string): Record<string, unknown> | undefined {
 
 function requestIdKey(value: unknown): string | undefined {
   return validRequestId(value) ? `${typeof value}:${String(value)}` : undefined;
+}
+
+function requestTurnKey(turnKey: string, requestKey: string): string {
+  return JSON.stringify([turnKey, requestKey]);
 }
 
 function requestBlockingEligibility(

@@ -35,6 +35,8 @@ interface TurnState {
   returnTarget: string;
 }
 
+type ExactTurnState = TurnState & { foregroundThreadKey: string };
+
 type ScopeRole = 'compatibility' | 'protocol' | 'unknown';
 
 interface ScopeState {
@@ -368,17 +370,8 @@ class InvocationActor {
     state: ScopeState,
     observation: Extract<SanitizedAttentionObservation, { kind: 'human-action-request' }>,
   ): Promise<boolean> {
-    if (state.role === 'compatibility') return true;
-    if (!state.qualified || this.exactScopeKey !== scopeKey(scope)) {
-      this.setMonitoring('degraded');
-      return true;
-    }
-    if (state.terminalTurns.has(observation.turnKey)) return true;
-    const turn = state.turns.get(observation.turnKey);
-    if (turn === undefined || turn.foregroundThreadKey === undefined) {
-      this.setMonitoring('degraded');
-      return true;
-    }
+    const turn = this.activeExactTurn(scope, state, observation.turnKey);
+    if (turn === undefined) return true;
     if (
       turn.requests.has(observation.requestKey) ||
       turn.resolvedRequests.has(observation.requestKey)
@@ -428,17 +421,8 @@ class InvocationActor {
     state: ScopeState,
     observation: Extract<SanitizedAttentionObservation, { kind: 'request-resolution' }>,
   ): Promise<boolean> {
-    if (state.role === 'compatibility') return true;
-    if (!state.qualified || this.exactScopeKey !== scopeKey(scope)) {
-      this.setMonitoring('degraded');
-      return true;
-    }
-    if (state.terminalTurns.has(observation.turnKey)) return true;
-    const turn = state.turns.get(observation.turnKey);
-    if (turn === undefined || turn.foregroundThreadKey === undefined) {
-      this.setMonitoring('degraded');
-      return true;
-    }
+    const turn = this.activeExactTurn(scope, state, observation.turnKey);
+    if (turn === undefined) return true;
     if (turn.resolvedRequests.has(observation.requestKey)) return true;
 
     const recordKey = turn.requests.get(observation.requestKey);
@@ -506,17 +490,8 @@ class InvocationActor {
     state: ScopeState,
     observation: Extract<SanitizedAttentionObservation, { kind: 'terminal-result' }>,
   ): Promise<boolean> {
-    if (state.role === 'compatibility') return true;
-    if (!state.qualified || this.exactScopeKey !== scopeKey(scope)) {
-      this.setMonitoring('degraded');
-      return true;
-    }
-    if (state.terminalTurns.has(observation.turnKey)) return true;
-    const turn = state.turns.get(observation.turnKey);
-    if (turn === undefined || turn.foregroundThreadKey === undefined) {
-      this.setMonitoring('degraded');
-      return true;
-    }
+    const turn = this.activeExactTurn(scope, state, observation.turnKey);
+    if (turn === undefined) return true;
     const requestKeys = [...turn.requests.values()];
     if (requestKeys.length > 0) {
       const exchange: PresentationExchange = {
@@ -536,6 +511,25 @@ class InvocationActor {
     }
     state.terminalTurns.add(observation.turnKey);
     return true;
+  }
+
+  private activeExactTurn(
+    scope: SourceScope,
+    state: ScopeState,
+    turnKey: string,
+  ): ExactTurnState | undefined {
+    if (state.role === 'compatibility') return undefined;
+    if (!state.qualified || this.exactScopeKey !== scopeKey(scope)) {
+      this.setMonitoring('degraded');
+      return undefined;
+    }
+    if (state.terminalTurns.has(turnKey)) return undefined;
+    const turn = state.turns.get(turnKey);
+    if (turn?.foregroundThreadKey === undefined) {
+      this.setMonitoring('degraded');
+      return undefined;
+    }
+    return turn as ExactTurnState;
   }
 
   private async applySuccess(
