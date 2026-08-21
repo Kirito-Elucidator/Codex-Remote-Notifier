@@ -230,7 +230,14 @@ describe('CodexAttentionProtocolCapture', () => {
       capture.observeServerText(
         '{"id":"late-input","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","isBlocking":true}}',
       ),
-    ).toEqual([]);
+    ).toEqual([
+      {
+        kind: 'request-resolution',
+        sourceSequence: 3,
+        turnKey: 'turn-1',
+        requestKey: 'string:late-input',
+      },
+    ]);
     expect(
       capture.observeServerText(
         '{"id":"current-input","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","isBlocking":true}}',
@@ -238,7 +245,7 @@ describe('CodexAttentionProtocolCapture', () => {
     ).toEqual([
       expect.objectContaining({
         kind: 'human-action-request',
-        sourceSequence: 3,
+        sourceSequence: 4,
         requestKey: 'string:current-input',
       }),
     ]);
