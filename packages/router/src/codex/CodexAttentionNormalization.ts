@@ -693,25 +693,12 @@ class InvocationActor {
         });
         return true;
       }
-      const turn: TurnState = {
-        requests: new Map(),
-        resolvedRequests: new Set(),
-        returnTarget: terminal.returnTarget,
-      };
-      return this.createFailure(
+      return this.settlePendingFailure(
         scope,
         state,
-        {
-          kind: 'terminal-result',
-          sourceSequence: observation.sourceSequence,
-          turnKey: observation.turnKey,
-          result: 'failure',
-          occurrenceKey: terminal.occurrenceKey,
-          ...(terminal.canonicalBody === undefined
-            ? {}
-            : { canonicalBody: terminal.canonicalBody }),
-        },
-        turn,
+        observation.turnKey,
+        observation.sourceSequence,
+        terminal,
         detail,
       );
     }
@@ -799,6 +786,7 @@ class InvocationActor {
     turnKey: string,
     sourceSequence: number,
     terminal: PendingFailure,
+    detail: FailureDetail | undefined = terminal.fallbackDetail,
   ): Promise<boolean> {
     const turn: TurnState = {
       requests: new Map(),
@@ -817,7 +805,7 @@ class InvocationActor {
         ...(terminal.canonicalBody === undefined ? {} : { canonicalBody: terminal.canonicalBody }),
       },
       turn,
-      terminal.fallbackDetail,
+      detail,
     );
   }
 
