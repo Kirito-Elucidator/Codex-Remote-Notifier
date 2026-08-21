@@ -71,6 +71,8 @@ type TerminalTurnState =
       record: PresentationRecord;
     };
 
+type PendingFailure = Extract<TerminalTurnState, { kind: 'failure-pending' }>;
+
 type ScopeRole = 'compatibility' | 'protocol' | 'unknown';
 
 interface ScopeState {
@@ -759,24 +761,12 @@ class InvocationActor {
   ): Promise<boolean> {
     const terminal = state.terminalTurns.get(observation.turnKey);
     if (terminal?.kind !== 'failure-pending') return true;
-    const turn: TurnState = {
-      requests: new Map(),
-      resolvedRequests: new Set(),
-      returnTarget: terminal.returnTarget,
-    };
-    return this.createFailure(
+    return this.settlePendingFailure(
       scope,
       state,
-      {
-        kind: 'terminal-result',
-        sourceSequence: observation.sourceSequence,
-        turnKey: observation.turnKey,
-        result: 'failure',
-        occurrenceKey: terminal.occurrenceKey,
-        ...(terminal.canonicalBody === undefined ? {} : { canonicalBody: terminal.canonicalBody }),
-      },
-      turn,
-      terminal.fallbackDetail,
+      observation.turnKey,
+      observation.sourceSequence,
+      terminal,
     );
   }
 
@@ -800,17 +790,27 @@ class InvocationActor {
     const state = this.scopes.get(scopeKey(scope));
     const terminal = state?.terminalTurns.get(turnKey);
     if (state === undefined || terminal?.kind !== 'failure-pending') return;
+    await this.settlePendingFailure(scope, state, turnKey, terminal.sourceSequence, terminal);
+  }
+
+  private settlePendingFailure(
+    scope: SourceScope,
+    state: ScopeState,
+    turnKey: string,
+    sourceSequence: number,
+    terminal: PendingFailure,
+  ): Promise<boolean> {
     const turn: TurnState = {
       requests: new Map(),
       resolvedRequests: new Set(),
       returnTarget: terminal.returnTarget,
     };
-    await this.createFailure(
+    return this.createFailure(
       scope,
       state,
       {
         kind: 'terminal-result',
-        sourceSequence: terminal.sourceSequence,
+        sourceSequence,
         turnKey,
         result: 'failure',
         occurrenceKey: terminal.occurrenceKey,
