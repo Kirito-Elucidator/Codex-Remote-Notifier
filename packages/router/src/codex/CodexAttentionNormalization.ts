@@ -33,9 +33,29 @@ interface TurnState {
   requests: Map<string, string>;
   resolvedRequests: Set<string>;
   returnTarget: string;
+  stagedFailure?: FailureDetail;
 }
 
 type ExactTurnState = TurnState & { foregroundThreadKey: string };
+
+interface FailureDetail {
+  canonicalBody?: string;
+  errorKind: string;
+}
+
+type TerminalTurnState =
+  | { kind: 'success' | 'interrupted' }
+  | {
+      kind: 'failure-pending';
+      canonicalBody?: string;
+      occurrenceKey: string;
+      returnTarget: string;
+    }
+  | {
+      kind: 'failure';
+      generic: boolean;
+      record: PresentationRecord;
+    };
 
 type ScopeRole = 'compatibility' | 'protocol' | 'unknown';
 
@@ -52,7 +72,7 @@ interface ScopeState {
   receivedThrough: number;
   retainedBytes: number;
   role: ScopeRole;
-  terminalTurns: Set<string>;
+  terminalTurns: Map<string, TerminalTurnState>;
   turns: Map<string, TurnState>;
 }
 
@@ -291,6 +311,7 @@ class InvocationActor {
         return true;
       }
       case 'turn-start': {
+        if (state.terminalTurns.has(observation.turnKey)) return true;
         if (state.role === 'compatibility') {
           const existingTurn = state.turns.get(observation.turnKey);
           if (
@@ -300,6 +321,7 @@ class InvocationActor {
             this.setMonitoring('degraded');
             return true;
           }
+          if (existingTurn !== undefined) return true;
           state.turns.set(observation.turnKey, {
             requests: new Map(),
             resolvedRequests: new Set(),
@@ -356,10 +378,18 @@ class InvocationActor {
         return this.applyRequest(scope, state, observation);
       case 'request-resolution':
         return this.applyRequestResolution(scope, state, observation);
+      case 'retry-error':
+        return true;
+      case 'terminal-error':
+        return this.applyTerminalError(scope, state, observation);
       case 'terminal-result':
         return observation.result === 'success'
           ? this.applySuccess(scope, state, observation)
-          : this.applyTerminalRequestCleanup(scope, state, observation);
+          : this.applyFailure(scope, state, observation);
+      case 'interruption':
+        return this.applyInterruption(scope, state, observation);
+      case 'reconciliation-deadline':
+        return this.applyReconciliationDeadline(scope, state, observation);
       default:
         return true;
     }
@@ -485,12 +515,222 @@ class InvocationActor {
     }
   }
 
-  private async applyTerminalRequestCleanup(
+  private async applyFailure(
     scope: SourceScope,
     state: ScopeState,
     observation: Extract<SanitizedAttentionObservation, { kind: 'terminal-result' }>,
   ): Promise<boolean> {
-    const turn = this.activeExactTurn(scope, state, observation.turnKey);
+    const existing = state.terminalTurns.get(observation.turnKey);
+    if (existing !== undefined) {
+      if (existing.kind !== 'failure' && existing.kind !== 'failure-pending') {
+        this.setMonitoring('degraded');
+      }
+      return true;
+    }
+    const turn = this.activeTerminalTurn(scope, state, observation.turnKey);
+    if (turn === undefined) return true;
+    const detail = turn.stagedFailure;
+    if (detail !== undefined) {
+      return this.createFailure(scope, state, observation, turn, detail);
+    }
+
+    const requestKeys = [...turn.requests.values()];
+    if (requestKeys.length > 0) {
+      const exchange: PresentationExchange = {
+        kind: 'apply',
+        transactionId: stableIdentity('transaction', [
+          scope.invocationId,
+          scope.connectionId,
+          scope.authorityEpoch,
+          observation.turnKey,
+          String(observation.sourceSequence),
+          'failure-reconciliation',
+        ]),
+        mutations: requestKeys.map((key) => ({ kind: 'withdraw' as const, key })),
+      };
+      if (!(await this.applyPresentation(exchange))) return false;
+      turn.requests.clear();
+    }
+    state.terminalTurns.set(observation.turnKey, {
+      kind: 'failure-pending',
+      ...(observation.canonicalBody === undefined
+        ? {}
+        : { canonicalBody: observation.canonicalBody }),
+      occurrenceKey: observation.occurrenceKey,
+      returnTarget: turn.returnTarget,
+    });
+    state.turns.delete(observation.turnKey);
+    return true;
+  }
+
+  private async createFailure(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'terminal-result' }>,
+    turn: TurnState,
+    detail: FailureDetail | undefined,
+  ): Promise<boolean> {
+    const outcomeKey = failureOutcomeKey(
+      scope,
+      state,
+      observation.turnKey,
+      observation.occurrenceKey,
+    );
+    if (state.outcomes.has(outcomeKey)) return true;
+    const presentation = failurePresentation(detail);
+    const record: PresentationRecord = {
+      key: outcomeKey,
+      revision: 1,
+      appearance: 'failure',
+      canonicalTitle:
+        state.role === 'compatibility'
+          ? compatibilityTitle(presentation.title)
+          : presentation.title,
+      canonicalBody:
+        detail?.canonicalBody ?? observation.canonicalBody ?? 'Return to Codex to view details',
+      returnTarget: turn.returnTarget,
+    };
+    const exchange: PresentationExchange = {
+      kind: 'apply',
+      transactionId: stableIdentity('transaction', [
+        scope.invocationId,
+        scope.connectionId,
+        scope.authorityEpoch,
+        observation.turnKey,
+        String(observation.sourceSequence),
+        'failure',
+      ]),
+      mutations: [
+        ...[...turn.requests.values()].map((key) => ({ kind: 'withdraw' as const, key })),
+        { kind: 'create', record },
+      ],
+    };
+    if (!(await this.applyPresentation(exchange))) return false;
+
+    state.outcomes.add(outcomeKey);
+    state.terminalTurns.set(observation.turnKey, {
+      kind: 'failure',
+      generic: presentation.generic,
+      record,
+    });
+    turn.requests.clear();
+    state.turns.delete(observation.turnKey);
+    return true;
+  }
+
+  private async applyTerminalError(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'retry-error' | 'terminal-error' }>,
+  ): Promise<boolean> {
+    const detail: FailureDetail = {
+      errorKind: observation.errorKind,
+      ...(observation.canonicalBody === undefined
+        ? {}
+        : { canonicalBody: observation.canonicalBody }),
+    };
+    const terminal = state.terminalTurns.get(observation.turnKey);
+    if (terminal?.kind === 'failure-pending') {
+      const turn: TurnState = {
+        requests: new Map(),
+        resolvedRequests: new Set(),
+        returnTarget: terminal.returnTarget,
+      };
+      return this.createFailure(
+        scope,
+        state,
+        {
+          kind: 'terminal-result',
+          sourceSequence: observation.sourceSequence,
+          turnKey: observation.turnKey,
+          result: 'failure',
+          occurrenceKey: terminal.occurrenceKey,
+          ...(terminal.canonicalBody === undefined
+            ? {}
+            : { canonicalBody: terminal.canonicalBody }),
+        },
+        turn,
+        detail,
+      );
+    }
+    if (terminal?.kind === 'failure') {
+      if (!terminal.generic || failurePresentation(detail).generic) return true;
+      const presentation = failurePresentation(detail);
+      const record: PresentationRecord = {
+        ...terminal.record,
+        revision: terminal.record.revision + 1,
+        canonicalTitle:
+          state.role === 'compatibility'
+            ? compatibilityTitle(presentation.title)
+            : presentation.title,
+        canonicalBody: detail.canonicalBody ?? terminal.record.canonicalBody,
+      };
+      const exchange: PresentationExchange = {
+        kind: 'apply',
+        transactionId: stableIdentity('transaction', [
+          scope.invocationId,
+          scope.connectionId,
+          scope.authorityEpoch,
+          observation.turnKey,
+          String(observation.sourceSequence),
+          'failure-enrichment',
+        ]),
+        mutations: [{ kind: 'update', record }],
+      };
+      if (!(await this.applyPresentation(exchange))) return false;
+      state.terminalTurns.set(observation.turnKey, {
+        kind: 'failure',
+        generic: false,
+        record,
+      });
+      return true;
+    }
+    if (terminal !== undefined) return true;
+
+    const turn = this.activeTerminalTurn(scope, state, observation.turnKey);
+    if (turn !== undefined) turn.stagedFailure = detail;
+    return true;
+  }
+
+  private async applyReconciliationDeadline(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'reconciliation-deadline' }>,
+  ): Promise<boolean> {
+    const terminal = state.terminalTurns.get(observation.turnKey);
+    if (terminal?.kind !== 'failure-pending') return true;
+    const turn: TurnState = {
+      requests: new Map(),
+      resolvedRequests: new Set(),
+      returnTarget: terminal.returnTarget,
+    };
+    return this.createFailure(
+      scope,
+      state,
+      {
+        kind: 'terminal-result',
+        sourceSequence: observation.sourceSequence,
+        turnKey: observation.turnKey,
+        result: 'failure',
+        occurrenceKey: terminal.occurrenceKey,
+        ...(terminal.canonicalBody === undefined ? {} : { canonicalBody: terminal.canonicalBody }),
+      },
+      turn,
+      undefined,
+    );
+  }
+
+  private async applyInterruption(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'interruption' }>,
+  ): Promise<boolean> {
+    const terminal = state.terminalTurns.get(observation.turnKey);
+    if (terminal !== undefined) {
+      if (terminal.kind !== 'interrupted') this.setMonitoring('degraded');
+      return true;
+    }
+    const turn = this.activeTerminalTurn(scope, state, observation.turnKey);
     if (turn === undefined) return true;
     const requestKeys = [...turn.requests.values()];
     if (requestKeys.length > 0) {
@@ -502,15 +742,37 @@ class InvocationActor {
           scope.authorityEpoch,
           observation.turnKey,
           String(observation.sourceSequence),
-          'terminal-request-cleanup',
+          'interruption',
         ]),
         mutations: requestKeys.map((key) => ({ kind: 'withdraw' as const, key })),
       };
       if (!(await this.applyPresentation(exchange))) return false;
-      turn.requests.clear();
     }
-    state.terminalTurns.add(observation.turnKey);
+    state.terminalTurns.set(observation.turnKey, { kind: 'interrupted' });
+    turn.requests.clear();
+    state.turns.delete(observation.turnKey);
     return true;
+  }
+
+  private activeTerminalTurn(
+    scope: SourceScope,
+    state: ScopeState,
+    turnKey: string,
+  ): TurnState | undefined {
+    const compatibility = state.role === 'compatibility';
+    if (compatibility && this.exactScopeKey !== undefined && this.exactTurnKeys.has(turnKey)) {
+      return undefined;
+    }
+    if (!compatibility && (!state.qualified || this.exactScopeKey !== scopeKey(scope))) {
+      this.setMonitoring('degraded');
+      return undefined;
+    }
+    const turn = state.turns.get(turnKey);
+    if (turn === undefined) {
+      this.setMonitoring('degraded');
+      return undefined;
+    }
+    return turn;
   }
 
   private activeExactTurn(
@@ -537,6 +799,11 @@ class InvocationActor {
     state: ScopeState,
     observation: Extract<SanitizedAttentionObservation, { kind: 'terminal-result' }>,
   ): Promise<boolean> {
+    const existing = state.terminalTurns.get(observation.turnKey);
+    if (existing !== undefined) {
+      if (existing.kind !== 'success') this.setMonitoring('degraded');
+      return true;
+    }
     const compatibility = state.role === 'compatibility';
     if (
       compatibility &&
@@ -548,7 +815,6 @@ class InvocationActor {
       this.setMonitoring('degraded');
       return true;
     }
-    if (state.terminalTurns.has(observation.turnKey)) return true;
     const turn = state.turns.get(observation.turnKey);
     const foregroundThreadKey = turn?.foregroundThreadKey ?? state.foregroundThreadKey;
     if (!compatibility && foregroundThreadKey === undefined) {
@@ -611,7 +877,7 @@ class InvocationActor {
     if (!(await this.applyPresentation(pending.exchange))) return false;
 
     state.outcomes.add(pending.outcomeKey);
-    state.terminalTurns.add(observation.turnKey);
+    state.terminalTurns.set(observation.turnKey, { kind: 'success' });
     turn?.requests.clear();
     state.turns.delete(observation.turnKey);
     state.pendingOutcome = undefined;
@@ -680,7 +946,7 @@ function createScopeState(deliveryGeneration: string): ScopeState {
     receivedThrough: 0,
     retainedBytes: 0,
     role: 'unknown',
-    terminalTurns: new Set(),
+    terminalTurns: new Map(),
     turns: new Map(),
   };
 }
@@ -746,6 +1012,56 @@ function isMalformedAuditedQualification(
     observation.evidence !== undefined &&
     /^0\.(?:145|146|147)\.\d+$/.test(observation.evidence.runtimeVersion)
   );
+}
+
+function failureOutcomeKey(
+  scope: SourceScope,
+  state: ScopeState,
+  turnKey: string,
+  occurrenceKey: string,
+): string {
+  return stableIdentity('outcome', [
+    scope.invocationId,
+    scope.connectionId,
+    scope.authorityEpoch,
+    state.foregroundThreadKey ?? 'compatibility',
+    turnKey,
+    occurrenceKey,
+  ]);
+}
+
+function failurePresentation(detail: FailureDetail | undefined): {
+  generic: boolean;
+  title: string;
+} {
+  switch (detail?.errorKind) {
+    case 'usageLimitExceeded':
+    case 'sessionBudgetExceeded':
+      return { generic: false, title: 'Codex usage limit reached' };
+    case 'contextWindowExceeded':
+      return { generic: false, title: 'Codex context window exceeded' };
+    case 'unauthorized':
+      return { generic: false, title: 'Codex authentication failed' };
+    case 'serverOverloaded':
+    case 'internalServerError':
+      return { generic: false, title: 'Codex service failed' };
+    case 'sandboxError':
+    case 'cyberPolicy':
+      return { generic: false, title: 'Codex policy check failed' };
+    case 'badRequest':
+      return { generic: false, title: 'Codex request failed' };
+    case 'threadRollbackFailed':
+      return { generic: false, title: 'Codex session recovery failed' };
+    case 'activeTurnNotSteerable':
+      return { generic: false, title: 'Codex state conflict' };
+    case 'httpConnectionFailed':
+    case 'responseStreamConnectionFailed':
+    case 'responseStreamDisconnected':
+    case 'responseTooManyFailedAttempts':
+      return { generic: false, title: 'Codex connection failed' };
+    default:
+      return { generic: true, title: 'Codex failed' };
+  }
 }
 
 function retainedObservationBytes(scopes: Map<string, ScopeState>): number {

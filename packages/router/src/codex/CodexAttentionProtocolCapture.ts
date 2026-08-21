@@ -213,8 +213,11 @@ export class CodexAttentionProtocolCapture {
       return [this.turnStart(turnId)];
     }
 
+    if (message.method === 'error') {
+      return this.captureError(message);
+    }
     if (message.method === 'turn/completed') {
-      return this.captureSuccess(message);
+      return this.captureTerminalResult(message);
     }
     return [];
   }
@@ -336,18 +339,46 @@ export class CodexAttentionProtocolCapture {
     };
   }
 
-  private captureSuccess(message: Record<string, unknown>): SanitizedAttentionObservation[] {
+  private captureError(message: Record<string, unknown>): SanitizedAttentionObservation[] {
     if (!this.qualified) return [];
     const params = isRecord(message.params) ? message.params : undefined;
-    const turn = params && isRecord(params.turn) ? params.turn : undefined;
     const threadId = params && boundedIdentifier(params.threadId);
-    const turnId = turn && boundedIdentifier(turn.id);
+    const turnId = params && boundedIdentifier(params.turnId);
     if (
       !threadId ||
       !turnId ||
       threadId !== this.foregroundThreadId ||
       !this.activeTurnIds.has(turnId) ||
-      turn?.status !== 'completed'
+      typeof params?.willRetry !== 'boolean'
+    ) {
+      return [];
+    }
+    const detail = structuredFailureDetail(params.error);
+    if (detail === undefined) return this.authorityLost('degraded');
+    return [
+      {
+        kind: params.willRetry ? 'retry-error' : 'terminal-error',
+        sourceSequence: this.nextSequence(),
+        turnKey: turnId,
+        errorKind: detail.errorKind,
+        ...(detail.canonicalBody === undefined ? {} : { canonicalBody: detail.canonicalBody }),
+      },
+    ];
+  }
+
+  private captureTerminalResult(message: Record<string, unknown>): SanitizedAttentionObservation[] {
+    if (!this.qualified) return [];
+    const params = isRecord(message.params) ? message.params : undefined;
+    const turn = params && isRecord(params.turn) ? params.turn : undefined;
+    const threadId = params && boundedIdentifier(params.threadId);
+    const turnId = turn && boundedIdentifier(turn.id);
+    const status = turn?.status;
+    if (
+      !threadId ||
+      !turnId ||
+      threadId !== this.foregroundThreadId ||
+      !this.activeTurnIds.has(turnId) ||
+      (status !== 'completed' && status !== 'failed' && status !== 'interrupted')
     ) {
       return [];
     }
@@ -356,6 +387,35 @@ export class CodexAttentionProtocolCapture {
     for (const [requestKey, request] of this.pendingHumanActionRequests) {
       if (request.turnKey === turnId) this.pendingHumanActionRequests.delete(requestKey);
     }
+    if (status === 'interrupted') {
+      return [{ kind: 'interruption', sourceSequence: this.nextSequence(), turnKey: turnId }];
+    }
+    if (status === 'failed') {
+      const detail = structuredFailureDetail(turn.error);
+      return [
+        ...(detail === undefined
+          ? []
+          : [
+              {
+                kind: 'terminal-error' as const,
+                sourceSequence: this.nextSequence(),
+                turnKey: turnId,
+                errorKind: detail.errorKind,
+                ...(detail.canonicalBody === undefined
+                  ? {}
+                  : { canonicalBody: detail.canonicalBody }),
+              },
+            ]),
+        {
+          kind: 'terminal-result',
+          sourceSequence: this.nextSequence(),
+          turnKey: turnId,
+          result: 'failure',
+          occurrenceKey: `${turnId}:failure`,
+        },
+      ];
+    }
+
     const preview = successPreview(turn.items);
     return [
       {
@@ -364,8 +424,8 @@ export class CodexAttentionProtocolCapture {
         turnKey: turnId,
         result: 'success',
         occurrenceKey: `${turnId}:success`,
-        canonicalTitle: 'Codex completed',
-        ...(preview === undefined ? {} : { canonicalBody: preview }),
+        canonicalTitle: preview?.plan ? 'Codex plan completed' : 'Codex completed',
+        ...(preview === undefined ? {} : { canonicalBody: preview.text }),
       },
     ];
   }
@@ -674,16 +734,60 @@ function returnSessionIdentifier(value: unknown): string | undefined {
   }
 }
 
-function successPreview(items: unknown): string | undefined {
+function successPreview(items: unknown): { plan: boolean; text: string } | undefined {
   if (!Array.isArray(items)) return undefined;
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index];
     if (!isRecord(item) || (item.type !== 'agentMessage' && item.type !== 'plan')) continue;
     if (typeof item.text !== 'string' || item.text.trim().length === 0) continue;
     const preview = boundCanonicalUtf8(item.text, ATTENTION_EXCHANGE_LIMITS.canonicalBodyBytes);
-    return preview.length > 0 ? preview : undefined;
+    return preview.length > 0 ? { plan: item.type === 'plan', text: preview } : undefined;
   }
   return undefined;
+}
+
+function structuredFailureDetail(
+  value: unknown,
+): { canonicalBody?: string; errorKind: string } | undefined {
+  if (!isRecord(value)) return undefined;
+  const rawBody = typeof value.message === 'string' ? value.message : undefined;
+  const canonicalBody =
+    rawBody === undefined
+      ? undefined
+      : boundCanonicalUtf8(rawBody, ATTENTION_EXCHANGE_LIMITS.canonicalBodyBytes);
+  const rawInfo = value.codexErrorInfo ?? value.codex_error_info;
+  let rawKind: string | undefined;
+  if (typeof rawInfo === 'string') {
+    rawKind = rawInfo;
+  } else if (isRecord(rawInfo)) {
+    rawKind = typeof rawInfo.type === 'string' ? rawInfo.type : Object.keys(rawInfo)[0];
+  }
+  return {
+    errorKind: normalizeStructuredErrorKind(rawKind),
+    ...(canonicalBody === undefined || canonicalBody.length === 0 ? {} : { canonicalBody }),
+  };
+}
+
+function normalizeStructuredErrorKind(value: string | undefined): string {
+  if (value === undefined) return 'other';
+  const known = [
+    'contextWindowExceeded',
+    'sessionBudgetExceeded',
+    'usageLimitExceeded',
+    'serverOverloaded',
+    'cyberPolicy',
+    'httpConnectionFailed',
+    'responseStreamConnectionFailed',
+    'internalServerError',
+    'unauthorized',
+    'badRequest',
+    'threadRollbackFailed',
+    'sandboxError',
+    'responseStreamDisconnected',
+    'responseTooManyFailedAttempts',
+    'activeTurnNotSteerable',
+  ];
+  return known.includes(value) ? value : 'other';
 }
 
 function boundCanonicalUtf8(value: string, maximumBytes: number): string {

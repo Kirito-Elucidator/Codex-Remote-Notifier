@@ -119,6 +119,175 @@ describe('CodexAttentionProtocolCapture', () => {
     ).toEqual([]);
   });
 
+  it('commits retry recovery silently and emits only the final plan success outcome', () => {
+    const capture = qualifiedCapture();
+
+    expect(
+      capture.observeServerText(
+        JSON.stringify({
+          method: 'error',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            willRetry: true,
+            error: {
+              message: 'temporary disconnect',
+              codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+            },
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'retry-error',
+        sourceSequence: 3,
+        turnKey: 'turn-1',
+        errorKind: 'responseStreamDisconnected',
+        canonicalBody: 'temporary disconnect',
+      },
+    ]);
+    for (const method of [
+      'model/safetyBuffering/updated',
+      'model/rerouted',
+      'account/login/completed',
+      'item/completed',
+    ]) {
+      expect(
+        capture.observeServerText(
+          JSON.stringify({
+            method,
+            params: {
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              message: 'internal diagnostic',
+            },
+          }),
+        ),
+      ).toEqual([]);
+    }
+    expect(
+      capture.observeServerText(
+        JSON.stringify({
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-1',
+            turn: {
+              id: 'turn-1',
+              status: 'completed',
+              items: [{ type: 'plan', text: '计划完成 🙂' }],
+            },
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'terminal-result',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+        result: 'success',
+        occurrenceKey: 'turn-1:success',
+        canonicalTitle: 'Codex plan completed',
+        canonicalBody: '计划完成 🙂',
+      },
+    ]);
+  });
+
+  it('stages a non-retrying error and emits one failed terminal boundary', () => {
+    const capture = qualifiedCapture();
+
+    expect(
+      capture.observeServerText(
+        JSON.stringify({
+          method: 'error',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            willRetry: false,
+            error: {
+              message: 'account budget exhausted',
+              codexErrorInfo: { usageLimitExceeded: null },
+            },
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'terminal-error',
+        sourceSequence: 3,
+        turnKey: 'turn-1',
+        errorKind: 'usageLimitExceeded',
+        canonicalBody: 'account budget exhausted',
+      },
+    ]);
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","items":[]}}}',
+      ),
+    ).toEqual([
+      {
+        kind: 'terminal-result',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+        result: 'failure',
+        occurrenceKey: 'turn-1:failure',
+      },
+    ]);
+  });
+
+  it('takes failure classification only from terminal structured fields', () => {
+    const capture = qualifiedCapture();
+
+    expect(
+      capture.observeServerText(
+        JSON.stringify({
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-1',
+            turn: {
+              id: 'turn-1',
+              status: 'failed',
+              error: {
+                message: 'usage limit exceeded and HTTP 429',
+                codexErrorInfo: { futureQuotaVariant: { httpStatusCode: 429 } },
+              },
+              items: [],
+            },
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'terminal-error',
+        sourceSequence: 3,
+        turnKey: 'turn-1',
+        errorKind: 'other',
+        canonicalBody: 'usage limit exceeded and HTTP 429',
+      },
+      {
+        kind: 'terminal-result',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+        result: 'failure',
+        occurrenceKey: 'turn-1:failure',
+      },
+    ]);
+  });
+
+  it('emits a structured interruption as one silent terminal observation', () => {
+    const capture = qualifiedCapture();
+
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"interrupted","items":[]}}}',
+      ),
+    ).toEqual([{ kind: 'interruption', sourceSequence: 3, turnKey: 'turn-1' }]);
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","items":[]}}}',
+      ),
+    ).toEqual([]);
+  });
+
   it('uses structured blocking metadata and emits exact request resolutions', () => {
     const capture = qualifiedCapture('0.147.0');
 

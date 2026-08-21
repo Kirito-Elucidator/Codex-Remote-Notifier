@@ -545,23 +545,10 @@ export class CodexWebSocketBridge {
   private onServerLine(connection: BridgeConnection, line: string): void {
     const observations = connection.attentionCapture?.observeServerText(line) ?? [];
     this.postAttention(connection, observations);
-    const exactSuccess = observations.some(
-      (observation) => observation.kind === 'terminal-result' && observation.result === 'success',
-    );
-    const exactHumanAction = observations.some(
-      (observation) => observation.kind === 'human-action-request',
-    );
     for (const event of connection.protocolCapture?.observeServerText(line) ?? []) {
-      if (
-        connection.attentionCapture !== undefined &&
-        !connection.attentionCapture.hasExactAuthority &&
-        isProtocolAttentionMethod(event.method)
-      ) {
+      if (connection.attentionCapture !== undefined && isProtocolAttentionMethod(event.method)) {
         continue;
       }
-      if (exactSuccess && event.method === 'turn/completed' && event.status === 'completed')
-        continue;
-      if (exactHumanAction && isCodexAttentionRequestMethod(event.method)) continue;
       this.router.post(event);
     }
     if (!connection.webSocket || connection.webSocket.readyState !== WebSocket.OPEN) {

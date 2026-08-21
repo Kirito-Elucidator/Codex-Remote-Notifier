@@ -161,11 +161,13 @@ describe('CodexWebSocketBridge', () => {
         '{"id":2,"result":{"thread":{"id":"thread-1"}}}',
         '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
         '{"id":"approval-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","reason":"private"}}',
+        '{"method":"model/safetyBuffering/updated","params":{"threadId":"thread-1","turnId":"turn-1","showBufferingUi":true}}',
+        '{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","willRetry":true,"error":{"message":"temporary disconnect","codexErrorInfo":{"responseStreamDisconnected":{"httpStatusCode":null}}}}}',
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"audited success"}]}}}',
       ].join('\n') + '\n',
     );
 
-    await waitFor(() => attention.post.mock.calls.length === 4);
+    await waitFor(() => attention.post.mock.calls.length === 5);
     const calls = attention.post.mock.calls;
     expect(calls.map(([, observation]) => observation)).toEqual([
       expect.objectContaining({ kind: 'connection-qualification', sourceSequence: 1 }),
@@ -176,14 +178,23 @@ describe('CodexWebSocketBridge', () => {
         requestKey: 'string:approval-1',
       }),
       expect.objectContaining({
-        kind: 'terminal-result',
+        kind: 'retry-error',
         sourceSequence: 4,
+        errorKind: 'responseStreamDisconnected',
+      }),
+      expect.objectContaining({
+        kind: 'terminal-result',
+        sourceSequence: 5,
         canonicalBody: 'audited success',
       }),
     ]);
     expect(protocol.post).not.toHaveBeenCalledWith(
       expect.objectContaining({ method: 'item/fileChange/requestApproval' }),
     );
+    expect(protocol.post).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'model/safetyBuffering/updated' }),
+    );
+    expect(protocol.post).not.toHaveBeenCalledWith(expect.objectContaining({ method: 'error' }));
     const scopes = calls.map(([scope]) => scope);
     expect(new Set(scopes.map((scope) => scope.connectionId)).size).toBe(1);
     expect(scopes[0]).toEqual({
@@ -194,10 +205,10 @@ describe('CodexWebSocketBridge', () => {
 
     client.close();
     await onceClose(client);
-    await waitFor(() => attention.post.mock.calls.length === 5);
-    expect(attention.post.mock.calls[4]).toEqual([
+    await waitFor(() => attention.post.mock.calls.length === 6);
+    expect(attention.post.mock.calls[5]).toEqual([
       scopes[0],
-      { kind: 'invocation-end', sourceSequence: 5, endKey: 'foreground-connection-closed' },
+      { kind: 'invocation-end', sourceSequence: 6, endKey: 'foreground-connection-closed' },
     ]);
   });
 
