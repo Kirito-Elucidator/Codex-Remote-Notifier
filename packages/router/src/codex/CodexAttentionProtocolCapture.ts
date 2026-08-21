@@ -73,6 +73,7 @@ export class CodexAttentionProtocolCapture {
   private initializeResponseId?: string;
   private initializeResponseValidated = false;
   private initialized = false;
+  private readonly interruptionIntentTurnIds = new Set<string>();
   private readonly earlyResolvedRequestKeys = new Set<string>();
   private readonly pendingThreadRequests = new Map<string, ForegroundRequestKind>();
   private readonly pendingHumanActionRequests = new Map<string, PendingHumanActionRequest>();
@@ -82,6 +83,7 @@ export class CodexAttentionProtocolCapture {
   private qualified = false;
   private authorityClosed = false;
   private invocationClosed = false;
+  private lease?: Extract<SanitizedAttentionObservation, { kind: 'sidecar-lease' }>;
   private serverUserAgent?: string;
   private sourceSequence = 0;
 
@@ -99,9 +101,30 @@ export class CodexAttentionProtocolCapture {
     return this.qualified && !this.authorityClosed;
   }
 
+  sidecarLease(
+    expiresAfterMs: number,
+  ): Extract<SanitizedAttentionObservation, { kind: 'sidecar-lease' }> | undefined {
+    if (!this.options.primary) return undefined;
+    if (this.lease !== undefined) return this.lease;
+    if (
+      !Number.isSafeInteger(expiresAfterMs) ||
+      expiresAfterMs < 1_000 ||
+      expiresAfterMs > 30_000
+    ) {
+      throw new Error('sidecar lease duration is outside the source-neutral contract');
+    }
+    this.lease = {
+      kind: 'sidecar-lease',
+      sourceSequence: this.nextSequence(),
+      leaseKey: 'foreground-sidecar',
+      expiresAfterMs,
+    };
+    return this.lease;
+  }
+
   observeClientText(text: string): SanitizedAttentionObservation[] {
     const message = parseMessage(text);
-    if (!this.eligible || message === undefined) return [];
+    if (!this.eligible || message === undefined || this.invocationClosed) return [];
     if (isInitializedNotification(message)) {
       if (!this.initializeResponseValidated || this.initialized) return [];
       this.initialized = true;
@@ -115,6 +138,24 @@ export class CodexAttentionProtocolCapture {
         this.initialization === undefined ? undefined : requestIdKey(message.id);
       return [];
     }
+    if (message.method === 'turn/interrupt') {
+      const params = isRecord(message.params) ? message.params : undefined;
+      const threadId = params && boundedIdentifier(params.threadId);
+      const turnId = params && boundedIdentifier(params.turnId);
+      if (
+        !this.qualified ||
+        threadId !== this.foregroundThreadId ||
+        turnId === undefined ||
+        !this.activeTurnIds.has(turnId) ||
+        this.interruptionIntentTurnIds.has(turnId)
+      ) {
+        return [];
+      }
+      this.interruptionIntentTurnIds.add(turnId);
+      return [
+        { kind: 'interruption-intent', sourceSequence: this.nextSequence(), turnKey: turnId },
+      ];
+    }
     const requestKind = foregroundRequestKind(message.method);
     if (this.initialized && requestKind !== undefined) {
       this.rememberThreadRequest(requestIdKey(message.id), requestKind);
@@ -125,6 +166,11 @@ export class CodexAttentionProtocolCapture {
   observeServerText(text: string): SanitizedAttentionObservation[] {
     const message = parseMessage(text);
     if (!this.eligible || message === undefined) return [];
+    if (this.invocationClosed) {
+      if (message.method === 'error') return this.captureError(message);
+      if (message.method === 'turn/completed') return this.captureTerminalResult(message);
+      return [];
+    }
 
     if (message.method === 'serverRequest/resolved') {
       const resolution = this.captureRequestResolution(message);
@@ -232,28 +278,55 @@ export class CodexAttentionProtocolCapture {
     this.earlyResolvedRequestKeys.clear();
     this.pendingHumanActionRequests.clear();
     this.pendingTurnIds.clear();
+    this.interruptionIntentTurnIds.clear();
     return [{ kind: 'authority-change', sourceSequence: this.nextSequence(), monitoring }];
   }
 
   connectionClosed(
-    monitoring: 'compatibility' | 'degraded' | 'unavailable',
+    endSource: 'primary-eof' | 'process-exit' | 'transport-end',
+    reason = 'primary-transport-ended',
+    result?: { code: number | null; signal: NodeJS.Signals | null },
   ): SanitizedAttentionObservation[] {
-    return this.activeTurnIds.size === 0
-      ? this.invocationEnded('foreground-connection-closed')
-      : this.authorityLost(monitoring);
+    return this.foregroundEnded(
+      this.activeTurnIds.size === 0 ? 'invocation-end' : 'connection-end',
+      endSource,
+      reason,
+      result,
+    );
   }
 
-  invocationEnded(endKey: string): SanitizedAttentionObservation[] {
+  invocationEnded(
+    reason: string,
+    result?: { code: number | null; signal: NodeJS.Signals | null },
+  ): SanitizedAttentionObservation[] {
+    return this.foregroundEnded('invocation-end', 'process-exit', reason, result);
+  }
+
+  private foregroundEnded(
+    kind: 'connection-end' | 'invocation-end',
+    endSource: 'primary-eof' | 'process-exit' | 'transport-end',
+    reason: string,
+    result?: { code: number | null; signal: NodeJS.Signals | null },
+  ): SanitizedAttentionObservation[] {
     if (!this.options.primary || this.invocationClosed) return [];
     this.invocationClosed = true;
     this.authorityClosed = true;
-    this.qualified = false;
-    this.activeTurnIds.clear();
     this.earlyResolvedRequestKeys.clear();
     this.pendingHumanActionRequests.clear();
     this.pendingTurnIds.clear();
-    this.terminalTurnResults.clear();
-    return [{ kind: 'invocation-end', sourceSequence: this.nextSequence(), endKey }];
+    return [
+      {
+        kind,
+        sourceSequence: this.nextSequence(),
+        endKey: 'foreground-end',
+        endSource,
+        ...(result?.code === null || result?.code === undefined ? {} : { exitCode: result.code }),
+        ...(result?.signal === null || result?.signal === undefined
+          ? {}
+          : { signal: result.signal }),
+        reason,
+      },
+    ];
   }
 
   private captureHumanActionRequest(message: Record<string, unknown>): HumanActionRequestCapture {
@@ -390,6 +463,7 @@ export class CodexAttentionProtocolCapture {
     }
 
     if (this.activeTurnIds.delete(turnId)) {
+      this.interruptionIntentTurnIds.delete(turnId);
       for (const [requestKey, request] of this.pendingHumanActionRequests) {
         if (request.turnKey === turnId) this.pendingHumanActionRequests.delete(requestKey);
       }

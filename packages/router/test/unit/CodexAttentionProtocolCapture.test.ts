@@ -296,6 +296,17 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
   });
 
+  it('captures one structured user interruption intent before a process end', () => {
+    const capture = qualifiedCapture();
+    const request =
+      '{"id":3,"method":"turn/interrupt","params":{"threadId":"thread-1","turnId":"turn-1"}}';
+
+    expect(capture.observeClientText(request)).toEqual([
+      { kind: 'interruption-intent', sourceSequence: 3, turnKey: 'turn-1' },
+    ]);
+    expect(capture.observeClientText(request)).toEqual([]);
+  });
+
   it('retains failed-turn identity for reordered structured enrichment', () => {
     const capture = qualifiedCapture();
 
@@ -504,13 +515,68 @@ describe('CodexAttentionProtocolCapture', () => {
       '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}',
     );
 
-    expect(capture.connectionClosed('compatibility')).toEqual([
+    expect(capture.connectionClosed('transport-end')).toEqual([
       {
         kind: 'invocation-end',
         sourceSequence: 4,
-        endKey: 'foreground-connection-closed',
+        endKey: 'foreground-end',
+        endSource: 'transport-end',
+        reason: 'primary-transport-ended',
       },
     ]);
+  });
+
+  it('emits only the first stable end observation across EOF, process, and transport sources', () => {
+    const capture = qualifiedCapture();
+
+    expect(capture.connectionClosed('primary-eof', 'app-server-output-closed')).toEqual([
+      {
+        kind: 'connection-end',
+        sourceSequence: 3,
+        endKey: 'foreground-end',
+        endSource: 'primary-eof',
+        reason: 'app-server-output-closed',
+      },
+    ]);
+    expect(capture.invocationEnded('foreground-tui-exit', { code: 23, signal: null })).toEqual([]);
+    expect(capture.connectionClosed('transport-end')).toEqual([]);
+  });
+
+  it('continues draining a buffered terminal result after the first end observation', () => {
+    const capture = qualifiedCapture();
+    capture.connectionClosed('primary-eof', 'app-server-output-closed');
+
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'terminal-result',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+        result: 'success',
+      }),
+    ]);
+  });
+
+  it('reuses one bounded observation identity when renewing the sidecar lease', () => {
+    const capture = new CodexAttentionProtocolCapture({
+      invocationId: 'invocation-1',
+      connectionId: 'primary',
+      authorityEpoch: 'authority-1',
+      version: 'codex-cli 0.147.0',
+      primary: true,
+    });
+
+    const lease = capture.sidecarLease(6_000);
+    expect(lease).toEqual({
+      kind: 'sidecar-lease',
+      sourceSequence: 1,
+      leaseKey: 'foreground-sidecar',
+      expiresAfterMs: 6_000,
+    });
+    expect(capture.sidecarLease(6_000)).toEqual(lease);
   });
 
   it('rejects auxiliary, unaudited, and structurally descendant observations before sequencing', () => {

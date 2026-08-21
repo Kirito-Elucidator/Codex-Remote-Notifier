@@ -45,6 +45,8 @@ const LAUNCHER_LOOKUP_TIMEOUT_MS = 1000;
 const VERSION_PROBE_TIMEOUT_MS = 1500;
 const ANCESTRY_PROBE_TIMEOUT_MS = 750;
 const ROUTER_DRAIN_TIMEOUT_MS = 5000;
+const SIDECAR_LEASE_MS = 6000;
+const SIDECAR_LEASE_RENEWAL_MS = 2000;
 
 interface Launcher {
   command: string;
@@ -289,6 +291,7 @@ export class CodexWebSocketBridge {
   private createAdditionalAppServer?: () => Promise<ChildProcess>;
   private closing = false;
   private primaryProtocolCapture?: CodexProtocolCapture;
+  private sidecarLeaseTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly token: string,
@@ -340,10 +343,12 @@ export class CodexWebSocketBridge {
     this.createAdditionalAppServer = createAdditionalAppServer;
     this.connections.add(connection);
     this.attachProcess(connection, appServer);
+    this.startSidecarLease(connection);
   }
 
   async close(): Promise<void> {
     this.closing = true;
+    this.stopSidecarLease();
     const connections = [...this.connections];
     for (const connection of connections) {
       connection.closed = true;
@@ -368,13 +373,31 @@ export class CodexWebSocketBridge {
     ]);
   }
 
-  endInvocation(): void {
+  endInvocation(result?: ExitResult): void {
     const connection = this.primaryConnection;
     if (connection === undefined) return;
+    this.stopSidecarLease();
     this.postAttention(
       connection,
-      connection.attentionCapture?.invocationEnded('foreground-tui-exit') ?? [],
+      connection.attentionCapture?.invocationEnded('foreground-tui-exit', result) ?? [],
     );
+  }
+
+  private startSidecarLease(connection: BridgeConnection): void {
+    const lease = connection.attentionCapture?.sidecarLease(SIDECAR_LEASE_MS);
+    const scope = connection.attentionCapture?.scope;
+    if (lease === undefined || scope === undefined || this.attention === undefined) return;
+    this.attention.router.post(scope, lease);
+    this.sidecarLeaseTimer = setInterval(() => {
+      this.attention?.router.post(scope, lease);
+    }, SIDECAR_LEASE_RENEWAL_MS);
+    this.sidecarLeaseTimer.unref();
+  }
+
+  private stopSidecarLease(): void {
+    if (this.sidecarLeaseTimer === undefined) return;
+    clearInterval(this.sidecarLeaseTimer);
+    this.sidecarLeaseTimer = undefined;
   }
 
   private createConnection(primary: boolean): BridgeConnection {
@@ -431,6 +454,7 @@ export class CodexWebSocketBridge {
       } catch {
         connection.webSocket?.close(1011, 'malformed app-server frame');
       }
+      this.reportConnectionEnd(connection, 'primary-eof', 'app-server-output-closed');
       this.closeClientForAppServerFailure(connection, 'app-server output closed');
     });
     appServer.stdout.on('error', () =>
@@ -440,9 +464,10 @@ export class CodexWebSocketBridge {
     appServer.stdin.on('error', () =>
       this.closeClientForAppServerFailure(connection, 'app-server input failed'),
     );
-    appServer.once('exit', () =>
-      this.closeClientForAppServerFailure(connection, 'app-server exited'),
-    );
+    appServer.once('exit', (code, signal) => {
+      this.reportConnectionEnd(connection, 'process-exit', 'app-server-exited', { code, signal });
+      this.closeClientForAppServerFailure(connection, 'app-server exited');
+    });
     appServer.once('error', () =>
       this.closeClientForAppServerFailure(connection, 'app-server failed'),
     );
@@ -474,12 +499,9 @@ export class CodexWebSocketBridge {
       this.forwardClientLine(connection, text);
     });
     webSocket.on('close', () => {
-      this.postAttention(
-        connection,
-        connection.attentionCapture?.connectionClosed(
-          this.attention?.hookAvailable ? 'compatibility' : 'unavailable',
-        ) ?? [],
-      );
+      if (!this.closing) {
+        this.reportConnectionEnd(connection, 'transport-end', 'primary-transport-ended');
+      }
       if (connection.webSocket === webSocket) connection.webSocket = undefined;
       connection.closed = true;
       this.connections.delete(connection);
@@ -565,6 +587,20 @@ export class CodexWebSocketBridge {
     const capture = connection.attentionCapture;
     if (capture === undefined || this.attention === undefined) return;
     for (const observation of observations) this.attention.router.post(capture.scope, observation);
+  }
+
+  private reportConnectionEnd(
+    connection: BridgeConnection,
+    source: 'primary-eof' | 'process-exit' | 'transport-end',
+    reason: string,
+    result?: ExitResult,
+  ): void {
+    if (!connection.primary) return;
+    this.stopSidecarLease();
+    this.postAttention(
+      connection,
+      connection.attentionCapture?.connectionClosed(source, reason, result) ?? [],
+    );
   }
 
   private enqueueOutbound(connection: BridgeConnection, line: string): void {
@@ -791,7 +827,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
     disposeSignals();
   }
   const shouldFailOpen = result.code !== null && result.code !== 0 && !bridge.threadEstablished;
-  bridge.endInvocation();
+  bridge.endInvocation(result);
   await stopChild(appServer);
   await bridge.close().catch(() => {});
   router.post(capture.lifecycle('session/ended'));

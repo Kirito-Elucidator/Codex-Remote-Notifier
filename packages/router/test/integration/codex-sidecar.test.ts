@@ -167,24 +167,30 @@ describe('CodexWebSocketBridge', () => {
       ].join('\n') + '\n',
     );
 
-    await waitFor(() => attention.post.mock.calls.length === 5);
+    await waitFor(() => attention.post.mock.calls.length === 6);
     const calls = attention.post.mock.calls;
     expect(calls.map(([, observation]) => observation)).toEqual([
-      expect.objectContaining({ kind: 'connection-qualification', sourceSequence: 1 }),
-      expect.objectContaining({ kind: 'turn-start', sourceSequence: 2, turnKey: 'turn-1' }),
+      {
+        kind: 'sidecar-lease',
+        sourceSequence: 1,
+        leaseKey: 'foreground-sidecar',
+        expiresAfterMs: 6_000,
+      },
+      expect.objectContaining({ kind: 'connection-qualification', sourceSequence: 2 }),
+      expect.objectContaining({ kind: 'turn-start', sourceSequence: 3, turnKey: 'turn-1' }),
       expect.objectContaining({
         kind: 'human-action-request',
-        sourceSequence: 3,
+        sourceSequence: 4,
         requestKey: 'string:approval-1',
       }),
       expect.objectContaining({
         kind: 'retry-error',
-        sourceSequence: 4,
+        sourceSequence: 5,
         errorKind: 'responseStreamDisconnected',
       }),
       expect.objectContaining({
         kind: 'terminal-result',
-        sourceSequence: 5,
+        sourceSequence: 6,
         canonicalBody: 'audited success',
       }),
     ]);
@@ -205,11 +211,141 @@ describe('CodexWebSocketBridge', () => {
 
     client.close();
     await onceClose(client);
-    await waitFor(() => attention.post.mock.calls.length === 6);
-    expect(attention.post.mock.calls[5]).toEqual([
+    await waitFor(() => attention.post.mock.calls.length === 7);
+    expect(attention.post.mock.calls[6]).toEqual([
       scopes[0],
-      { kind: 'invocation-end', sourceSequence: 6, endKey: 'foreground-connection-closed' },
+      {
+        kind: 'invocation-end',
+        sourceSequence: 7,
+        endKey: 'foreground-end',
+        endSource: 'transport-end',
+        reason: 'primary-transport-ended',
+      },
     ]);
+  });
+
+  it('reports primary app-server EOF once while a foreground turn is active', async () => {
+    const attention = { post: vi.fn() };
+    const bridge = new CodexWebSocketBridge(
+      'token',
+      new CodexProtocolCapture('0123456789abcdef0123456789abcdef', []),
+      { post: vi.fn() } as unknown as CodexRouterClient,
+      {
+        hookAvailable: true,
+        invocationId: '0123456789abcdef0123456789abcdef',
+        version: 'codex-cli 0.147.0',
+        router: attention as unknown as CodexAttentionRouterClient,
+      },
+    );
+    bridges.push(bridge);
+    const address = await bridge.listen();
+    const appServer = fakeAppServer();
+    bridge.attach(appServer.process);
+    const client = await connectWebSocket(address, 'token');
+
+    client.send(
+      '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-tui","version":"0.147.0"},"capabilities":{"experimentalApi":true}}}',
+    );
+    await onceText(appServer.stdin);
+    appServer.stdout.write(
+      '{"id":1,"result":{"userAgent":"codex_cli_rs/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}\n',
+    );
+    client.send('{"method":"initialized"}');
+    client.send('{"id":2,"method":"thread/start","params":{}}');
+    await onceText(appServer.stdin);
+    appServer.stdout.write(
+      [
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+        '{"id":2,"result":{"thread":{"id":"thread-1"}}}',
+        '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
+      ].join('\n') + '\n',
+    );
+    await waitFor(() => attention.post.mock.calls.length === 3);
+
+    appServer.stdout.end();
+    await onceClose(client);
+    await waitFor(() =>
+      attention.post.mock.calls.some(([, observation]) => observation.kind === 'connection-end'),
+    );
+
+    const ends = attention.post.mock.calls
+      .map(([, observation]) => observation)
+      .filter((observation) => ['connection-end', 'invocation-end'].includes(observation.kind));
+    expect(ends).toEqual([
+      {
+        kind: 'connection-end',
+        sourceSequence: 4,
+        endKey: 'foreground-end',
+        endSource: 'primary-eof',
+        reason: 'app-server-output-closed',
+      },
+    ]);
+  });
+
+  it('reports a primary process exit with bounded diagnostics', async () => {
+    const attention = { post: vi.fn() };
+    const { appServer, client } = await startActiveAttentionBridge(bridges, attention);
+
+    appServer.process.emit('exit', 23, 'SIGTERM');
+    await onceClose(client);
+    await waitFor(() =>
+      attention.post.mock.calls.some(([, observation]) => observation.kind === 'connection-end'),
+    );
+
+    expect(endObservations(attention)).toEqual([
+      {
+        kind: 'connection-end',
+        sourceSequence: 4,
+        endKey: 'foreground-end',
+        endSource: 'process-exit',
+        exitCode: 23,
+        signal: 'SIGTERM',
+        reason: 'app-server-exited',
+      },
+    ]);
+  });
+
+  it('reports a primary transport end while a foreground turn is active', async () => {
+    const attention = { post: vi.fn() };
+    const { client } = await startActiveAttentionBridge(bridges, attention);
+
+    client.close();
+    await onceClose(client);
+    await waitFor(() =>
+      attention.post.mock.calls.some(([, observation]) => observation.kind === 'connection-end'),
+    );
+
+    expect(endObservations(attention)).toEqual([
+      {
+        kind: 'connection-end',
+        sourceSequence: 4,
+        endKey: 'foreground-end',
+        endSource: 'transport-end',
+        reason: 'primary-transport-ended',
+      },
+    ]);
+  });
+
+  it('keeps an explicitly controlled bridge shutdown silent', async () => {
+    const attention = { post: vi.fn() };
+    const bridge = new CodexWebSocketBridge(
+      'token',
+      new CodexProtocolCapture('0123456789abcdef0123456789abcdef', []),
+      { post: vi.fn() } as unknown as CodexRouterClient,
+      {
+        hookAvailable: true,
+        invocationId: '0123456789abcdef0123456789abcdef',
+        version: 'codex-cli 0.147.0',
+        router: attention as unknown as CodexAttentionRouterClient,
+      },
+    );
+    bridges.push(bridge);
+    await bridge.listen();
+    bridge.attach(fakeAppServer().process);
+
+    await bridge.close();
+
+    expect(endObservations(attention)).toEqual([]);
   });
 
   it('keeps unsupported protocol attention on the Hook Compatibility path', async () => {
@@ -240,7 +376,8 @@ describe('CodexWebSocketBridge', () => {
     await waitFor(() => received.length === 1);
 
     expect(protocol.post).not.toHaveBeenCalled();
-    expect(attention.post).not.toHaveBeenCalled();
+    expect(attention.post).toHaveBeenCalledTimes(1);
+    expect(attention.post.mock.calls[0]?.[1]).toMatchObject({ kind: 'sidecar-lease' });
     client.close();
     await onceClose(client);
   });
@@ -574,6 +711,7 @@ describe('runSidecar passthrough', () => {
         .filter((event) => event.kind === 'append')
         .flatMap((event) => event.observations as Array<Record<string, unknown>>);
       expect(exactObservations.map((observation) => observation.kind)).toEqual([
+        'sidecar-lease',
         'connection-qualification',
         'turn-start',
         'human-action-request',
@@ -585,6 +723,13 @@ describe('runSidecar passthrough', () => {
       ).toMatchObject({
         result: 'success',
         canonicalBody: 'audited success',
+      });
+      expect(
+        exactObservations.find((observation) => observation.kind === 'invocation-end'),
+      ).toMatchObject({
+        endKey: 'foreground-end',
+        endSource: 'transport-end',
+        reason: 'primary-transport-ended',
       });
       expect(JSON.stringify(events)).not.toContain('private-command');
 
@@ -748,6 +893,56 @@ function fakeAppServer(): {
     kill: vi.fn(() => true),
   }) as unknown as ChildProcess;
   return { process, stdin, stdout };
+}
+
+async function startActiveAttentionBridge(
+  bridges: CodexWebSocketBridge[],
+  attention: { post: ReturnType<typeof vi.fn> },
+): Promise<{
+  appServer: ReturnType<typeof fakeAppServer>;
+  client: WebSocket;
+}> {
+  const bridge = new CodexWebSocketBridge(
+    'token',
+    new CodexProtocolCapture('0123456789abcdef0123456789abcdef', []),
+    { post: vi.fn() } as unknown as CodexRouterClient,
+    {
+      hookAvailable: true,
+      invocationId: '0123456789abcdef0123456789abcdef',
+      version: 'codex-cli 0.147.0',
+      router: attention as unknown as CodexAttentionRouterClient,
+    },
+  );
+  bridges.push(bridge);
+  const address = await bridge.listen();
+  const appServer = fakeAppServer();
+  bridge.attach(appServer.process);
+  const client = await connectWebSocket(address, 'token');
+  client.send(
+    '{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-tui","version":"0.147.0"},"capabilities":{"experimentalApi":true}}}',
+  );
+  await onceText(appServer.stdin);
+  appServer.stdout.write(
+    '{"id":1,"result":{"userAgent":"codex_cli_rs/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}\n',
+  );
+  client.send('{"method":"initialized"}');
+  client.send('{"id":2,"method":"thread/start","params":{}}');
+  await onceText(appServer.stdin);
+  appServer.stdout.write(
+    [
+      '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+      '{"id":2,"result":{"thread":{"id":"thread-1"}}}',
+      '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
+    ].join('\n') + '\n',
+  );
+  await waitFor(() => attention.post.mock.calls.length === 3);
+  return { appServer, client };
+}
+
+function endObservations(attention: { post: ReturnType<typeof vi.fn> }): unknown[] {
+  return attention.post.mock.calls
+    .map(([, observation]) => observation)
+    .filter((observation) => ['connection-end', 'invocation-end'].includes(observation.kind));
 }
 
 function connectWebSocket(address: string, token: string): Promise<WebSocket> {

@@ -94,6 +94,64 @@ describe('attention exchange contracts', () => {
     expect(JSON.stringify(exchange)).not.toMatch(/protocol|hook|method/i);
   });
 
+  it('bounds source-neutral foreground-end diagnostics and sidecar leases', () => {
+    const scope = {
+      invocationId: 'invocation-a',
+      connectionId: 'connection-a',
+      authorityEpoch: 'epoch-a',
+    };
+
+    expect(
+      parseObservationExchange({
+        kind: 'append',
+        deliveryGeneration: 'generation-a',
+        scope,
+        fromSequence: 1,
+        observations: [
+          {
+            kind: 'sidecar-lease',
+            sourceSequence: 1,
+            leaseKey: 'foreground-sidecar',
+            expiresAfterMs: 6_000,
+          },
+          {
+            kind: 'invocation-end',
+            sourceSequence: 2,
+            endKey: 'foreground-end',
+            endSource: 'process-exit',
+            exitCode: 23,
+            signal: 'SIGTERM',
+            reason: 'foreground-tui-exit',
+          },
+        ],
+      }),
+    ).toMatchObject({
+      kind: 'append',
+      observations: [
+        { kind: 'sidecar-lease', expiresAfterMs: 6_000 },
+        { kind: 'invocation-end', endSource: 'process-exit', exitCode: 23 },
+      ],
+    });
+
+    expect(() =>
+      parseObservationExchange({
+        kind: 'append',
+        deliveryGeneration: 'generation-a',
+        scope,
+        fromSequence: 1,
+        observations: [
+          {
+            kind: 'connection-end',
+            sourceSequence: 1,
+            endKey: 'foreground-end',
+            endSource: 'primary-eof',
+            reason: 'x'.repeat(ATTENTION_EXCHANGE_LIMITS.identifierBytes + 1),
+          },
+        ],
+      }),
+    ).toThrow(AttentionExchangeValidationError);
+  });
+
   it('accepts atomic presentation mutations, reconciliation, and interactions', () => {
     const apply = parsePresentationExchange({
       kind: 'apply',

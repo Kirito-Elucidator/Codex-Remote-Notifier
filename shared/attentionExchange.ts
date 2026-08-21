@@ -109,9 +109,24 @@ export type SanitizedAttentionObservation =
       turnKey: string;
     }
   | {
+      kind: 'interruption-intent';
+      sourceSequence: number;
+      turnKey: string;
+    }
+  | {
       kind: 'invocation-end' | 'connection-end';
       sourceSequence: number;
       endKey: string;
+      endSource?: 'lease-expiry' | 'primary-eof' | 'process-exit' | 'transport-end';
+      exitCode?: number;
+      signal?: string;
+      reason?: string;
+    }
+  | {
+      kind: 'sidecar-lease';
+      sourceSequence: number;
+      leaseKey: string;
+      expiresAfterMs: number;
     }
   | {
       kind: 'reconciliation-deadline';
@@ -602,6 +617,7 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
         canonicalBody: optionalCanonicalBody(input.canonicalBody, `${path}.canonicalBody`),
       });
     case 'interruption':
+    case 'interruption-intent':
     case 'reconciliation-deadline':
       assertExactFields(input, ['kind', 'sourceSequence', 'turnKey'], path);
       return {
@@ -611,11 +627,36 @@ function parseObservation(value: unknown, path: string): SanitizedAttentionObser
       };
     case 'invocation-end':
     case 'connection-end':
-      assertExactFields(input, ['kind', 'sourceSequence', 'endKey'], path);
-      return {
+      assertExactFields(
+        input,
+        ['kind', 'sourceSequence', 'endKey', 'endSource', 'exitCode', 'signal', 'reason'],
+        path,
+      );
+      return compact({
         kind,
         sourceSequence,
         endKey: expectStableKey(input.endKey, `${path}.endKey`),
+        endSource:
+          input.endSource === undefined
+            ? undefined
+            : expectEnum(
+                input.endSource,
+                ['lease-expiry', 'primary-eof', 'process-exit', 'transport-end'] as const,
+                `${path}.endSource`,
+              ),
+        exitCode: optionalExitCode(input.exitCode, `${path}.exitCode`),
+        signal:
+          input.signal === undefined ? undefined : expectIdentifier(input.signal, `${path}.signal`),
+        reason:
+          input.reason === undefined ? undefined : expectIdentifier(input.reason, `${path}.reason`),
+      });
+    case 'sidecar-lease':
+      assertExactFields(input, ['kind', 'sourceSequence', 'leaseKey', 'expiresAfterMs'], path);
+      return {
+        kind,
+        sourceSequence,
+        leaseKey: expectStableKey(input.leaseKey, `${path}.leaseKey`),
+        expiresAfterMs: expectLeaseDuration(input.expiresAfterMs, `${path}.expiresAfterMs`),
       };
     case 'content-enrichment':
       assertExactFields(
@@ -867,6 +908,21 @@ function optionalCanonicalBody(value: unknown, path: string): string | undefined
 function expectSequence(value: unknown, path: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) {
     return fail(path, 'must be a positive safe integer');
+  }
+  return value as number;
+}
+
+function optionalExitCode(value: unknown, path: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 0xffff_ffff) {
+    return fail(path, 'must be an unsigned 32-bit integer');
+  }
+  return value as number;
+}
+
+function expectLeaseDuration(value: unknown, path: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1_000 || (value as number) > 30_000) {
+    return fail(path, 'must be a safe integer between 1000 and 30000 milliseconds');
   }
   return value as number;
 }
