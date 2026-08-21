@@ -21,6 +21,18 @@ import { compatibilityTitle } from './CodexMonitoringPresentation';
 
 const MAXIMUM_INVOCATION_BYTES = 8 * 1024 * 1024;
 const MAXIMUM_INVOCATION_OBSERVATIONS = 4_096;
+const TERMINAL_RECONCILIATION_MS = 5_000;
+
+export interface CodexAttentionClock {
+  setTimeout(callback: () => Promise<void>, milliseconds: number): void;
+}
+
+const systemClock: CodexAttentionClock = {
+  setTimeout(callback, milliseconds): void {
+    const timer = setTimeout(() => void callback().catch(() => {}), milliseconds);
+    timer.unref();
+  },
+};
 
 interface PendingOutcome {
   exchange: PresentationExchange;
@@ -48,8 +60,10 @@ type TerminalTurnState =
   | {
       kind: 'failure-pending';
       canonicalBody?: string;
+      fallbackDetail?: FailureDetail;
       occurrenceKey: string;
       returnTarget: string;
+      sourceSequence: number;
     }
   | {
       kind: 'failure';
@@ -105,6 +119,7 @@ export class CodexAttentionNormalizationRegistry implements CodexAttentionNormal
   constructor(
     private readonly presentation: AttentionPresentationPort,
     private readonly onMonitoringChange: CodexMonitoringListener = () => {},
+    private readonly clock: CodexAttentionClock = systemClock,
   ) {}
 
   exchange(input: ObservationExchange): Promise<ExchangeReceipt> {
@@ -115,6 +130,7 @@ export class CodexAttentionNormalizationRegistry implements CodexAttentionNormal
         this.presentation,
         exchange.scope.invocationId,
         this.onMonitoringChange,
+        this.clock,
       );
       this.actors.set(exchange.scope.invocationId, actor);
     }
@@ -137,6 +153,7 @@ class InvocationActor {
     private readonly presentation: AttentionPresentationPort,
     private readonly invocationId: string,
     private readonly onMonitoringChange: CodexMonitoringListener,
+    private readonly clock: CodexAttentionClock,
   ) {}
 
   exchange(input: ObservationExchange): Promise<ExchangeReceipt> {
@@ -322,6 +339,8 @@ class InvocationActor {
             return true;
           }
           if (existingTurn !== undefined) return true;
+          if (!(await this.withdrawOverlappingTurnRequests(scope, state, observation)))
+            return false;
           state.turns.set(observation.turnKey, {
             requests: new Map(),
             resolvedRequests: new Set(),
@@ -365,6 +384,7 @@ class InvocationActor {
           }
           return true;
         }
+        if (!(await this.withdrawOverlappingTurnRequests(scope, state, observation))) return false;
         state.turns.set(observation.turnKey, {
           foregroundThreadKey: state.foregroundThreadKey,
           requests: new Map(),
@@ -530,7 +550,7 @@ class InvocationActor {
     const turn = this.activeTerminalTurn(scope, state, observation.turnKey);
     if (turn === undefined) return true;
     const detail = turn.stagedFailure;
-    if (detail !== undefined) {
+    if (detail !== undefined && !failurePresentation(detail).generic) {
       return this.createFailure(scope, state, observation, turn, detail);
     }
 
@@ -556,10 +576,43 @@ class InvocationActor {
       ...(observation.canonicalBody === undefined
         ? {}
         : { canonicalBody: observation.canonicalBody }),
+      ...(detail === undefined ? {} : { fallbackDetail: detail }),
       occurrenceKey: observation.occurrenceKey,
       returnTarget: turn.returnTarget,
+      sourceSequence: observation.sourceSequence,
     });
     state.turns.delete(observation.turnKey);
+    this.scheduleFailureDeadline(scope, observation.turnKey);
+    return true;
+  }
+
+  private async withdrawOverlappingTurnRequests(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'turn-start' }>,
+  ): Promise<boolean> {
+    const olderTurns = [...state.turns.entries()].filter(
+      ([turnKey]) => turnKey !== observation.turnKey,
+    );
+    if (olderTurns.length === 0) return true;
+    const requestKeys = olderTurns.flatMap(([, turn]) => [...turn.requests.values()]);
+    if (requestKeys.length > 0) {
+      const exchange: PresentationExchange = {
+        kind: 'apply',
+        transactionId: stableIdentity('transaction', [
+          scope.invocationId,
+          scope.connectionId,
+          scope.authorityEpoch,
+          observation.turnKey,
+          String(observation.sourceSequence),
+          'new-turn-overlap',
+        ]),
+        mutations: requestKeys.map((key) => ({ kind: 'withdraw' as const, key })),
+      };
+      if (!(await this.applyPresentation(exchange))) return false;
+    }
+    for (const [, turn] of olderTurns) turn.requests.clear();
+    if (state.role !== 'compatibility') this.setMonitoring('degraded');
     return true;
   }
 
@@ -631,6 +684,13 @@ class InvocationActor {
     };
     const terminal = state.terminalTurns.get(observation.turnKey);
     if (terminal?.kind === 'failure-pending') {
+      if (failurePresentation(detail).generic) {
+        state.terminalTurns.set(observation.turnKey, {
+          ...terminal,
+          fallbackDetail: detail,
+        });
+        return true;
+      }
       const turn: TurnState = {
         requests: new Map(),
         resolvedRequests: new Set(),
@@ -716,7 +776,48 @@ class InvocationActor {
         ...(terminal.canonicalBody === undefined ? {} : { canonicalBody: terminal.canonicalBody }),
       },
       turn,
-      undefined,
+      terminal.fallbackDetail,
+    );
+  }
+
+  private scheduleFailureDeadline(scope: SourceScope, turnKey: string): void {
+    this.clock.setTimeout(
+      () => this.enqueueScheduled(() => this.expireFailureReconciliation(scope, turnKey)),
+      TERMINAL_RECONCILIATION_MS,
+    );
+  }
+
+  private enqueueScheduled(task: () => Promise<void>): Promise<void> {
+    const result = this.mailbox.then(task);
+    this.mailbox = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async expireFailureReconciliation(scope: SourceScope, turnKey: string): Promise<void> {
+    const state = this.scopes.get(scopeKey(scope));
+    const terminal = state?.terminalTurns.get(turnKey);
+    if (state === undefined || terminal?.kind !== 'failure-pending') return;
+    const turn: TurnState = {
+      requests: new Map(),
+      resolvedRequests: new Set(),
+      returnTarget: terminal.returnTarget,
+    };
+    await this.createFailure(
+      scope,
+      state,
+      {
+        kind: 'terminal-result',
+        sourceSequence: terminal.sourceSequence,
+        turnKey,
+        result: 'failure',
+        occurrenceKey: terminal.occurrenceKey,
+        ...(terminal.canonicalBody === undefined ? {} : { canonicalBody: terminal.canonicalBody }),
+      },
+      turn,
+      terminal.fallbackDetail,
     );
   }
 

@@ -77,6 +77,7 @@ export class CodexAttentionProtocolCapture {
   private readonly pendingThreadRequests = new Map<string, ForegroundRequestKind>();
   private readonly pendingHumanActionRequests = new Map<string, PendingHumanActionRequest>();
   private readonly pendingTurnIds = new Set<string>();
+  private readonly terminalTurnResults = new Map<string, 'failure' | 'interrupted' | 'success'>();
   private qualificationEvidence?: ConnectionQualificationEvidence;
   private qualified = false;
   private authorityClosed = false;
@@ -208,7 +209,7 @@ export class CodexAttentionProtocolCapture {
         this.pendingTurnIds.add(turnId);
         return [];
       }
-      if (this.activeTurnIds.has(turnId)) return [];
+      if (this.activeTurnIds.has(turnId) || this.terminalTurnResults.has(turnId)) return [];
       this.activeTurnIds.add(turnId);
       return [this.turnStart(turnId)];
     }
@@ -251,6 +252,7 @@ export class CodexAttentionProtocolCapture {
     this.earlyResolvedRequestKeys.clear();
     this.pendingHumanActionRequests.clear();
     this.pendingTurnIds.clear();
+    this.terminalTurnResults.clear();
     return [{ kind: 'invocation-end', sourceSequence: this.nextSequence(), endKey }];
   }
 
@@ -348,9 +350,12 @@ export class CodexAttentionProtocolCapture {
       !threadId ||
       !turnId ||
       threadId !== this.foregroundThreadId ||
-      !this.activeTurnIds.has(turnId) ||
       typeof params?.willRetry !== 'boolean'
     ) {
+      return [];
+    }
+    const terminalResult = this.terminalTurnResults.get(turnId);
+    if (!this.activeTurnIds.has(turnId) && (terminalResult !== 'failure' || params.willRetry)) {
       return [];
     }
     const detail = structuredFailureDetail(params.error);
@@ -373,19 +378,22 @@ export class CodexAttentionProtocolCapture {
     const threadId = params && boundedIdentifier(params.threadId);
     const turnId = turn && boundedIdentifier(turn.id);
     const status = turn?.status;
+    const terminalResult = turnStatusResult(status);
     if (
       !threadId ||
       !turnId ||
       threadId !== this.foregroundThreadId ||
-      !this.activeTurnIds.has(turnId) ||
-      (status !== 'completed' && status !== 'failed' && status !== 'interrupted')
+      terminalResult === undefined ||
+      (!this.activeTurnIds.has(turnId) && !this.terminalTurnResults.has(turnId))
     ) {
       return [];
     }
 
-    this.activeTurnIds.delete(turnId);
-    for (const [requestKey, request] of this.pendingHumanActionRequests) {
-      if (request.turnKey === turnId) this.pendingHumanActionRequests.delete(requestKey);
+    if (this.activeTurnIds.delete(turnId)) {
+      for (const [requestKey, request] of this.pendingHumanActionRequests) {
+        if (request.turnKey === turnId) this.pendingHumanActionRequests.delete(requestKey);
+      }
+      this.terminalTurnResults.set(turnId, terminalResult);
     }
     if (status === 'interrupted') {
       return [{ kind: 'interruption', sourceSequence: this.nextSequence(), turnKey: turnId }];
@@ -744,6 +752,19 @@ function successPreview(items: unknown): { plan: boolean; text: string } | undef
     return preview.length > 0 ? { plan: item.type === 'plan', text: preview } : undefined;
   }
   return undefined;
+}
+
+function turnStatusResult(value: unknown): 'failure' | 'interrupted' | 'success' | undefined {
+  switch (value) {
+    case 'completed':
+      return 'success';
+    case 'failed':
+      return 'failure';
+    case 'interrupted':
+      return 'interrupted';
+    default:
+      return undefined;
+  }
 }
 
 function structuredFailureDetail(

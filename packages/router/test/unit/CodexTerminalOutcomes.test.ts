@@ -132,7 +132,12 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
 
   it('keeps other and unknown structured classifications generic without reading message text', async () => {
     const exchanged: PresentationExchange[] = [];
-    const normalization = new CodexAttentionNormalizationRegistry(presentationRecorder(exchanged));
+    const deadlines: Array<() => Promise<void>> = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      manualClock(deadlines),
+    );
 
     await normalization.exchange(
       append([
@@ -170,6 +175,11 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
       ]),
     );
 
+    expect(createdRecords(exchanged)).toHaveLength(0);
+    expect(deadlines).toHaveLength(2);
+    await deadlines[0]();
+    await deadlines[1]();
+
     expect(
       createdRecords(exchanged)
         .filter(({ appearance }) => appearance === 'failure')
@@ -179,7 +189,12 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
 
   it('reconciles missing failure detail and enriches the same generic outcome revision', async () => {
     const exchanged: PresentationExchange[] = [];
-    const normalization = new CodexAttentionNormalizationRegistry(presentationRecorder(exchanged));
+    const deadlines: Array<() => Promise<void>> = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      manualClock(deadlines),
+    );
 
     await normalization.exchange(
       append([
@@ -195,10 +210,9 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
       ]),
     );
     expect(createdRecords(exchanged)).toHaveLength(0);
+    expect(deadlines).toHaveLength(1);
 
-    await normalization.exchange(
-      append([{ kind: 'reconciliation-deadline', sourceSequence: 4, turnKey: 'turn-generic' }], 4),
-    );
+    await deadlines[0]();
     const generic = createdRecords(exchanged)[0];
     expect(generic).toMatchObject({
       revision: 1,
@@ -213,13 +227,13 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
         [
           {
             kind: 'terminal-error',
-            sourceSequence: 5,
+            sourceSequence: 4,
             turnKey: 'turn-generic',
             errorKind: 'unauthorized',
             canonicalBody: 'Sign in again',
           },
         ],
-        5,
+        4,
       ),
     );
 
@@ -371,23 +385,30 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
       append([
         qualification(1),
         turnStart(2, 'older-turn', 'older-route'),
-        turnStart(3, 'current-turn', 'current-route'),
+        {
+          kind: 'human-action-request',
+          sourceSequence: 3,
+          turnKey: 'older-turn',
+          requestKey: 'string:older-request',
+          requestKind: 'input',
+        },
+        turnStart(4, 'current-turn', 'current-route'),
         {
           kind: 'terminal-error',
-          sourceSequence: 4,
+          sourceSequence: 5,
           turnKey: 'older-turn',
           errorKind: 'serverOverloaded',
         },
         {
           kind: 'terminal-result',
-          sourceSequence: 5,
+          sourceSequence: 6,
           turnKey: 'older-turn',
           result: 'failure',
           occurrenceKey: 'older-turn:failure',
         },
         {
           kind: 'terminal-result',
-          sourceSequence: 6,
+          sourceSequence: 7,
           turnKey: 'current-turn',
           result: 'success',
           occurrenceKey: 'current-turn:success',
@@ -395,8 +416,16 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
       ]),
     );
 
+    expect(exchanged).toContainEqual(
+      expect.objectContaining({
+        kind: 'apply',
+        mutations: [expect.objectContaining({ kind: 'withdraw' })],
+      }),
+    );
     expect(
-      createdRecords(exchanged).map(({ appearance, returnTarget }) => [appearance, returnTarget]),
+      createdRecords(exchanged)
+        .filter(({ appearance }) => appearance !== 'action')
+        .map(({ appearance, returnTarget }) => [appearance, returnTarget]),
     ).toEqual([
       ['failure', 'older-route'],
       ['information', 'current-route'],
@@ -410,6 +439,14 @@ function presentationRecorder(exchanged: PresentationExchange[]): AttentionPrese
       exchanged.push(input);
       return { kind: 'applied', transactionId: input.transactionId };
     }),
+  };
+}
+
+function manualClock(deadlines: Array<() => Promise<void>>) {
+  return {
+    setTimeout(callback: () => Promise<void>, _milliseconds: number): void {
+      deadlines.push(callback);
+    },
   };
 }
 

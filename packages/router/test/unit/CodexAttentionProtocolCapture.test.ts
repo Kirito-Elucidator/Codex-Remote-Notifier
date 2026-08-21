@@ -285,7 +285,55 @@ describe('CodexAttentionProtocolCapture', () => {
       capture.observeServerText(
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","items":[]}}}',
       ),
-    ).toEqual([]);
+    ).toEqual([
+      {
+        kind: 'terminal-result',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+        result: 'failure',
+        occurrenceKey: 'turn-1:failure',
+      },
+    ]);
+  });
+
+  it('retains failed-turn identity for reordered structured enrichment', () => {
+    const capture = qualifiedCapture();
+
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","items":[]}}}',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'terminal-result',
+        sourceSequence: 3,
+        result: 'failure',
+      }),
+    ]);
+    expect(
+      capture.observeServerText(
+        JSON.stringify({
+          method: 'error',
+          params: {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            willRetry: false,
+            error: {
+              message: 'Sign in again',
+              codexErrorInfo: 'unauthorized',
+            },
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'terminal-error',
+        sourceSequence: 4,
+        turnKey: 'turn-1',
+        errorKind: 'unauthorized',
+        canonicalBody: 'Sign in again',
+      },
+    ]);
   });
 
   it('uses structured blocking metadata and emits exact request resolutions', () => {

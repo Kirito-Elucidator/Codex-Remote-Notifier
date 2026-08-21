@@ -1091,7 +1091,7 @@ describe('CodexAttentionNormalization.exchange', () => {
           },
         ]),
       ),
-    ).resolves.toEqual({ receivedThrough: 5, appliedThrough: 5, monitoring: 'exact' });
+    ).resolves.toEqual({ receivedThrough: 5, appliedThrough: 5, monitoring: 'degraded' });
 
     const records = exchanged.flatMap((exchange) =>
       exchange.kind === 'apply'
