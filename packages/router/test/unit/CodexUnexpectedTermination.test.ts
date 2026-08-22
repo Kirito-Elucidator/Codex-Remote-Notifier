@@ -462,6 +462,71 @@ describe('CodexAttentionNormalization unexpected termination', () => {
     ]);
   });
 
+  it('ignores a Hook end until the supervised protocol scope ends', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      manualClock(deadlines),
+    );
+
+    await normalization.exchange(
+      append([qualification(1), turnStart(2, 'turn-hook-first', 'route-hook-first')]),
+    );
+    await normalization.exchange({
+      kind: 'append',
+      deliveryGeneration: 'hook-delivery',
+      scope: { ...scope, connectionId: 'hook-connection', authorityEpoch: 'hook-authority' },
+      fromSequence: 1,
+      observations: [
+        { kind: 'authority-change', sourceSequence: 1, monitoring: 'compatibility' },
+        turnStart(2, 'turn-hook-first', 'route-hook-first'),
+        { kind: 'invocation-end', sourceSequence: 3, endKey: 'foreground-end' },
+      ],
+    });
+    expect(deadlines).toEqual([]);
+
+    await normalization.exchange(
+      append([{ kind: 'connection-end', sourceSequence: 3, endKey: 'foreground-end' }], 3),
+    );
+    expect(deadlines).toHaveLength(1);
+    await deadlines[0].callback();
+    expect(createdRecords(exchanged).filter(({ appearance }) => appearance === 'failure')).toEqual([
+      expect.objectContaining({ canonicalTitle: 'Codex stopped' }),
+    ]);
+  });
+
+  it('reconciles every separately tracked foreground turn at the end boundary', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      manualClock(deadlines),
+    );
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-older', 'route-older'),
+        turnStart(3, 'turn-newer', 'route-newer'),
+        { kind: 'connection-end', sourceSequence: 4, endKey: 'foreground-end' },
+      ]),
+    );
+    expect(deadlines).toHaveLength(1);
+    await deadlines[0].callback();
+
+    expect(
+      createdRecords(exchanged)
+        .filter(({ appearance }) => appearance === 'failure')
+        .map(({ canonicalTitle, returnTarget }) => ({ canonicalTitle, returnTarget })),
+    ).toEqual([
+      { canonicalTitle: 'Codex stopped', returnTarget: 'route-older' },
+      { canonicalTitle: 'Codex stopped', returnTarget: 'route-newer' },
+    ]);
+  });
+
   it('keeps a stopped outcome when a conflicting success arrives after the deadline', async () => {
     const exchanged: PresentationExchange[] = [];
     const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];

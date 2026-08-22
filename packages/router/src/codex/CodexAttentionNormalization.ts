@@ -100,11 +100,10 @@ interface ScopeState {
 }
 
 interface UnexpectedEndState {
-  ownerScopeKey: string;
   reportingScope: SourceScope;
   requestsWithdrawn: boolean;
   sourceSequence: number;
-  turnKey: string;
+  turns: Array<{ ownerScopeKey: string; turnKey: string }>;
 }
 
 export type CodexMonitoringReason =
@@ -633,6 +632,10 @@ class InvocationActor {
       state.closed = true;
       return this.withdrawUnexpectedEndRequests();
     }
+    const reportingScopeKey = scopeKey(scope);
+    if (this.exactScopeKey !== undefined && this.exactScopeKey !== reportingScopeKey) {
+      return true;
+    }
 
     this.invocationEnded = true;
     for (const scopeState of this.scopes.values()) scopeState.closed = true;
@@ -647,19 +650,18 @@ class InvocationActor {
       reason: 'invocation-ended',
     });
 
-    const owner = this.selectUnexpectedEndOwner(scopeKey(scope), state);
-    if (owner === undefined) {
+    const turns = this.selectUnexpectedEndOwners(reportingScopeKey, state);
+    if (turns.length === 0) {
       state.qualified = false;
-      if (this.exactScopeKey === scopeKey(scope)) this.exactScopeKey = undefined;
+      if (this.exactScopeKey === reportingScopeKey) this.exactScopeKey = undefined;
       return true;
     }
 
     this.unexpectedEnd = {
-      ownerScopeKey: owner.scopeKey,
       reportingScope: scope,
       requestsWithdrawn: false,
       sourceSequence: observation.sourceSequence,
-      turnKey: owner.turnKey,
+      turns,
     };
     this.clock.setTimeout(
       () => this.enqueueScheduled(() => this.expireUnexpectedEnd()),
@@ -668,26 +670,28 @@ class InvocationActor {
     return this.withdrawUnexpectedEndRequests();
   }
 
-  private selectUnexpectedEndOwner(
+  private selectUnexpectedEndOwners(
     reportingScopeKey: string,
     reportingState: ScopeState,
-  ): { scopeKey: string; turnKey: string } | undefined {
-    const exactState =
-      this.exactScopeKey === undefined ? undefined : this.scopes.get(this.exactScopeKey);
-    const exactTurnKey = exactState === undefined ? undefined : [...exactState.turns.keys()].at(-1);
-    if (this.exactScopeKey !== undefined && exactTurnKey !== undefined) {
-      return { scopeKey: this.exactScopeKey, turnKey: exactTurnKey };
+  ): Array<{ ownerScopeKey: string; turnKey: string }> {
+    const exactScopeKey = this.exactScopeKey;
+    const exactState = exactScopeKey === undefined ? undefined : this.scopes.get(exactScopeKey);
+    if (exactScopeKey !== undefined) {
+      if (exactState === undefined) return [];
+      return [...exactState.turns.keys()].map((turnKey) => ({
+        ownerScopeKey: exactScopeKey,
+        turnKey,
+      }));
     }
 
-    const reportingTurnKey = [...reportingState.turns.keys()].at(-1);
-    if (reportingTurnKey !== undefined) {
-      return { scopeKey: reportingScopeKey, turnKey: reportingTurnKey };
-    }
+    const owners = new Map<string, string>();
+    for (const turnKey of reportingState.turns.keys()) owners.set(turnKey, reportingScopeKey);
     for (const [key, scopeState] of this.scopes) {
-      const turnKey = [...scopeState.turns.keys()].at(-1);
-      if (turnKey !== undefined) return { scopeKey: key, turnKey };
+      for (const turnKey of scopeState.turns.keys()) {
+        if (!owners.has(turnKey)) owners.set(turnKey, key);
+      }
     }
-    return undefined;
+    return [...owners].map(([turnKey, ownerScopeKey]) => ({ ownerScopeKey, turnKey }));
   }
 
   private async withdrawUnexpectedEndRequests(): Promise<boolean> {
@@ -755,22 +759,22 @@ class InvocationActor {
   private async expireUnexpectedEnd(): Promise<void> {
     const ending = this.unexpectedEnd;
     if (ending === undefined || !(await this.withdrawUnexpectedEndRequests())) return;
-    const state = this.scopes.get(ending.ownerScopeKey);
-    if (state === undefined) return;
-    const turn = state.turns.get(ending.turnKey);
-    if (turn === undefined || state.terminalTurns.has(ending.turnKey)) return;
-    if (turn.interruptionIntentObserved) {
-      state.terminalTurns.set(ending.turnKey, { kind: 'interrupted' });
-      state.turns.delete(ending.turnKey);
-      return;
+    for (const { ownerScopeKey, turnKey } of ending.turns) {
+      const state = this.scopes.get(ownerScopeKey);
+      if (state === undefined) continue;
+      const turn = state.turns.get(turnKey);
+      if (turn === undefined || state.terminalTurns.has(turnKey)) continue;
+      if (turn.interruptionIntentObserved) {
+        state.terminalTurns.set(turnKey, { kind: 'interrupted' });
+        state.turns.delete(turnKey);
+        continue;
+      }
+      if (
+        !(await this.createStoppedFailure(state.scope, state, turnKey, ending.sourceSequence, turn))
+      ) {
+        return;
+      }
     }
-    await this.createStoppedFailure(
-      state.scope,
-      state,
-      ending.turnKey,
-      ending.sourceSequence,
-      turn,
-    );
   }
 
   private async createStoppedFailure(
