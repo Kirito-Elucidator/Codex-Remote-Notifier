@@ -89,6 +89,58 @@ describe('CodexAttentionNormalization unexpected termination', () => {
     ]);
   });
 
+  it('starts the five-second deadline before request withdrawal finishes', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    let releaseWithdrawal = (): void => {};
+    const withdrawalGate = new Promise<void>((resolve) => {
+      releaseWithdrawal = resolve;
+    });
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        if (
+          input.kind === 'apply' &&
+          input.mutations.some((mutation) => mutation.kind === 'withdraw')
+        ) {
+          await withdrawalGate;
+        }
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentation,
+      undefined,
+      manualClock(deadlines),
+    );
+
+    const exchange = normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-slow-withdrawal', 'route-slow-withdrawal'),
+        {
+          kind: 'human-action-request',
+          sourceSequence: 3,
+          turnKey: 'turn-slow-withdrawal',
+          requestKey: 'string:approval',
+          requestKind: 'approval',
+        },
+        { kind: 'connection-end', sourceSequence: 4, endKey: 'foreground-end' },
+      ]),
+    );
+    await vi.waitFor(() =>
+      expect(exchanged.at(-1)).toMatchObject({
+        kind: 'apply',
+        mutations: [{ kind: 'withdraw' }],
+      }),
+    );
+    const scheduledBeforeWithdrawalFinished = deadlines.map(({ milliseconds }) => milliseconds);
+    releaseWithdrawal();
+    await exchange;
+
+    expect(scheduledBeforeWithdrawalFinished).toEqual([5_000]);
+  });
+
   it('turns an expired sidecar lease into the same reconciled end boundary', async () => {
     const exchanged: PresentationExchange[] = [];
     const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
@@ -373,6 +425,41 @@ describe('CodexAttentionNormalization unexpected termination', () => {
     expect(
       createdRecords(exchanged).filter(({ appearance }) => appearance === 'failure'),
     ).toHaveLength(1);
+  });
+
+  it('treats a Hook end as a duplicate of the protocol end boundary', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      manualClock(deadlines),
+    );
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-cross-source', 'route-cross-source'),
+        { kind: 'connection-end', sourceSequence: 3, endKey: 'foreground-end' },
+      ]),
+    );
+    await normalization.exchange({
+      kind: 'append',
+      deliveryGeneration: 'hook-delivery',
+      scope: { ...scope, connectionId: 'hook-connection', authorityEpoch: 'hook-authority' },
+      fromSequence: 1,
+      observations: [
+        { kind: 'authority-change', sourceSequence: 1, monitoring: 'compatibility' },
+        turnStart(2, 'turn-cross-source', 'route-cross-source'),
+        { kind: 'invocation-end', sourceSequence: 3, endKey: 'foreground-end' },
+      ],
+    });
+
+    expect(deadlines).toHaveLength(1);
+    await deadlines[0].callback();
+    expect(createdRecords(exchanged).filter(({ appearance }) => appearance === 'failure')).toEqual([
+      expect.objectContaining({ canonicalTitle: 'Codex stopped' }),
+    ]);
   });
 
   it('keeps a stopped outcome when a conflicting success arrives after the deadline', async () => {

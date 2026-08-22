@@ -108,8 +108,8 @@ export class CodexAttentionProtocolCapture {
     if (this.lease !== undefined) return this.lease;
     if (
       !Number.isSafeInteger(expiresAfterMs) ||
-      expiresAfterMs < 1_000 ||
-      expiresAfterMs > 30_000
+      expiresAfterMs < ATTENTION_EXCHANGE_LIMITS.sidecarLeaseMinimumMs ||
+      expiresAfterMs > ATTENTION_EXCHANGE_LIMITS.sidecarLeaseMaximumMs
     ) {
       throw new Error('sidecar lease duration is outside the source-neutral contract');
     }

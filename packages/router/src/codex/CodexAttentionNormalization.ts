@@ -42,7 +42,7 @@ interface PendingOutcome {
 
 interface TurnState {
   foregroundThreadKey?: string;
-  interruptionObserved?: boolean;
+  interruptionIntentObserved?: boolean;
   requests: Map<string, string>;
   resolvedRequests: Set<string>;
   returnTarget: string;
@@ -89,6 +89,7 @@ interface ScopeState {
   receivedThrough: number;
   retainedBytes: number;
   role: ScopeRole;
+  scope: SourceScope;
   sidecarLease?: {
     generation: number;
     leaseKey: string;
@@ -96,10 +97,14 @@ interface ScopeState {
   };
   terminalTurns: Map<string, TerminalTurnState>;
   turns: Map<string, TurnState>;
-  unexpectedEnd?: {
-    sourceSequence: number;
-    turnKeys: Set<string>;
-  };
+}
+
+interface UnexpectedEndState {
+  ownerScopeKey: string;
+  reportingScope: SourceScope;
+  requestsWithdrawn: boolean;
+  sourceSequence: number;
+  turnKey: string;
 }
 
 export type CodexMonitoringReason =
@@ -153,6 +158,7 @@ export class CodexAttentionNormalizationRegistry implements CodexAttentionNormal
 class InvocationActor {
   private exactScopeKey?: string;
   private readonly exactTurnKeys = new Set<string>();
+  private invocationEnded = false;
   private mailbox = Promise.resolve();
   private monitoring: MonitoringMode = 'compatibility';
   private recoveryBoundaryRequired = false;
@@ -160,6 +166,7 @@ class InvocationActor {
   private recoveryReconciledScopeKey?: string;
   private readonly recoveryExcludedTurnKeys = new Set<string>();
   private readonly scopes = new Map<string, ScopeState>();
+  private unexpectedEnd?: UnexpectedEndState;
 
   constructor(
     private readonly presentation: AttentionPresentationPort,
@@ -251,6 +258,17 @@ class InvocationActor {
     state: ScopeState,
     observation: SanitizedAttentionObservation,
   ): Promise<boolean> {
+    if (
+      this.invocationEnded &&
+      observation.kind !== 'connection-end' &&
+      observation.kind !== 'invocation-end' &&
+      observation.kind !== 'terminal-error' &&
+      observation.kind !== 'terminal-result' &&
+      observation.kind !== 'interruption' &&
+      observation.kind !== 'reconciliation-deadline'
+    ) {
+      return true;
+    }
     switch (observation.kind) {
       case 'connection-qualification': {
         state.role = 'protocol';
@@ -407,7 +425,7 @@ class InvocationActor {
         return this.applyInterruption(scope, state, observation);
       case 'interruption-intent': {
         const turn = this.activeExactTurn(scope, state, observation.turnKey);
-        if (turn !== undefined) turn.interruptionObserved = true;
+        if (turn !== undefined) turn.interruptionIntentObserved = true;
         return true;
       }
       case 'reconciliation-deadline':
@@ -503,7 +521,22 @@ class InvocationActor {
     state: ScopeState,
     observation: { sourceSequence: number },
   ): Promise<boolean> {
-    const keys = [...state.turns.values()].flatMap((turn) => [...turn.requests.values()]);
+    return this.withdrawRequests(
+      scope,
+      state.turns.values(),
+      observation.sourceSequence,
+      'authority-loss',
+    );
+  }
+
+  private async withdrawRequests(
+    scope: SourceScope,
+    turns: Iterable<TurnState>,
+    sourceSequence: number,
+    transactionKind: 'authority-loss' | 'unexpected-end',
+  ): Promise<boolean> {
+    const activeTurns = [...turns];
+    const keys = activeTurns.flatMap((turn) => [...turn.requests.values()]);
     if (keys.length === 0) return true;
     const exchange: PresentationExchange = {
       kind: 'apply',
@@ -511,13 +544,13 @@ class InvocationActor {
         scope.invocationId,
         scope.connectionId,
         scope.authorityEpoch,
-        String(observation.sourceSequence),
-        'authority-loss',
+        String(sourceSequence),
+        transactionKind,
       ]),
       mutations: keys.map((key) => ({ kind: 'withdraw' as const, key })),
     };
     if (!(await this.applyPresentation(exchange))) return false;
-    for (const turn of state.turns.values()) turn.requests.clear();
+    for (const turn of activeTurns) turn.requests.clear();
     return true;
   }
 
@@ -596,27 +629,13 @@ class InvocationActor {
       { kind: 'connection-end' | 'invocation-end' }
     >,
   ): Promise<boolean> {
-    if (state.unexpectedEnd !== undefined || state.closed) return true;
-
-    const turnKeys = new Set(state.turns.keys());
-    const requestKeys = [...state.turns.values()].flatMap((turn) => [...turn.requests.values()]);
-    if (requestKeys.length > 0) {
-      const exchange: PresentationExchange = {
-        kind: 'apply',
-        transactionId: stableIdentity('transaction', [
-          scope.invocationId,
-          scope.connectionId,
-          scope.authorityEpoch,
-          String(observation.sourceSequence),
-          'unexpected-end',
-        ]),
-        mutations: requestKeys.map((key) => ({ kind: 'withdraw' as const, key })),
-      };
-      if (!(await this.applyPresentation(exchange))) return false;
-      for (const turn of state.turns.values()) turn.requests.clear();
+    if (this.invocationEnded) {
+      state.closed = true;
+      return this.withdrawUnexpectedEndRequests();
     }
 
-    state.closed = true;
+    this.invocationEnded = true;
+    for (const scopeState of this.scopes.values()) scopeState.closed = true;
     this.recoveryBoundaryRequired = false;
     this.recoveryCandidateScopeKey = undefined;
     this.recoveryReconciledScopeKey = undefined;
@@ -628,18 +647,60 @@ class InvocationActor {
       reason: 'invocation-ended',
     });
 
-    if (turnKeys.size === 0) {
+    const owner = this.selectUnexpectedEndOwner(scopeKey(scope), state);
+    if (owner === undefined) {
       state.qualified = false;
       if (this.exactScopeKey === scopeKey(scope)) this.exactScopeKey = undefined;
       return true;
     }
 
-    state.unexpectedEnd = { sourceSequence: observation.sourceSequence, turnKeys };
+    this.unexpectedEnd = {
+      ownerScopeKey: owner.scopeKey,
+      reportingScope: scope,
+      requestsWithdrawn: false,
+      sourceSequence: observation.sourceSequence,
+      turnKey: owner.turnKey,
+    };
     this.clock.setTimeout(
-      () => this.enqueueScheduled(() => this.expireUnexpectedEnd(scope)),
+      () => this.enqueueScheduled(() => this.expireUnexpectedEnd()),
       TERMINAL_RECONCILIATION_MS,
     );
-    return true;
+    return this.withdrawUnexpectedEndRequests();
+  }
+
+  private selectUnexpectedEndOwner(
+    reportingScopeKey: string,
+    reportingState: ScopeState,
+  ): { scopeKey: string; turnKey: string } | undefined {
+    const exactState =
+      this.exactScopeKey === undefined ? undefined : this.scopes.get(this.exactScopeKey);
+    const exactTurnKey = exactState === undefined ? undefined : [...exactState.turns.keys()].at(-1);
+    if (this.exactScopeKey !== undefined && exactTurnKey !== undefined) {
+      return { scopeKey: this.exactScopeKey, turnKey: exactTurnKey };
+    }
+
+    const reportingTurnKey = [...reportingState.turns.keys()].at(-1);
+    if (reportingTurnKey !== undefined) {
+      return { scopeKey: reportingScopeKey, turnKey: reportingTurnKey };
+    }
+    for (const [key, scopeState] of this.scopes) {
+      const turnKey = [...scopeState.turns.keys()].at(-1);
+      if (turnKey !== undefined) return { scopeKey: key, turnKey };
+    }
+    return undefined;
+  }
+
+  private async withdrawUnexpectedEndRequests(): Promise<boolean> {
+    const ending = this.unexpectedEnd;
+    if (ending === undefined || ending.requestsWithdrawn) return true;
+    const withdrawn = await this.withdrawRequests(
+      ending.reportingScope,
+      [...this.scopes.values()].flatMap((scopeState) => [...scopeState.turns.values()]),
+      ending.sourceSequence,
+      'unexpected-end',
+    );
+    if (withdrawn) ending.requestsWithdrawn = true;
+    return withdrawn;
   }
 
   private renewSidecarLease(
@@ -691,23 +752,25 @@ class InvocationActor {
     });
   }
 
-  private async expireUnexpectedEnd(scope: SourceScope): Promise<void> {
-    const state = this.scopes.get(scopeKey(scope));
-    const ending = state?.unexpectedEnd;
-    if (state === undefined || ending === undefined) return;
-
-    for (const turnKey of ending.turnKeys) {
-      const turn = state.turns.get(turnKey);
-      if (turn === undefined || state.terminalTurns.has(turnKey)) continue;
-      if (turn.interruptionObserved) {
-        state.terminalTurns.set(turnKey, { kind: 'interrupted' });
-        state.turns.delete(turnKey);
-        continue;
-      }
-      if (!(await this.createStoppedFailure(scope, state, turnKey, ending.sourceSequence, turn))) {
-        return;
-      }
+  private async expireUnexpectedEnd(): Promise<void> {
+    const ending = this.unexpectedEnd;
+    if (ending === undefined || !(await this.withdrawUnexpectedEndRequests())) return;
+    const state = this.scopes.get(ending.ownerScopeKey);
+    if (state === undefined) return;
+    const turn = state.turns.get(ending.turnKey);
+    if (turn === undefined || state.terminalTurns.has(ending.turnKey)) return;
+    if (turn.interruptionIntentObserved) {
+      state.terminalTurns.set(ending.turnKey, { kind: 'interrupted' });
+      state.turns.delete(ending.turnKey);
+      return;
     }
+    await this.createStoppedFailure(
+      state.scope,
+      state,
+      ending.turnKey,
+      ending.sourceSequence,
+      turn,
+    );
   }
 
   private async createStoppedFailure(
@@ -1137,7 +1200,8 @@ class InvocationActor {
     const key = scopeKey(input.scope);
     let state = this.scopes.get(key);
     if (state === undefined) {
-      state = createScopeState(input.deliveryGeneration);
+      state = createScopeState(input.scope, input.deliveryGeneration);
+      if (this.invocationEnded) state.closed = true;
       this.scopes.set(key, state);
     }
 
@@ -1188,7 +1252,7 @@ class InvocationActor {
   }
 }
 
-function createScopeState(deliveryGeneration: string): ScopeState {
+function createScopeState(scope: SourceScope, deliveryGeneration: string): ScopeState {
   return {
     admitted: new Map(),
     appliedThrough: 0,
@@ -1200,6 +1264,7 @@ function createScopeState(deliveryGeneration: string): ScopeState {
     receivedThrough: 0,
     retainedBytes: 0,
     role: 'unknown',
+    scope,
     terminalTurns: new Map(),
     turns: new Map(),
   };

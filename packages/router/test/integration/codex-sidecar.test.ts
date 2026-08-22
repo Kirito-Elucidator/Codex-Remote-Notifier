@@ -326,6 +326,28 @@ describe('CodexWebSocketBridge', () => {
     ]);
   });
 
+  it('reports foreground TUI exit as the first end of an active turn', async () => {
+    const attention = { post: vi.fn() };
+    const { bridge, client } = await startActiveAttentionBridge(bridges, attention);
+
+    bridge.endInvocation({ code: 23, signal: null });
+    await waitFor(() => endObservations(attention).length === 1);
+
+    expect(endObservations(attention)).toEqual([
+      {
+        kind: 'invocation-end',
+        sourceSequence: 4,
+        endKey: 'foreground-end',
+        endSource: 'process-exit',
+        exitCode: 23,
+        reason: 'foreground-tui-exit',
+      },
+    ]);
+    client.close();
+    await onceClose(client);
+    expect(endObservations(attention)).toHaveLength(1);
+  });
+
   it('keeps an explicitly controlled bridge shutdown silent', async () => {
     const attention = { post: vi.fn() };
     const bridge = new CodexWebSocketBridge(
@@ -344,6 +366,18 @@ describe('CodexWebSocketBridge', () => {
     bridge.attach(fakeAppServer().process);
 
     await bridge.close();
+
+    expect(endObservations(attention)).toEqual([]);
+  });
+
+  it('keeps EOF and process callbacks during controlled shutdown silent', async () => {
+    const attention = { post: vi.fn() };
+    const { appServer, bridge } = await startActiveAttentionBridge(bridges, attention);
+
+    const closing = bridge.close();
+    appServer.stdout.end();
+    appServer.process.emit('exit', 0, null);
+    await closing;
 
     expect(endObservations(attention)).toEqual([]);
   });
@@ -755,6 +789,52 @@ describe('runSidecar passthrough', () => {
     }
   });
 
+  it('keeps the app-server alive long enough to deliver a terminal result after TUI exit', async () => {
+    const fake = await createFakeCodex();
+    const events: Array<Record<string, unknown>> = [];
+    const server = createEventServer(events);
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+
+    const restore = replaceEnvironment({
+      REMOTE_NOTIFIER_CODEX_REAL: fake.launcher,
+      REMOTE_NOTIFIER_URL: `http://127.0.0.1:${address.port}/notify`,
+      REMOTE_NOTIFIER_TOKEN: 'router-token',
+      REMOTE_NOTIFIER_SESSION_FILE: undefined,
+      FAKE_CODEX_LOG: fake.logPath,
+      FAKE_REMOTE_EXIT_CODE: '0',
+      FAKE_REMOTE_MODE: 'terminal-on-end',
+      NODE_PATH: path.resolve('node_modules'),
+    });
+
+    try {
+      await expect(runSidecar(['--shim-dir', path.join(fake.root, 'shim'), '--'])).resolves.toEqual(
+        {
+          code: 0,
+          signal: null,
+        },
+      );
+
+      const observations = events
+        .filter((event) => event.kind === 'append')
+        .flatMap((event) => event.observations as Array<Record<string, unknown>>);
+      expect(observations.map((observation) => observation.kind)).toEqual(
+        expect.arrayContaining(['connection-end', 'terminal-result']),
+      );
+      expect(
+        observations.find((observation) => observation.kind === 'terminal-result'),
+      ).toMatchObject({
+        result: 'success',
+        canonicalBody: 'buffered after TUI exit',
+      });
+    } finally {
+      restore();
+      await closeServer(server);
+      await fs.rm(fake.root, { recursive: true, force: true });
+    }
+  });
+
   it('starts an isolated app-server for a nested TUI session picker', async () => {
     const fake = await createFakeCodex();
     const events: Array<Record<string, unknown>> = [];
@@ -900,6 +980,7 @@ async function startActiveAttentionBridge(
   attention: { post: ReturnType<typeof vi.fn> },
 ): Promise<{
   appServer: ReturnType<typeof fakeAppServer>;
+  bridge: CodexWebSocketBridge;
   client: WebSocket;
 }> {
   const bridge = new CodexWebSocketBridge(
@@ -936,7 +1017,7 @@ async function startActiveAttentionBridge(
     ].join('\n') + '\n',
   );
   await waitFor(() => attention.post.mock.calls.length === 3);
-  return { appServer, client };
+  return { appServer, bridge, client };
 }
 
 function endObservations(attention: { post: ReturnType<typeof vi.fn> }): unknown[] {
@@ -1061,13 +1142,16 @@ async function createFakeCodex(): Promise<{
       "          process.stdout.write(JSON.stringify({ id: request.id, result: { thread: { id: 'thread-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } }) + '\\n');",
       "          process.stdout.write(JSON.stringify({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-1', turnId: 'turn-1', command: 'private-command' } }) + '\\n');",
-      "          process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [{ type: 'agentMessage', text: 'audited success' }] } } }) + '\\n');",
+      "          if (process.env.FAKE_REMOTE_MODE !== 'terminal-on-end') process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [{ type: 'agentMessage', text: 'audited success' }] } } }) + '\\n');",
       '        }',
       '      }',
       "      newline = pending.indexOf('\\n');",
       '    }',
       '  });',
-      "  process.stdin.on('end', () => { log('app-server-exit'); process.exit(0); });",
+      "  process.stdin.on('end', () => {",
+      "    if (process.env.FAKE_REMOTE_MODE === 'terminal-on-end') process.stdout.write(JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [{ type: 'agentMessage', text: 'buffered after TUI exit' }] } } }) + '\\n');",
+      "    setTimeout(() => { log('app-server-exit'); process.exit(0); }, 20);",
+      '  });',
       '  process.stdin.resume();',
       "} else if (args.includes('--remote')) {",
       "  if (process.env.FAKE_REMOTE_MODE === 'fail-before-connect') {",
@@ -1085,6 +1169,7 @@ async function createFakeCodex(): Promise<{
       '      messages += 1;',
       "      if (process.env.FAKE_REMOTE_MODE === 'fail-after-initialize') { client.close(); return; }",
       "      if (messages === 1) { client.send(JSON.stringify({ method: 'initialized' })); client.send(JSON.stringify({ id: 2, method: 'thread/start', params: {} })); return; }",
+      "      if (process.env.FAKE_REMOTE_MODE === 'terminal-on-end' && messages >= 5) { client.close(); return; }",
       '      if (messages < 6) return;',
       "      if (process.env.FAKE_REMOTE_MODE !== 'nested-connect') { client.close(); return; }",
       '      if (nestedPickerStarted) return;',

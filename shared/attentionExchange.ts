@@ -8,6 +8,8 @@ export const ATTENTION_EXCHANGE_LIMITS = Object.freeze({
   observations: 4_096,
   opaqueReturnTargetBytes: 4_096,
   presentationRecords: 10_000,
+  sidecarLeaseMaximumMs: 30_000,
+  sidecarLeaseMinimumMs: 1_000,
   stableKeyBytes: 512,
 });
 
@@ -921,7 +923,11 @@ function optionalExitCode(value: unknown, path: string): number | undefined {
 }
 
 function expectLeaseDuration(value: unknown, path: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 1_000 || (value as number) > 30_000) {
+  if (
+    !Number.isSafeInteger(value) ||
+    (value as number) < ATTENTION_EXCHANGE_LIMITS.sidecarLeaseMinimumMs ||
+    (value as number) > ATTENTION_EXCHANGE_LIMITS.sidecarLeaseMaximumMs
+  ) {
     return fail(path, 'must be a safe integer between 1000 and 30000 milliseconds');
   }
   return value as number;

@@ -595,7 +595,7 @@ export class CodexWebSocketBridge {
     reason: string,
     result?: ExitResult,
   ): void {
-    if (!connection.primary) return;
+    if (this.closing || !connection.primary) return;
     this.stopSidecarLease();
     this.postAttention(
       connection,
@@ -826,15 +826,18 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
   } finally {
     disposeSignals();
   }
-  const shouldFailOpen = result.code !== null && result.code !== 0 && !bridge.threadEstablished;
+  const threadEstablished = bridge.threadEstablished;
+  const shouldFailOpen = result.code !== null && result.code !== 0 && !threadEstablished;
+  const finalDrainDeadline = Date.now() + ROUTER_DRAIN_TIMEOUT_MS;
   bridge.endInvocation(result);
+  if (threadEstablished) {
+    await waitForExitWithin(appServer, remainingTime(finalDrainDeadline));
+  }
   await stopChild(appServer);
   await bridge.close().catch(() => {});
   router.post(capture.lifecycle('session/ended'));
-  await Promise.all([
-    router.drain(ROUTER_DRAIN_TIMEOUT_MS),
-    attentionRouter.drain(ROUTER_DRAIN_TIMEOUT_MS),
-  ]);
+  const remainingDrainMs = remainingTime(finalDrainDeadline);
+  await Promise.all([router.drain(remainingDrainMs), attentionRouter.drain(remainingDrainMs)]);
   router.stop();
   attentionRouter.stop();
   if (shouldFailOpen) {
@@ -995,6 +998,21 @@ function waitForExit(child: ChildProcess): Promise<ExitResult> {
     child.once('error', reject);
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
+}
+
+async function waitForExitWithin(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (timeoutMs <= 0) return;
+  await Promise.race([
+    waitForExit(child).then(
+      () => {},
+      () => {},
+    ),
+    delay(timeoutMs),
+  ]);
+}
+
+function remainingTime(deadline: number): number {
+  return Math.max(0, deadline - Date.now());
 }
 
 async function stopChild(child: ChildProcess): Promise<void> {
