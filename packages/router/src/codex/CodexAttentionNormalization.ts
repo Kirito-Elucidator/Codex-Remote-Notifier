@@ -105,14 +105,13 @@ interface ScopeState {
 
 interface UnexpectedEndState {
   reportingScope: SourceScope;
-  requestsWithdrawn: boolean;
   retryAttempt: number;
   retryDelayMs: number;
   retryScheduled: boolean;
   sourceSequence: number;
   terminalRejections: Set<string>;
   turns: Array<{ ownerScopeKey: string; turnKey: string }>;
-  withdrawalTerminallyRejected: boolean;
+  withdrawal: 'applied' | 'pending' | 'terminal-rejection';
 }
 
 export type CodexMonitoringReason =
@@ -692,14 +691,13 @@ class InvocationActor {
 
     this.unexpectedEnd = {
       reportingScope: scope,
-      requestsWithdrawn: false,
       retryAttempt: 0,
       retryDelayMs: OUTBOX_RETRY_MINIMUM_MS,
       retryScheduled: false,
       sourceSequence: observation.sourceSequence,
       terminalRejections: new Set(),
       turns,
-      withdrawalTerminallyRejected: false,
+      withdrawal: 'pending',
     };
     this.clock.setTimeout(
       () => this.enqueueScheduled(() => this.expireUnexpectedEnd()),
@@ -737,8 +735,8 @@ class InvocationActor {
 
   private async withdrawUnexpectedEndRequests(): Promise<PresentationApplicationResult> {
     const ending = this.unexpectedEnd;
-    if (ending === undefined || ending.requestsWithdrawn) return 'applied';
-    if (ending.withdrawalTerminallyRejected) return 'terminal-rejection';
+    if (ending === undefined || ending.withdrawal === 'applied') return 'applied';
+    if (ending.withdrawal === 'terminal-rejection') return 'terminal-rejection';
     const application = await this.withdrawRequestsResult(
       ending.reportingScope,
       [...this.scopes.values()].flatMap((scopeState) => [...scopeState.turns.values()]),
@@ -746,10 +744,10 @@ class InvocationActor {
       'unexpected-end',
     );
     if (application === 'applied') {
-      ending.requestsWithdrawn = true;
+      ending.withdrawal = 'applied';
       this.resetUnexpectedEndRetry();
     } else if (application === 'terminal-rejection') {
-      ending.withdrawalTerminallyRejected = true;
+      ending.withdrawal = 'terminal-rejection';
     }
     return application;
   }
