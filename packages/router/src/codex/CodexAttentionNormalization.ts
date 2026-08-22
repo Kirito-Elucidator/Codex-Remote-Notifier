@@ -42,6 +42,8 @@ interface PendingOutcome {
   sequence: number;
 }
 
+type PresentationApplicationResult = 'applied' | 'retry' | 'terminal-rejection';
+
 interface TurnState {
   foregroundThreadKey?: string;
   interruptionIntentObserved?: boolean;
@@ -104,9 +106,11 @@ interface ScopeState {
 interface UnexpectedEndState {
   reportingScope: SourceScope;
   requestsWithdrawn: boolean;
+  retryAttempt: number;
   retryDelayMs: number;
   retryScheduled: boolean;
   sourceSequence: number;
+  terminalRejections: Set<string>;
   turns: Array<{ ownerScopeKey: string; turnKey: string }>;
 }
 
@@ -558,18 +562,29 @@ class InvocationActor {
   }
 
   private async applyPresentation(exchange: PresentationExchange): Promise<boolean> {
+    return (await this.applyPresentationResult(exchange)) === 'applied';
+  }
+
+  private async applyPresentationResult(
+    exchange: PresentationExchange,
+  ): Promise<PresentationApplicationResult> {
     try {
       const presentationReceipt = parsePresentationReceipt(
         await this.presentation.exchange(exchange),
       );
       assertMatchingPresentationReceipt(exchange, presentationReceipt);
-      if (presentationReceipt.kind !== 'applied' && presentationReceipt.kind !== 'replay') {
-        if (presentationReceipt.kind === 'rejected') this.setMonitoring('degraded');
-        return false;
+      if (presentationReceipt.kind === 'applied' || presentationReceipt.kind === 'replay') {
+        return 'applied';
       }
-      return true;
+      if (presentationReceipt.kind === 'rejected') {
+        this.setMonitoring('degraded');
+        return presentationReceipt.reason === 'invalid' || presentationReceipt.reason === 'conflict'
+          ? 'terminal-rejection'
+          : 'retry';
+      }
+      return 'retry';
     } catch {
-      return false;
+      return 'retry';
     }
   }
 
@@ -664,9 +679,11 @@ class InvocationActor {
     this.unexpectedEnd = {
       reportingScope: scope,
       requestsWithdrawn: false,
+      retryAttempt: 0,
       retryDelayMs: OUTBOX_RETRY_MINIMUM_MS,
       retryScheduled: false,
       sourceSequence: observation.sourceSequence,
+      terminalRejections: new Set(),
       turns,
     };
     this.clock.setTimeout(
@@ -712,7 +729,10 @@ class InvocationActor {
       ending.sourceSequence,
       'unexpected-end',
     );
-    if (withdrawn) ending.requestsWithdrawn = true;
+    if (withdrawn) {
+      ending.requestsWithdrawn = true;
+      this.resetUnexpectedEndRetry();
+    }
     return withdrawn;
   }
 
@@ -774,6 +794,8 @@ class InvocationActor {
     }
     let retryNeeded = false;
     for (const { ownerScopeKey, turnKey } of ending.turns) {
+      const scopedTurnKey = JSON.stringify([ownerScopeKey, turnKey]);
+      if (ending.terminalRejections.has(scopedTurnKey)) continue;
       const state = this.scopes.get(ownerScopeKey);
       if (state === undefined) continue;
       const turn = state.turns.get(turnKey);
@@ -783,10 +805,19 @@ class InvocationActor {
         state.turns.delete(turnKey);
         continue;
       }
-      if (
-        !(await this.createStoppedFailure(state.scope, state, turnKey, ending.sourceSequence, turn))
-      ) {
+      const result = await this.createStoppedFailure(
+        state.scope,
+        state,
+        turnKey,
+        ending.sourceSequence,
+        turn,
+      );
+      if (result === 'retry') {
         retryNeeded = true;
+      } else if (result === 'terminal-rejection') {
+        ending.terminalRejections.add(scopedTurnKey);
+      } else {
+        this.resetUnexpectedEndRetry();
       }
     }
     if (retryNeeded) this.scheduleUnexpectedEndRetry();
@@ -795,9 +826,17 @@ class InvocationActor {
   private scheduleUnexpectedEndRetry(): void {
     const ending = this.unexpectedEnd;
     if (ending === undefined || ending.retryScheduled) return;
-    const delayMs = ending.retryDelayMs;
+    const baseDelayMs = ending.retryDelayMs;
+    const delayMs = retryDelayWithJitter(baseDelayMs, [
+      ending.reportingScope.invocationId,
+      ending.reportingScope.connectionId,
+      ending.reportingScope.authorityEpoch,
+      String(ending.sourceSequence),
+      String(ending.retryAttempt),
+    ]);
     ending.retryScheduled = true;
-    ending.retryDelayMs = Math.min(OUTBOX_RETRY_MAXIMUM_MS, delayMs * 2);
+    ending.retryAttempt++;
+    ending.retryDelayMs = Math.min(OUTBOX_RETRY_MAXIMUM_MS, baseDelayMs * 2);
     this.clock.setTimeout(
       () =>
         this.enqueueScheduled(async () => {
@@ -810,15 +849,22 @@ class InvocationActor {
     );
   }
 
+  private resetUnexpectedEndRetry(): void {
+    const ending = this.unexpectedEnd;
+    if (ending === undefined) return;
+    ending.retryAttempt = 0;
+    ending.retryDelayMs = OUTBOX_RETRY_MINIMUM_MS;
+  }
+
   private async createStoppedFailure(
     scope: SourceScope,
     state: ScopeState,
     turnKey: string,
     sourceSequence: number,
     turn: TurnState,
-  ): Promise<boolean> {
+  ): Promise<PresentationApplicationResult> {
     const outcomeKey = failureOutcomeKey(scope, state, turnKey, 'unexpected-stop');
-    if (state.outcomes.has(outcomeKey)) return true;
+    if (state.outcomes.has(outcomeKey)) return 'applied';
     const record: PresentationRecord = {
       key: outcomeKey,
       revision: 1,
@@ -840,12 +886,13 @@ class InvocationActor {
       ]),
       mutations: [{ kind: 'create', record }],
     };
-    if (!(await this.applyPresentation(exchange))) return false;
+    const application = await this.applyPresentationResult(exchange);
+    if (application !== 'applied') return application;
 
     state.outcomes.add(outcomeKey);
     state.terminalTurns.set(turnKey, { kind: 'failure', generic: true, record });
     state.turns.delete(turnKey);
-    return true;
+    return 'applied';
   }
 
   private async withdrawOverlappingTurnRequests(
@@ -1439,4 +1486,10 @@ function scopeKey(scope: SourceScope): string {
 function stableIdentity(prefix: string, identity: string[]): string {
   const digest = createHash('sha256').update(JSON.stringify(identity), 'utf8').digest('hex');
   return `${prefix}:${digest}`.slice(0, ATTENTION_EXCHANGE_LIMITS.stableKeyBytes);
+}
+
+function retryDelayWithJitter(baseDelayMs: number, identity: string[]): number {
+  const sample = createHash('sha256').update(JSON.stringify(identity), 'utf8').digest()[0];
+  const jitterRange = Math.max(1, Math.floor(baseDelayMs / 4));
+  return Math.min(OUTBOX_RETRY_MAXIMUM_MS, baseDelayMs + 1 + (sample % jitterRange));
 }

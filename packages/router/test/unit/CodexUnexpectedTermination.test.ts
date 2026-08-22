@@ -558,7 +558,8 @@ describe('CodexAttentionNormalization unexpected termination', () => {
       ]),
     );
     await deadlines[0].callback();
-    expect(deadlines.map(({ milliseconds }) => milliseconds)).toEqual([5_000, 100]);
+    expect(deadlines[1].milliseconds).toBeGreaterThan(100);
+    expect(deadlines[1].milliseconds).toBeLessThanOrEqual(125);
     await deadlines[1].callback();
 
     const attempts = exchanged.filter(
@@ -572,6 +573,89 @@ describe('CodexAttentionNormalization unexpected termination', () => {
     expect(attempts).toHaveLength(2);
     expect(attempts[1]).toEqual(attempts[0]);
     expect(deadlines).toHaveLength(2);
+  });
+
+  it('stops retrying a stopped transaction after terminal rejection', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        const createsStopped =
+          input.kind === 'apply' &&
+          input.mutations.some(
+            (mutation) =>
+              mutation.kind === 'create' && mutation.record.canonicalTitle === 'Codex stopped',
+          );
+        return createsStopped
+          ? { kind: 'rejected', transactionId: input.transactionId, reason: 'invalid' }
+          : { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentation,
+      undefined,
+      manualClock(deadlines),
+    );
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-terminal-rejection', 'route-terminal-rejection'),
+        { kind: 'connection-end', sourceSequence: 3, endKey: 'foreground-end' },
+      ]),
+    );
+    await deadlines[0].callback();
+
+    expect(deadlines).toHaveLength(1);
+    expect(
+      exchanged.filter(
+        (exchange) =>
+          exchange.kind === 'apply' &&
+          exchange.mutations.some((mutation) => mutation.kind === 'create'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('resets stopped delivery backoff when another turn makes forward progress', async () => {
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    const attempts = new Map<string, number>();
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        const create =
+          input.kind === 'apply'
+            ? input.mutations.find((mutation) => mutation.kind === 'create')
+            : undefined;
+        if (create?.kind === 'create') {
+          const target = create.record.returnTarget;
+          const attempt = (attempts.get(target) ?? 0) + 1;
+          attempts.set(target, attempt);
+          if (target === 'route-backoff-b' || attempt === 1) {
+            throw new Error('temporarily unavailable');
+          }
+        }
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentation,
+      undefined,
+      manualClock(deadlines),
+    );
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-backoff-a', 'route-backoff-a'),
+        turnStart(3, 'turn-backoff-b', 'route-backoff-b'),
+        { kind: 'connection-end', sourceSequence: 4, endKey: 'foreground-end' },
+      ]),
+    );
+    await deadlines[0].callback();
+    await deadlines[1].callback();
+
+    expect(deadlines[2].milliseconds).toBeGreaterThan(100);
+    expect(deadlines[2].milliseconds).toBeLessThanOrEqual(125);
   });
 
   it('keeps identical compatibility turn ids separately scoped at termination', async () => {
