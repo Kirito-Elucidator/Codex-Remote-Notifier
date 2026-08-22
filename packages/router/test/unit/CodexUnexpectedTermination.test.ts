@@ -527,6 +527,108 @@ describe('CodexAttentionNormalization unexpected termination', () => {
     ]);
   });
 
+  it('retries the same stopped transaction after transient presentation failure', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    let stoppedAttempts = 0;
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        const createsStopped =
+          input.kind === 'apply' &&
+          input.mutations.some(
+            (mutation) =>
+              mutation.kind === 'create' && mutation.record.canonicalTitle === 'Codex stopped',
+          );
+        if (createsStopped && stoppedAttempts++ === 0) throw new Error('temporarily unavailable');
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentation,
+      undefined,
+      manualClock(deadlines),
+    );
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-retried-stop', 'route-retried-stop'),
+        { kind: 'connection-end', sourceSequence: 3, endKey: 'foreground-end' },
+      ]),
+    );
+    await deadlines[0].callback();
+    expect(deadlines.map(({ milliseconds }) => milliseconds)).toEqual([5_000, 100]);
+    await deadlines[1].callback();
+
+    const attempts = exchanged.filter(
+      (exchange) =>
+        exchange.kind === 'apply' &&
+        exchange.mutations.some(
+          (mutation) =>
+            mutation.kind === 'create' && mutation.record.canonicalTitle === 'Codex stopped',
+        ),
+    );
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).toEqual(attempts[0]);
+    expect(deadlines).toHaveLength(2);
+  });
+
+  it('keeps identical compatibility turn ids separately scoped at termination', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      manualClock(deadlines),
+    );
+    const firstScope = {
+      ...scope,
+      connectionId: 'compatibility-connection-a',
+      authorityEpoch: 'compatibility-authority-a',
+    };
+    const secondScope = {
+      ...scope,
+      connectionId: 'compatibility-connection-b',
+      authorityEpoch: 'compatibility-authority-b',
+    };
+
+    await normalization.exchange({
+      kind: 'append',
+      deliveryGeneration: 'compatibility-a',
+      scope: firstScope,
+      fromSequence: 1,
+      observations: [
+        { kind: 'authority-change', sourceSequence: 1, monitoring: 'compatibility' },
+        turnStart(2, 'shared-local-turn', 'route-compatibility-a'),
+      ],
+    });
+    await normalization.exchange({
+      kind: 'append',
+      deliveryGeneration: 'compatibility-b',
+      scope: secondScope,
+      fromSequence: 1,
+      observations: [
+        { kind: 'authority-change', sourceSequence: 1, monitoring: 'compatibility' },
+        turnStart(2, 'shared-local-turn', 'route-compatibility-b'),
+      ],
+    });
+    await normalization.exchange({
+      kind: 'append',
+      deliveryGeneration: 'compatibility-a',
+      scope: firstScope,
+      fromSequence: 3,
+      observations: [{ kind: 'invocation-end', sourceSequence: 3, endKey: 'foreground-end' }],
+    });
+    await deadlines[0].callback();
+
+    expect(
+      createdRecords(exchanged)
+        .filter(({ appearance }) => appearance === 'failure')
+        .map(({ returnTarget }) => returnTarget),
+    ).toEqual(['route-compatibility-a', 'route-compatibility-b']);
+  });
+
   it('keeps a stopped outcome when a conflicting success arrives after the deadline', async () => {
     const exchanged: PresentationExchange[] = [];
     const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];

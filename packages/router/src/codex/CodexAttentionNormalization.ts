@@ -21,6 +21,8 @@ import { compatibilityTitle } from './CodexMonitoringPresentation';
 
 const MAXIMUM_INVOCATION_BYTES = 8 * 1024 * 1024;
 const MAXIMUM_INVOCATION_OBSERVATIONS = 4_096;
+const OUTBOX_RETRY_MAXIMUM_MS = 2_000;
+const OUTBOX_RETRY_MINIMUM_MS = 100;
 const TERMINAL_RECONCILIATION_MS = 5_000;
 
 export interface CodexAttentionClock {
@@ -102,6 +104,8 @@ interface ScopeState {
 interface UnexpectedEndState {
   reportingScope: SourceScope;
   requestsWithdrawn: boolean;
+  retryDelayMs: number;
+  retryScheduled: boolean;
   sourceSequence: number;
   turns: Array<{ ownerScopeKey: string; turnKey: string }>;
 }
@@ -660,6 +664,8 @@ class InvocationActor {
     this.unexpectedEnd = {
       reportingScope: scope,
       requestsWithdrawn: false,
+      retryDelayMs: OUTBOX_RETRY_MINIMUM_MS,
+      retryScheduled: false,
       sourceSequence: observation.sourceSequence,
       turns,
     };
@@ -684,14 +690,17 @@ class InvocationActor {
       }));
     }
 
-    const owners = new Map<string, string>();
-    for (const turnKey of reportingState.turns.keys()) owners.set(turnKey, reportingScopeKey);
+    const owners = [...reportingState.turns.keys()].map((turnKey) => ({
+      ownerScopeKey: reportingScopeKey,
+      turnKey,
+    }));
     for (const [key, scopeState] of this.scopes) {
+      if (key === reportingScopeKey) continue;
       for (const turnKey of scopeState.turns.keys()) {
-        if (!owners.has(turnKey)) owners.set(turnKey, key);
+        owners.push({ ownerScopeKey: key, turnKey });
       }
     }
-    return [...owners].map(([turnKey, ownerScopeKey]) => ({ ownerScopeKey, turnKey }));
+    return owners;
   }
 
   private async withdrawUnexpectedEndRequests(): Promise<boolean> {
@@ -758,7 +767,12 @@ class InvocationActor {
 
   private async expireUnexpectedEnd(): Promise<void> {
     const ending = this.unexpectedEnd;
-    if (ending === undefined || !(await this.withdrawUnexpectedEndRequests())) return;
+    if (ending === undefined) return;
+    if (!(await this.withdrawUnexpectedEndRequests())) {
+      this.scheduleUnexpectedEndRetry();
+      return;
+    }
+    let retryNeeded = false;
     for (const { ownerScopeKey, turnKey } of ending.turns) {
       const state = this.scopes.get(ownerScopeKey);
       if (state === undefined) continue;
@@ -772,9 +786,28 @@ class InvocationActor {
       if (
         !(await this.createStoppedFailure(state.scope, state, turnKey, ending.sourceSequence, turn))
       ) {
-        return;
+        retryNeeded = true;
       }
     }
+    if (retryNeeded) this.scheduleUnexpectedEndRetry();
+  }
+
+  private scheduleUnexpectedEndRetry(): void {
+    const ending = this.unexpectedEnd;
+    if (ending === undefined || ending.retryScheduled) return;
+    const delayMs = ending.retryDelayMs;
+    ending.retryScheduled = true;
+    ending.retryDelayMs = Math.min(OUTBOX_RETRY_MAXIMUM_MS, delayMs * 2);
+    this.clock.setTimeout(
+      () =>
+        this.enqueueScheduled(async () => {
+          const current = this.unexpectedEnd;
+          if (current === undefined) return;
+          current.retryScheduled = false;
+          await this.expireUnexpectedEnd();
+        }),
+      delayMs,
+    );
   }
 
   private async createStoppedFailure(
