@@ -112,6 +112,7 @@ interface UnexpectedEndState {
   sourceSequence: number;
   terminalRejections: Set<string>;
   turns: Array<{ ownerScopeKey: string; turnKey: string }>;
+  withdrawalTerminallyRejected: boolean;
 }
 
 export type CodexMonitoringReason =
@@ -542,9 +543,21 @@ class InvocationActor {
     sourceSequence: number,
     transactionKind: 'authority-loss' | 'unexpected-end',
   ): Promise<boolean> {
+    return (
+      (await this.withdrawRequestsResult(scope, turns, sourceSequence, transactionKind)) ===
+      'applied'
+    );
+  }
+
+  private async withdrawRequestsResult(
+    scope: SourceScope,
+    turns: Iterable<TurnState>,
+    sourceSequence: number,
+    transactionKind: 'authority-loss' | 'unexpected-end',
+  ): Promise<PresentationApplicationResult> {
     const activeTurns = [...turns];
     const keys = activeTurns.flatMap((turn) => [...turn.requests.values()]);
-    if (keys.length === 0) return true;
+    if (keys.length === 0) return 'applied';
     const exchange: PresentationExchange = {
       kind: 'apply',
       transactionId: stableIdentity('transaction', [
@@ -556,9 +569,10 @@ class InvocationActor {
       ]),
       mutations: keys.map((key) => ({ kind: 'withdraw' as const, key })),
     };
-    if (!(await this.applyPresentation(exchange))) return false;
+    const application = await this.applyPresentationResult(exchange);
+    if (application !== 'applied') return application;
     for (const turn of activeTurns) turn.requests.clear();
-    return true;
+    return 'applied';
   }
 
   private async applyPresentation(exchange: PresentationExchange): Promise<boolean> {
@@ -649,7 +663,7 @@ class InvocationActor {
   ): Promise<boolean> {
     if (this.invocationEnded) {
       state.closed = true;
-      return this.withdrawUnexpectedEndRequests();
+      return (await this.withdrawUnexpectedEndRequests()) !== 'retry';
     }
     const reportingScopeKey = scopeKey(scope);
     if (this.exactScopeKey !== undefined && this.exactScopeKey !== reportingScopeKey) {
@@ -685,12 +699,13 @@ class InvocationActor {
       sourceSequence: observation.sourceSequence,
       terminalRejections: new Set(),
       turns,
+      withdrawalTerminallyRejected: false,
     };
     this.clock.setTimeout(
       () => this.enqueueScheduled(() => this.expireUnexpectedEnd()),
       TERMINAL_RECONCILIATION_MS,
     );
-    return this.withdrawUnexpectedEndRequests();
+    return (await this.withdrawUnexpectedEndRequests()) !== 'retry';
   }
 
   private selectUnexpectedEndOwners(
@@ -720,20 +735,23 @@ class InvocationActor {
     return owners;
   }
 
-  private async withdrawUnexpectedEndRequests(): Promise<boolean> {
+  private async withdrawUnexpectedEndRequests(): Promise<PresentationApplicationResult> {
     const ending = this.unexpectedEnd;
-    if (ending === undefined || ending.requestsWithdrawn) return true;
-    const withdrawn = await this.withdrawRequests(
+    if (ending === undefined || ending.requestsWithdrawn) return 'applied';
+    if (ending.withdrawalTerminallyRejected) return 'terminal-rejection';
+    const application = await this.withdrawRequestsResult(
       ending.reportingScope,
       [...this.scopes.values()].flatMap((scopeState) => [...scopeState.turns.values()]),
       ending.sourceSequence,
       'unexpected-end',
     );
-    if (withdrawn) {
+    if (application === 'applied') {
       ending.requestsWithdrawn = true;
       this.resetUnexpectedEndRetry();
+    } else if (application === 'terminal-rejection') {
+      ending.withdrawalTerminallyRejected = true;
     }
-    return withdrawn;
+    return application;
   }
 
   private renewSidecarLease(
@@ -788,10 +806,12 @@ class InvocationActor {
   private async expireUnexpectedEnd(): Promise<void> {
     const ending = this.unexpectedEnd;
     if (ending === undefined) return;
-    if (!(await this.withdrawUnexpectedEndRequests())) {
+    const withdrawal = await this.withdrawUnexpectedEndRequests();
+    if (withdrawal === 'retry') {
       this.scheduleUnexpectedEndRetry();
       return;
     }
+    if (withdrawal === 'terminal-rejection') return;
     let retryNeeded = false;
     for (const { ownerScopeKey, turnKey } of ending.turns) {
       const scopedTurnKey = JSON.stringify([ownerScopeKey, turnKey]);

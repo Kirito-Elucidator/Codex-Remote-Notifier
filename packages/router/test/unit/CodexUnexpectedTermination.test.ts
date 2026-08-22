@@ -612,9 +612,68 @@ describe('CodexAttentionNormalization unexpected termination', () => {
       exchanged.filter(
         (exchange) =>
           exchange.kind === 'apply' &&
-          exchange.mutations.some((mutation) => mutation.kind === 'create'),
+          exchange.mutations.some(
+            (mutation) =>
+              mutation.kind === 'create' && mutation.record.canonicalTitle === 'Codex stopped',
+          ),
       ),
     ).toHaveLength(1);
+  });
+
+  it('stops retrying unexpected-end withdrawal after terminal rejection', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const deadlines: Array<{ callback: () => Promise<void>; milliseconds: number }> = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        const withdraws =
+          input.kind === 'apply' &&
+          input.mutations.some((mutation) => mutation.kind === 'withdraw');
+        return withdraws
+          ? { kind: 'rejected', transactionId: input.transactionId, reason: 'conflict' }
+          : { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentation,
+      undefined,
+      manualClock(deadlines),
+    );
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-withdrawal-rejection', 'route-withdrawal-rejection'),
+        {
+          kind: 'human-action-request',
+          sourceSequence: 3,
+          turnKey: 'turn-withdrawal-rejection',
+          requestKey: 'string:approval',
+          requestKind: 'approval',
+        },
+        { kind: 'connection-end', sourceSequence: 4, endKey: 'foreground-end' },
+      ]),
+    );
+    await deadlines[0].callback();
+
+    expect(deadlines).toHaveLength(1);
+    expect(
+      exchanged.filter(
+        (exchange) =>
+          exchange.kind === 'apply' &&
+          exchange.mutations.some((mutation) => mutation.kind === 'withdraw'),
+      ),
+    ).toHaveLength(1);
+    expect(
+      exchanged.some(
+        (exchange) =>
+          exchange.kind === 'apply' &&
+          exchange.mutations.some(
+            (mutation) =>
+              mutation.kind === 'create' && mutation.record.canonicalTitle === 'Codex stopped',
+          ),
+      ),
+    ).toBe(false);
   });
 
   it('resets stopped delivery backoff when another turn makes forward progress', async () => {
