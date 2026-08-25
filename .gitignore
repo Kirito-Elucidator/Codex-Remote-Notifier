@@ -6,6 +6,11 @@ coverage/
 __pycache__/
 *.js.map
 .claude/
+.agents/
+.codex/
+.scratch/
+CONTEXT.md
+skills-lock.json
 packages/*/icon.png
 packages/*/LICENSE
 packages/main/README.md

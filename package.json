@@ -13,9 +13,9 @@
     "lint": "eslint packages/*/src/**/*.ts shared/**/*.ts",
     "lint:fix": "eslint packages/*/src/**/*.ts shared/**/*.ts --fix",
     "test": "vitest run",
-    "test:unit": "vitest run --include 'packages/*/test/unit/**/*.test.ts'",
-    "test:integration": "vitest run --include 'packages/*/test/integration/**/*.test.ts'",
-    "test:e2e": "vitest run --include 'test/e2e/**/*.test.ts'",
+    "test:unit": "vitest run packages/main/test/unit packages/router/test/unit shared/test",
+    "test:integration": "vitest run packages/main/test/integration packages/router/test/integration",
+    "test:e2e": "vitest run test/e2e",
     "test:coverage": "vitest run --coverage",
     "package": "npm run build && npm run package -w remote-notifier-codex && npm run package -w remote-notifier-codex-router"
   },
