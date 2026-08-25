@@ -125,6 +125,64 @@ describe('CodexWebSocketBridge', () => {
     await Promise.all([onceClose(tui), onceClose(sessionPicker)]);
   });
 
+  it('forwards async questions on 0.154 even when exact qualification is unavailable', async () => {
+    const protocol = { post: vi.fn() };
+    const attention = { post: vi.fn() };
+    const bridge = new CodexWebSocketBridge(
+      'token',
+      new CodexProtocolCapture('instance-1', []),
+      protocol as unknown as CodexRouterClient,
+      {
+        hookAvailable: false,
+        invocationId: '0123456789abcdef0123456789abcdef',
+        version: 'codex-cli 0.154.0',
+        router: attention as unknown as CodexAttentionRouterClient,
+      },
+    );
+    bridges.push(bridge);
+    const address = await bridge.listen();
+    const appServer = fakeAppServer();
+    bridge.attach(appServer.process);
+    const client = await connectWebSocket(address, 'token');
+    appServer.stdout.write(
+      JSON.stringify({
+        method: 'turn/started',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-1' },
+        },
+      }) + '\n',
+    );
+    const question = JSON.stringify({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        item: {
+          id: 'question-1',
+          type: 'agentMessage',
+          delivery: 'async',
+          text: 'private text',
+          questions: [{ id: 'q1', question: 'private question' }],
+        },
+      },
+    });
+    appServer.stdout.write(question + '\n');
+    await waitFor(() =>
+      protocol.post.mock.calls.some(([event]) => event.method === 'agent/queuedQuestions'),
+    );
+    expect(protocol.post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'agent/queuedQuestions',
+        occurrence_id: 'question-1',
+        thread_id: 'thread-1',
+      }),
+    );
+    expect(JSON.stringify(protocol.post.mock.calls)).not.toContain('private');
+    client.close();
+    await onceClose(client);
+  });
+
   it('replays an audited primary protocol success as scoped source-neutral observations', async () => {
     const attention = { post: vi.fn() };
     const protocol = { post: vi.fn() };

@@ -12,6 +12,8 @@ import {
   sanitizeUpstreamError,
 } from '../../src/codex/CodexEventHandler';
 import { CodexMetadataResolver } from '../../src/codex/CodexMetadataResolver';
+import { CodexProtocolCapture } from '../../src/codex/CodexProtocolCapture';
+import { parseCodexEvent } from '../../src/codex/CodexEventValidation';
 import { Configuration } from '../../src/config/Configuration';
 import { NotificationHandler } from '../../src/handler/NotificationHandler';
 
@@ -59,6 +61,80 @@ describe('CodexEventHandler', () => {
 
   afterEach(() => {
     handler.dispose();
+  });
+
+  it('notifies for completed async questions without forwarding question text or replaying alerts', async () => {
+    const capture = new CodexProtocolCapture('instance-1', []);
+    capture.observeServerMessage({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-1',
+        turn: { id: 'turn-1' },
+      },
+    });
+    const message = {
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        item: {
+          id: 'question-item',
+          type: 'agentMessage',
+          delivery: 'async',
+          text: 'private text',
+          questions: [{ id: 'q1', question: 'private question' }],
+        },
+      },
+    };
+    const events = capture.observeServerMessage(message);
+    expect(events).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain('private');
+    expect(parseCodexEvent(events[0]).ok).toBe(true);
+    await handler.handle(events[0]);
+    await handler.handle(capture.observeServerMessage(message)[0]);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].title).toBe('Codex has a question for you');
+
+    expect(capture.observeServerMessage({ ...message, method: 'item/started' })).toEqual([]);
+    expect(
+      capture.observeServerMessage({
+        ...message,
+        params: {
+          ...message.params,
+          item: { ...message.params.item, questions: [] },
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      capture.observeServerMessage({
+        ...message,
+        params: {
+          ...message.params,
+          item: { ...message.params.item, delivery: undefined },
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      capture.observeServerMessage({
+        ...message,
+        params: {
+          ...message.params,
+          threadId: 'child-thread',
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it('retries queued-question delivery and notifies for distinct question items', async () => {
+    const event = protocol('agent/queuedQuestions', { occurrence_id: 'question-1' });
+    notifications.handle.mockRejectedValueOnce(new Error('presenter unavailable'));
+    await expect(handler.handle(event)).rejects.toThrow('presenter unavailable');
+    await handler.handle(event);
+    await handler.handle(protocol('agent/queuedQuestions', { occurrence_id: 'question-2' }));
+    expect(delivered).toHaveLength(2);
+    for (const field of ['thread_id', 'turn_id', 'occurrence_id']) {
+      expect(parseCodexEvent({ ...event, [field]: undefined }).ok).toBe(false);
+    }
   });
 
   it('notifies only on safety UI off-to-on transitions for the active turn', async () => {

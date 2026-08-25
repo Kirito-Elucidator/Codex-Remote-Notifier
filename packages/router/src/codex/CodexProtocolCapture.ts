@@ -180,6 +180,33 @@ export class CodexProtocolCapture {
       }
       case 'error':
         return this.captureError(params);
+      case 'item/completed': {
+        const item = params.item;
+        const threadId = readString(params.threadId);
+        const turnId = readString(params.turnId);
+        if (
+          !isRecord(item) ||
+          item.type !== 'agentMessage' ||
+          item.delivery !== 'async' ||
+          !Array.isArray(item.questions) ||
+          item.questions.length === 0 ||
+          !threadId ||
+          !turnId ||
+          threadId !== this.activeThreadId ||
+          turnId !== this.activeTurnId ||
+          this.descendantThreadIds.has(threadId)
+        )
+          return [];
+        const itemId = readString(item.id);
+        if (!itemId) return [];
+        return [
+          this.event('agent/queuedQuestions', {
+            thread_id: threadId,
+            turn_id: turnId,
+            occurrence_id: itemId,
+          }),
+        ];
+      }
       case 'turn/completed':
         return this.captureTurnCompleted(params);
       default:

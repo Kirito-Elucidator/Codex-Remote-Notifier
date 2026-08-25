@@ -72,6 +72,7 @@ const PROTOCOL_METHODS = new Set<CodexProtocolMethod>([
   'thread/started',
   'turn/started',
   'turn/completed',
+  'agent/queuedQuestions',
   'model/safetyBuffering/updated',
   'serverRequest/resolved',
   'error',
@@ -194,6 +195,13 @@ function parseProtocolEvent(payload: Record<string, unknown>): CodexEventParseRe
   if (ancestryError) return failure(ancestryError);
 
   const method = payload.method as CodexProtocolMethod;
+  if (method === 'agent/queuedQuestions') {
+    for (const field of ['thread_id', 'turn_id', 'occurrence_id']) {
+      if (!isBoundedString(payload[field], MAX_ID_LENGTH, false)) {
+        return failure(`${field} is required for queued questions`);
+      }
+    }
+  }
   if (CODEX_PROTOCOL_REQUEST_METHODS.has(method as CodexProtocolRequestMethod)) {
     if (payload.request_id === undefined) return failure('request_id is required for requests');
     if (

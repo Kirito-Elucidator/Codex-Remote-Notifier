@@ -54,6 +54,7 @@ export type CodexProtocolMethod =
   | 'thread/started'
   | 'turn/started'
   | 'turn/completed'
+  | 'agent/queuedQuestions'
   | 'model/safetyBuffering/updated'
   | 'serverRequest/resolved'
   | 'error'

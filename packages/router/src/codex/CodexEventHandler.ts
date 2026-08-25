@@ -115,6 +115,22 @@ export class CodexEventHandler implements vscode.Disposable {
       case 'turn/started':
         this.onTurnStarted(event);
         return;
+      case 'agent/queuedQuestions': {
+        if (!event.thread_id || !event.turn_id || !event.occurrence_id) return;
+        const key = `queued:${event.instance_id}:${event.thread_id}:${event.turn_id}:${event.occurrence_id}`;
+        if (this.seenRequests.has(key)) return;
+        await this.presentCodex({
+          title: 'Codex has a question for you',
+          message: await this.buildMessage(event.thread_id, this.threads.get(event.thread_id)?.cwd),
+          level: 'information',
+          sessionId: event.thread_id,
+          turnId: event.turn_id,
+          eventKey: key,
+          processAncestry: event.process_ancestry,
+        });
+        this.remember(this.seenRequests, key, MAX_SEEN_REQUESTS);
+        return;
+      }
       case 'model/safetyBuffering/updated':
         await this.onSafetyBuffering(event);
         return;
