@@ -49,6 +49,10 @@ export interface CodexMonitoringAuthority {
   retireHook(foregroundThreadKey: string, invocationId?: string): void;
 }
 
+export interface CodexEventHandlerOptions {
+  notifySuccessfulTurns?: boolean;
+}
+
 export class CodexEventHandler implements vscode.Disposable {
   private readonly threads = new Map<string, ThreadState>();
   private readonly authoritativeSessions = new Set<string>();
@@ -67,6 +71,7 @@ export class CodexEventHandler implements vscode.Disposable {
     private readonly metadata = new CodexMetadataResolver(),
     private readonly log?: vscode.OutputChannel,
     private readonly monitoring?: CodexMonitoringAuthority,
+    private readonly options: CodexEventHandlerOptions = {},
   ) {
     this.transcriptMonitor = new CodexTranscriptMonitor(
       (failure) => this.enqueueTranscriptFailure(failure),
@@ -217,26 +222,32 @@ export class CodexEventHandler implements vscode.Disposable {
       return;
     }
 
-    const rawAnswer =
-      transcript.planText ?? event.last_assistant_message ?? transcript.lastAssistantMessage;
-    const planTag =
-      typeof event.last_assistant_message === 'string' &&
-      /<proposed_plan\s*>/i.test(event.last_assistant_message);
-    const title =
-      transcript.hasPlanItem || planTag
-        ? '[计划完成]'
-        : transcript.isPlanMode
-          ? '[计划继续]'
-          : '[任务完成]';
-    const eventKey =
-      transcript.hasPlanItem || planTag
-        ? 'plan-complete'
-        : transcript.isPlanMode
-          ? 'plan-continue'
-          : 'task-complete';
-    const message = await this.buildMessage(event.session_id, event.cwd, stripPlanTags(rawAnswer));
     if (this.isProtocolAuthoritativeHook(event)) return;
     try {
+      if (this.options.notifySuccessfulTurns === false) return;
+      const rawAnswer =
+        transcript.planText ?? event.last_assistant_message ?? transcript.lastAssistantMessage;
+      const planTag =
+        typeof event.last_assistant_message === 'string' &&
+        /<proposed_plan\s*>/i.test(event.last_assistant_message);
+      const title =
+        transcript.hasPlanItem || planTag
+          ? '[计划完成]'
+          : transcript.isPlanMode
+            ? '[计划继续]'
+            : '[任务完成]';
+      const eventKey =
+        transcript.hasPlanItem || planTag
+          ? 'plan-complete'
+          : transcript.isPlanMode
+            ? 'plan-continue'
+            : 'task-complete';
+      const message = await this.buildMessage(
+        event.session_id,
+        event.cwd,
+        stripPlanTags(rawAnswer),
+      );
+      if (this.isProtocolAuthoritativeHook(event)) return;
       await this.presentCodex({
         title: compatibilityTitle(title),
         message,
@@ -369,15 +380,17 @@ export class CodexEventHandler implements vscode.Disposable {
     }
     if (event.status !== 'completed') return;
 
-    await this.presentCodex({
-      title: event.plan_complete ? '[计划完成]' : '[任务完成]',
-      message: await this.buildMessage(event.thread_id, state.cwd, event.preview),
-      level: 'information',
-      sessionId: event.thread_id,
-      turnId: event.turn_id,
-      eventKey: event.plan_complete ? 'plan-complete' : 'task-complete',
-      processAncestry: event.process_ancestry,
-    });
+    if (this.options.notifySuccessfulTurns !== false) {
+      await this.presentCodex({
+        title: event.plan_complete ? '[计划完成]' : '[任务完成]',
+        message: await this.buildMessage(event.thread_id, state.cwd, event.preview),
+        level: 'information',
+        sessionId: event.thread_id,
+        turnId: event.turn_id,
+        eventKey: event.plan_complete ? 'plan-complete' : 'task-complete',
+        processAncestry: event.process_ancestry,
+      });
+    }
     this.remember(this.completedTurns, turnKey, MAX_COMPLETED_TURNS);
     state.activeTurnId = undefined;
   }

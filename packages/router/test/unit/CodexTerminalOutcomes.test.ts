@@ -18,6 +18,31 @@ const scope = {
 };
 
 describe('CodexAttentionNormalization terminal outcomes', () => {
+  it('can silence successful turns', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      undefined,
+      { notifySuccessfulTurns: false },
+    );
+
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-success-suppressed', 'route-success-suppressed'),
+        {
+          kind: 'terminal-result',
+          sourceSequence: 3,
+          turnKey: 'turn-success-suppressed',
+          result: 'success',
+          occurrenceKey: 'turn-success-suppressed:success',
+        },
+      ]),
+    );
+
+    expect(createdRecords(exchanged)).toEqual([]);
+  });
   it('keeps a recovered retry silent and commits only its final success', async () => {
     const exchanged: PresentationExchange[] = [];
     const normalization = new CodexAttentionNormalizationRegistry(presentationRecorder(exchanged));

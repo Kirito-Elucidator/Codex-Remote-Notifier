@@ -53,10 +53,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const codexFocusCommand = `${COMMAND_FOCUS_CODEX_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
   const handler = new NotificationHandler(presenter, config, terminalFocus, codexFocusCommand);
   const codexMonitoring = new CodexMonitoringStatus(log);
-  const codexEvents = new CodexEventHandler(handler, config, undefined, log, codexMonitoring);
+  const codexEvents = new CodexEventHandler(handler, config, undefined, log, codexMonitoring, {
+    notifySuccessfulTurns: true,
+  });
   const codexAttention = new CodexAttentionNormalizationRegistry(
     new PresentationCommandBridge(),
     (change) => codexMonitoring.update(change),
+    undefined,
+    { notifySuccessfulTurns: true },
   );
   const sessionManager = new SessionManager(context, {
     codexPreviewLength: config.codexPreviewLength,

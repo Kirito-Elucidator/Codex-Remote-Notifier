@@ -137,6 +137,28 @@ describe('CodexEventHandler', () => {
     }
   });
 
+  it('can disable successful completion notifications without affecting errors', async () => {
+    handler = new CodexEventHandler(
+      notifications as unknown as NotificationHandler,
+      { codexPreviewLength: 32 } as Configuration,
+      metadata as unknown as CodexMetadataResolver,
+      undefined,
+      undefined,
+      { notifySuccessfulTurns: false },
+    );
+    await handler.handle(protocol('turn/started'));
+    await handler.handle(
+      protocol('error', {
+        occurrence_id: 'capacity-1',
+        will_retry: true,
+        error: { message: 'Selected model is at capacity', code: 'serverOverloaded' },
+      }),
+    );
+    await handler.handle(protocol('turn/completed', { status: 'completed' }));
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ title: '[模型服务错误]', level: 'error' });
+  });
+
   it('notifies only on safety UI off-to-on transitions for the active turn', async () => {
     await handler.handle(protocol('turn/started'));
     await handler.handle(protocol('model/safetyBuffering/updated', { show_buffering_ui: true }));

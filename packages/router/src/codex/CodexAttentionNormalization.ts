@@ -29,6 +29,10 @@ export interface CodexAttentionClock {
   setTimeout(callback: () => Promise<void>, milliseconds: number): void;
 }
 
+export interface CodexAttentionNormalizationOptions {
+  notifySuccessfulTurns?: boolean;
+}
+
 const systemClock: CodexAttentionClock = {
   setTimeout(callback, milliseconds): void {
     const timer = setTimeout(() => void callback().catch(() => {}), milliseconds);
@@ -144,6 +148,7 @@ export class CodexAttentionNormalizationRegistry implements CodexAttentionNormal
     private readonly presentation: AttentionPresentationPort,
     private readonly onMonitoringChange: CodexMonitoringListener = () => {},
     private readonly clock: CodexAttentionClock = systemClock,
+    private readonly options: CodexAttentionNormalizationOptions = {},
   ) {}
 
   exchange(input: ObservationExchange): Promise<ExchangeReceipt> {
@@ -155,6 +160,7 @@ export class CodexAttentionNormalizationRegistry implements CodexAttentionNormal
         exchange.scope.invocationId,
         this.onMonitoringChange,
         this.clock,
+        this.options,
       );
       this.actors.set(exchange.scope.invocationId, actor);
     }
@@ -180,6 +186,7 @@ class InvocationActor {
     private readonly invocationId: string,
     private readonly onMonitoringChange: CodexMonitoringListener,
     private readonly clock: CodexAttentionClock,
+    private readonly options: CodexAttentionNormalizationOptions,
   ) {}
 
   exchange(input: ObservationExchange): Promise<ExchangeReceipt> {
@@ -615,6 +622,7 @@ class InvocationActor {
     }
     const turn = this.activeTerminalTurn(scope, state, observation.turnKey);
     if (turn === undefined) return true;
+
     const detail = turn.stagedFailure;
     if (detail !== undefined && !failurePresentation(detail).generic) {
       return this.createFailure(scope, state, observation, turn, detail);
@@ -1235,6 +1243,53 @@ class InvocationActor {
       this.setMonitoring('degraded');
       return true;
     }
+    if (turn === undefined) {
+      this.setMonitoring('degraded');
+      return true;
+    }
+
+    if (this.options.notifySuccessfulTurns !== false) {
+      return this.presentSuccess(
+        scope,
+        state,
+        observation,
+        turn,
+        foregroundThreadKey,
+        compatibility,
+      );
+    }
+
+    const requestKeys = [...turn.requests.values()];
+    if (requestKeys.length > 0) {
+      const exchange: PresentationExchange = {
+        kind: 'apply',
+        transactionId: stableIdentity('transaction', [
+          scope.invocationId,
+          scope.connectionId,
+          scope.authorityEpoch,
+          observation.turnKey,
+          String(observation.sourceSequence),
+          'success-withdrawal',
+        ]),
+        mutations: requestKeys.map((key) => ({ kind: 'withdraw' as const, key })),
+      };
+      if (!(await this.applyPresentation(exchange))) return false;
+    }
+    state.terminalTurns.set(observation.turnKey, { kind: 'success' });
+    turn.requests.clear();
+    state.turns.delete(observation.turnKey);
+    state.pendingOutcome = undefined;
+    return true;
+  }
+
+  private async presentSuccess(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'terminal-result' }>,
+    turn: TurnState,
+    foregroundThreadKey: string | undefined,
+    compatibility: boolean,
+  ): Promise<boolean> {
     const outcomeKey = stableIdentity('outcome', [
       scope.invocationId,
       scope.connectionId,
@@ -1245,54 +1300,36 @@ class InvocationActor {
     ]);
     if (state.outcomes.has(outcomeKey)) return true;
 
-    let pending = state.pendingOutcome;
-    if (pending === undefined) {
-      if (turn === undefined) {
-        this.setMonitoring('degraded');
-        return true;
-      }
-      const record: PresentationRecord = {
-        key: outcomeKey,
-        revision: 1,
-        appearance: 'information',
-        canonicalTitle: compatibility
-          ? compatibilityTitle(observation.canonicalTitle ?? 'Codex completed')
-          : (observation.canonicalTitle ?? 'Codex completed'),
-        canonicalBody: observation.canonicalBody ?? 'Return to Codex to view details',
-        returnTarget: turn.returnTarget,
-      };
-      const exchange: PresentationExchange = {
-        kind: 'apply',
-        transactionId: stableIdentity('transaction', [
-          scope.invocationId,
-          scope.connectionId,
-          scope.authorityEpoch,
-          foregroundThreadKey ?? 'compatibility',
-          observation.turnKey,
-          String(observation.sourceSequence),
-        ]),
-        mutations: [
-          ...[...turn.requests.values()].map((key) => ({ kind: 'withdraw' as const, key })),
-          { kind: 'create', record },
-        ],
-      };
-      pending = {
-        exchange,
-        outcomeKey,
-        sequence: observation.sourceSequence,
-      };
-      state.pendingOutcome = pending;
-    }
-    if (pending.sequence !== observation.sourceSequence) {
-      this.setMonitoring('degraded');
-      return true;
-    }
+    const record: PresentationRecord = {
+      key: outcomeKey,
+      revision: 1,
+      appearance: 'information',
+      canonicalTitle: compatibility
+        ? compatibilityTitle(observation.canonicalTitle ?? 'Codex completed')
+        : (observation.canonicalTitle ?? 'Codex completed'),
+      canonicalBody: observation.canonicalBody ?? 'Return to Codex to view details',
+      returnTarget: turn.returnTarget,
+    };
+    const exchange: PresentationExchange = {
+      kind: 'apply',
+      transactionId: stableIdentity('transaction', [
+        scope.invocationId,
+        scope.connectionId,
+        scope.authorityEpoch,
+        foregroundThreadKey ?? 'compatibility',
+        observation.turnKey,
+        String(observation.sourceSequence),
+      ]),
+      mutations: [
+        ...[...turn.requests.values()].map((key) => ({ kind: 'withdraw' as const, key })),
+        { kind: 'create', record },
+      ],
+    };
+    if (!(await this.applyPresentation(exchange))) return false;
 
-    if (!(await this.applyPresentation(pending.exchange))) return false;
-
-    state.outcomes.add(pending.outcomeKey);
+    state.outcomes.add(outcomeKey);
     state.terminalTurns.set(observation.turnKey, { kind: 'success' });
-    turn?.requests.clear();
+    turn.requests.clear();
     state.turns.delete(observation.turnKey);
     state.pendingOutcome = undefined;
     return true;
