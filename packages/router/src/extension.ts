@@ -60,7 +60,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     new PresentationCommandBridge(),
     (change) => codexMonitoring.update(change),
     undefined,
-    { notifySuccessfulTurns: true },
+    { notifySuccessfulTurns: true, notifyRetryableErrors: true },
   );
   const sessionManager = new SessionManager(context, {
     codexPreviewLength: config.codexPreviewLength,

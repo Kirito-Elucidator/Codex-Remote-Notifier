@@ -442,6 +442,25 @@ describe('CodexEventHandler', () => {
     ]);
   });
 
+  it('retries a non-connection retryable error after presentation failure', async () => {
+    const retryable = protocol('error', {
+      occurrence_id: 'error-service-retry',
+      will_retry: true,
+      error: { message: 'model overloaded', code: 'serverOverloaded' },
+    });
+    await handler.handle(protocol('turn/started'));
+    notifications.handle.mockResolvedValueOnce({
+      ok: false,
+      error: 'presenter_error',
+      details: 'temporary presenter failure',
+    });
+
+    await expect(handler.handle(retryable)).rejects.toThrow('temporary presenter failure');
+    await handler.handle(retryable);
+
+    expect(notifications.handle).toHaveBeenCalledTimes(2);
+  });
+
   it('reports a terminal error immediately and does not repeat it at failed completion', async () => {
     await handler.handle(protocol('turn/started'));
     await handler.handle(

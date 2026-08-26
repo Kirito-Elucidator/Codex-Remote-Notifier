@@ -31,6 +31,7 @@ export interface CodexAttentionClock {
 
 export interface CodexAttentionNormalizationOptions {
   notifySuccessfulTurns?: boolean;
+  notifyRetryableErrors?: boolean;
 }
 
 const systemClock: CodexAttentionClock = {
@@ -426,7 +427,7 @@ class InvocationActor {
       case 'request-resolution':
         return this.applyRequestResolution(scope, state, observation);
       case 'retry-error':
-        return true;
+        return this.applyRetryError(scope, state, observation);
       case 'sidecar-lease':
         return true;
       case 'terminal-error':
@@ -657,6 +658,61 @@ class InvocationActor {
     });
     state.turns.delete(observation.turnKey);
     this.scheduleFailureDeadline(scope, observation.turnKey);
+    return true;
+  }
+
+  /** Retryable failures are still useful attention signals: surface them now,
+   * while leaving the turn active so a later retry can continue normally. */
+  private async applyRetryError(
+    scope: SourceScope,
+    state: ScopeState,
+    observation: Extract<SanitizedAttentionObservation, { kind: 'retry-error' }>,
+  ): Promise<boolean> {
+    if (this.options.notifyRetryableErrors !== true) return true;
+    if (state.terminalTurns.has(observation.turnKey)) return true;
+    const turn = this.activeTerminalTurn(scope, state, observation.turnKey);
+    if (turn === undefined) return true;
+
+    const detail: FailureDetail = {
+      errorKind: observation.errorKind,
+      ...(observation.canonicalBody === undefined
+        ? {}
+        : { canonicalBody: observation.canonicalBody }),
+    };
+    const outcomeKey = failureOutcomeKey(
+      scope,
+      state,
+      observation.turnKey,
+      `retry:${observation.sourceSequence}`,
+    );
+    if (state.outcomes.has(outcomeKey)) return true;
+
+    const presentation = failurePresentation(detail);
+    const record: PresentationRecord = {
+      key: outcomeKey,
+      revision: 1,
+      appearance: 'failure',
+      canonicalTitle:
+        state.role === 'compatibility'
+          ? compatibilityTitle(presentation.title)
+          : presentation.title,
+      canonicalBody: detail.canonicalBody ?? 'Return to Codex to view details',
+      returnTarget: turn.returnTarget,
+    };
+    const exchange: PresentationExchange = {
+      kind: 'apply',
+      transactionId: stableIdentity('transaction', [
+        scope.invocationId,
+        scope.connectionId,
+        scope.authorityEpoch,
+        observation.turnKey,
+        String(observation.sourceSequence),
+        'retry-error',
+      ]),
+      mutations: [{ kind: 'create', record }],
+    };
+    if (!(await this.applyPresentation(exchange))) return false;
+    state.outcomes.add(outcomeKey);
     return true;
   }
 

@@ -18,31 +18,97 @@ const scope = {
 };
 
 describe('CodexAttentionNormalization terminal outcomes', () => {
-  it('can silence successful turns', async () => {
+  it('can silence successful turns while surfacing retryable errors immediately', async () => {
     const exchanged: PresentationExchange[] = [];
     const normalization = new CodexAttentionNormalizationRegistry(
       presentationRecorder(exchanged),
       undefined,
       undefined,
-      { notifySuccessfulTurns: false },
+      { notifySuccessfulTurns: false, notifyRetryableErrors: true },
     );
 
     await normalization.exchange(
       append([
         qualification(1),
-        turnStart(2, 'turn-success-suppressed', 'route-success-suppressed'),
+        turnStart(2, 'turn-alerts', 'route-alerts'),
+        {
+          kind: 'retry-error',
+          sourceSequence: 3,
+          turnKey: 'turn-alerts',
+          errorKind: 'serverOverloaded',
+          canonicalBody: 'Selected model is at capacity',
+        },
         {
           kind: 'terminal-result',
-          sourceSequence: 3,
-          turnKey: 'turn-success-suppressed',
+          sourceSequence: 4,
+          turnKey: 'turn-alerts',
           result: 'success',
-          occurrenceKey: 'turn-success-suppressed:success',
+          occurrenceKey: 'turn-alerts:success',
         },
       ]),
     );
 
-    expect(createdRecords(exchanged)).toEqual([]);
+    expect(createdRecords(exchanged)).toEqual([
+      expect.objectContaining({
+        appearance: 'failure',
+        canonicalTitle: 'Codex service failed',
+        canonicalBody: 'Selected model is at capacity',
+      }),
+    ]);
   });
+
+  it('retries an exact-mode retry alert when its first presentation is unavailable', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const presentation: AttentionPresentationPort = {
+      exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
+        exchanged.push(input);
+        if (exchanged.length === 1) {
+          return { kind: 'rejected', transactionId: input.transactionId, reason: 'unavailable' };
+        }
+        return { kind: 'applied', transactionId: input.transactionId };
+      }),
+    };
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentation,
+      undefined,
+      undefined,
+      { notifyRetryableErrors: true },
+    );
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-delivery-retry', 'route-delivery-retry'),
+        {
+          kind: 'retry-error',
+          sourceSequence: 3,
+          turnKey: 'turn-delivery-retry',
+          errorKind: 'serverOverloaded',
+          canonicalBody: 'model overloaded',
+        },
+      ]),
+    );
+    await normalization.exchange(
+      append(
+        [
+          {
+            kind: 'retry-error',
+            sourceSequence: 3,
+            turnKey: 'turn-delivery-retry',
+            errorKind: 'serverOverloaded',
+            canonicalBody: 'model overloaded',
+          },
+        ],
+        3,
+      ),
+    );
+
+    expect(presentation.exchange).toHaveBeenCalledTimes(2);
+    expect(exchanged.at(-1)).toMatchObject({
+      kind: 'apply',
+      mutations: [{ kind: 'create', record: { appearance: 'failure' } }],
+    });
+  });
+
   it('keeps a recovered retry silent and commits only its final success', async () => {
     const exchanged: PresentationExchange[] = [];
     const normalization = new CodexAttentionNormalizationRegistry(presentationRecorder(exchanged));

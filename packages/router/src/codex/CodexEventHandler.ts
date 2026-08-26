@@ -342,9 +342,14 @@ export class CodexEventHandler implements vscode.Disposable {
       );
       return;
     }
-    await this.presentProtocolError(event, state.cwd);
     if (occurrenceKey) {
       this.remember(this.seenErrorOccurrences, occurrenceKey, MAX_SEEN_ERROR_OCCURRENCES);
+    }
+    try {
+      await this.presentProtocolError(event, state.cwd);
+    } catch (error) {
+      if (occurrenceKey) this.seenErrorOccurrences.delete(occurrenceKey);
+      throw error;
     }
   }
 

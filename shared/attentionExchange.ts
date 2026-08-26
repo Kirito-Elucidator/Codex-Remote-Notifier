@@ -90,7 +90,14 @@ export type SanitizedAttentionObservation =
       requestKey: string;
     }
   | {
-      kind: 'retry-error' | 'terminal-error';
+      kind: 'retry-error';
+      sourceSequence: number;
+      turnKey: string;
+      errorKind: string;
+      canonicalBody?: string;
+    }
+  | {
+      kind: 'terminal-error';
       sourceSequence: number;
       turnKey: string;
       errorKind: string;
