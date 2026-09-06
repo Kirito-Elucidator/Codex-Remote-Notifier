@@ -57,7 +57,85 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
     ]);
   });
 
-  it('retries an exact-mode retry alert when its first presentation is unavailable', async () => {
+  it('waits for five reconnect failures before surfacing an exact-mode alert', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      undefined,
+      { notifyRetryableErrors: true, reconnectionAlertThreshold: 5 },
+    );
+    const observations: SanitizedAttentionObservation[] = [
+      qualification(1),
+      turnStart(2, 'turn-reconnect', 'route-reconnect'),
+    ];
+    for (let attempt = 0; attempt < 5; attempt++) {
+      observations.push({
+        kind: 'retry-error',
+        sourceSequence: 3 + attempt,
+        turnKey: 'turn-reconnect',
+        errorKind: 'responseStreamDisconnected',
+        canonicalBody: 'temporary disconnect',
+      });
+    }
+    await normalization.exchange(append(observations));
+    expect(createdRecords(exchanged)).toHaveLength(1);
+  });
+
+  it('starts a fresh reconnect alert sequence after a non-connection retry', async () => {
+    const exchanged: PresentationExchange[] = [];
+    const normalization = new CodexAttentionNormalizationRegistry(
+      presentationRecorder(exchanged),
+      undefined,
+      undefined,
+      { notifyRetryableErrors: true, reconnectionAlertThreshold: 2 },
+    );
+    await normalization.exchange(
+      append([
+        qualification(1),
+        turnStart(2, 'turn-reset', 'route-reset'),
+        {
+          kind: 'retry-error',
+          sourceSequence: 3,
+          turnKey: 'turn-reset',
+          errorKind: 'responseStreamDisconnected',
+          canonicalBody: 'temporary disconnect',
+        },
+        {
+          kind: 'retry-error',
+          sourceSequence: 4,
+          turnKey: 'turn-reset',
+          errorKind: 'responseStreamDisconnected',
+          canonicalBody: 'temporary disconnect',
+        },
+        {
+          kind: 'retry-error',
+          sourceSequence: 5,
+          turnKey: 'turn-reset',
+          errorKind: 'serverOverloaded',
+          canonicalBody: 'model overloaded',
+        },
+        {
+          kind: 'retry-error',
+          sourceSequence: 6,
+          turnKey: 'turn-reset',
+          errorKind: 'responseStreamDisconnected',
+          canonicalBody: 'temporary disconnect',
+        },
+        {
+          kind: 'retry-error',
+          sourceSequence: 7,
+          turnKey: 'turn-reset',
+          errorKind: 'responseStreamDisconnected',
+          canonicalBody: 'temporary disconnect',
+        },
+      ]),
+    );
+
+    expect(createdRecords(exchanged)).toHaveLength(3);
+  });
+
+  it('retries an exact-mode reconnect alert when its first presentation is unavailable', async () => {
     const exchanged: PresentationExchange[] = [];
     const presentation: AttentionPresentationPort = {
       exchange: vi.fn(async (input): Promise<PresentationReceipt> => {
@@ -82,8 +160,8 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
           kind: 'retry-error',
           sourceSequence: 3,
           turnKey: 'turn-delivery-retry',
-          errorKind: 'serverOverloaded',
-          canonicalBody: 'model overloaded',
+          errorKind: 'responseStreamDisconnected',
+          canonicalBody: 'temporary disconnect',
         },
       ]),
     );
@@ -94,8 +172,8 @@ describe('CodexAttentionNormalization terminal outcomes', () => {
             kind: 'retry-error',
             sourceSequence: 3,
             turnKey: 'turn-delivery-retry',
-            errorKind: 'serverOverloaded',
-            canonicalBody: 'model overloaded',
+            errorKind: 'responseStreamDisconnected',
+            canonicalBody: 'temporary disconnect',
           },
         ],
         3,

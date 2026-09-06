@@ -18,13 +18,19 @@ anything.
 
 This is the Router component of the unofficial Codex-focused fork of
 [ripper37/remote-notifier v1.0.1](https://github.com/ripper37/remote-notifier/tree/v1.0.1).
-It installs attention hooks for task completion,
-questions, ongoing or completed plans, and permission requests. Run the
-auto-configure command and select Codex; the helper is installed at
+For Codex 0.145+, it installs a private transparent shim for newly created
+integrated terminals. Supported `codex`, `codex resume`, and `codex fork`
+invocations run a same-lifetime sidecar that forwards app-server
+JSONL/WebSocket traffic unchanged and extracts only a notification whitelist.
+An in-TUI `/resume` picker gets an isolated temporary app-server connection, so
+it remains available while the active chat stays connected. Unsupported
+invocations and Codex 0.144.3 fail open to lightweight attention hooks. Run the
+auto-configure command and select Codex; the fallback helper is installed at
 `~/.local/bin/codex-attention-hook`. Use
-`Remote Notifier: Remove Codex notification hooks` to remove only the hooks and
-helper owned by this extension. Completed-turn notifications show both the
-renamed session and answer preview when both are available.
+`Remote Notifier: Remove Codex notification configuration` to remove the hooks,
+helper, and shim PATH injection owned by this extension. Completed
+turn notifications show both the renamed session and answer preview when both
+are available.
 
 For Codex notifications, the Router also matches the hook process ancestry to
 the VS Code terminal process and stores a `session_id` mapping. Clicking the
@@ -50,10 +56,43 @@ allow scripts and tools to trigger notifications from within that workspace.
 Triggered notifications are passed to the main extension for presentation via
 system or in-app notifications.
 
-Codex hooks use the authenticated `/notify/async` endpoint. The Router returns
-`202 Accepted` after validating and queueing the payload, while terminal mapping
-and Windows notification presentation continue without consuming the hook's
-three-second timeout.
+The sidecar and Hook helper use the authenticated `/codex/events` endpoint. The
+Router validates a minimal `CodexProtocolEvent | CodexHookEvent` and returns
+`202 Accepted` immediately. Protocol state handling, bounded transcript-tail
+fallback parsing, terminal mapping, and Windows notification presentation then
+continue asynchronously. The helper has an internal deadline of about 1.35
+seconds and never reads transcripts, indexes, or SQLite.
+
+Exact monitoring emits notifications for completed turns, structured plans,
+off-to-on safety buffering, every distinct input/approval/MCP request id, and
+every official error occurrence, including retryable errors. Later occurrences
+with identical text notify again. Only transport replay of the same occurrence
+id and a final turn confirmation with no new visible error are collapsed.
+Protocol sessions are authoritative, so corresponding Hook presentation is
+ignored instead of double-presented; transcript monitoring remains available
+as a terminal-error fallback.
+
+Terminal errors are classified from the structured `codexErrorInfo` value,
+forwarded HTTP status, and a bounded set of standard fallback messages. This
+covers quota, context, authentication, transport/DNS/TLS/proxy failures, model
+service failures, unsupported models, invalid requests/configuration, output
+length, session recovery, state conflicts, and sandbox/policy failures. Provider
+JSON envelopes are reduced to their nested message and status, and credential
+shapes are redacted before presentation.
+
+Hook Stop fallback polls the bounded transcript tail for up to about 0.75
+seconds after the endpoint has already returned `202`, preventing a
+late-persisted terminal error from being reported as completion. Codex does not
+invoke Stop hooks for every terminal failure, so `UserPromptSubmit` also starts
+an event-driven transcript append monitor that parses only structured
+`task_complete.error` records. During a Router reload, the sidecar retains its
+sanitized event queue and allows up to five seconds for final delivery before
+shutdown.
+
+On Windows, the generated shim prefers the real `node.exe` available to the
+integrated terminal. It does not launch the Codex TUI through VS Code's
+Electron host, preserving ConPTY/TTY handles and avoiding
+`stdin is not a terminal`.
 
 This extension can be installed manually, but the main extension will also
 prompt user to install it whenever new workspace is opened which doesn't have it
@@ -75,9 +114,9 @@ From the VSIX download directory in Windows PowerShell, the quickest Remote SSH
 installation is:
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.4.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
 code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.10.vsix --force
+  .\remote-notifier-codex-router-1.0.21.vsix --force
 ```
 
 Replace `YOUR_SSH_HOST` with the `Host` alias from the Windows SSH config. Then

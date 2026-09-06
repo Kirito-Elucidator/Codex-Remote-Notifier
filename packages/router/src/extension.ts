@@ -55,12 +55,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const codexMonitoring = new CodexMonitoringStatus(log);
   const codexEvents = new CodexEventHandler(handler, config, undefined, log, codexMonitoring, {
     notifySuccessfulTurns: true,
+    reconnectionAlertThreshold: 5,
   });
   const codexAttention = new CodexAttentionNormalizationRegistry(
     new PresentationCommandBridge(),
     (change) => codexMonitoring.update(change),
     undefined,
-    { notifySuccessfulTurns: true, notifyRetryableErrors: true },
+    { notifySuccessfulTurns: true, notifyRetryableErrors: true, reconnectionAlertThreshold: 5 },
   );
   const sessionManager = new SessionManager(context, {
     codexPreviewLength: config.codexPreviewLength,

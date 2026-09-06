@@ -51,6 +51,7 @@ export interface CodexMonitoringAuthority {
 
 export interface CodexEventHandlerOptions {
   notifySuccessfulTurns?: boolean;
+  reconnectionAlertThreshold?: number;
 }
 
 export class CodexEventHandler implements vscode.Disposable {
@@ -61,6 +62,8 @@ export class CodexEventHandler implements vscode.Disposable {
   private readonly terminalFailureTurns = new Map<string, true>();
   private readonly seenErrorOccurrences = new Map<string, true>();
   private readonly errorNotifiedTurns = new Map<string, true>();
+  private readonly reconnectionAttempts = new Map<string, number>();
+  private readonly reconnectionAlerts = new Set<string>();
   private readonly transcriptMonitor: CodexTranscriptMonitor;
   private legacyErrorOccurrenceSequence = 0;
   private chain = Promise.resolve();
@@ -345,12 +348,25 @@ export class CodexEventHandler implements vscode.Disposable {
     if (occurrenceKey) {
       this.remember(this.seenErrorOccurrences, occurrenceKey, MAX_SEEN_ERROR_OCCURRENCES);
     }
+    const turnKey = this.turnKey(event.thread_id ?? '', event.turn_id ?? '');
+    const reconnecting = event.will_retry === true && isReconnectionError(event.error);
+    if (reconnecting) {
+      const attempts = (this.reconnectionAttempts.get(turnKey) ?? 0) + 1;
+      this.reconnectionAttempts.set(turnKey, attempts);
+      const threshold = Math.max(1, this.options.reconnectionAlertThreshold ?? 1);
+      if (attempts < threshold) return;
+      if (threshold > 1 && this.reconnectionAlerts.has(turnKey)) return;
+    } else if (event.will_retry === true) {
+      this.reconnectionAttempts.delete(turnKey);
+      this.reconnectionAlerts.delete(turnKey);
+    }
     try {
       await this.presentProtocolError(event, state.cwd);
     } catch (error) {
       if (occurrenceKey) this.seenErrorOccurrences.delete(occurrenceKey);
       throw error;
     }
+    if (reconnecting) this.reconnectionAlerts.add(turnKey);
   }
 
   private async onTurnCompleted(event: CodexProtocolEvent): Promise<void> {
@@ -361,11 +377,13 @@ export class CodexEventHandler implements vscode.Disposable {
     state.safetyBufferingVisible = false;
 
     if (event.status === 'interrupted') {
+      this.resetReconnectionState(turnKey);
       this.remember(this.completedTurns, turnKey, MAX_COMPLETED_TURNS);
       state.activeTurnId = undefined;
       return;
     }
     if (event.status === 'failed') {
+      this.resetReconnectionState(turnKey);
       if (this.errorNotifiedTurns.has(turnKey)) {
         this.remember(this.terminalFailureTurns, turnKey, MAX_COMPLETED_TURNS);
         this.remember(this.completedTurns, turnKey, MAX_COMPLETED_TURNS);
@@ -397,6 +415,7 @@ export class CodexEventHandler implements vscode.Disposable {
       });
     }
     this.remember(this.completedTurns, turnKey, MAX_COMPLETED_TURNS);
+    this.resetReconnectionState(turnKey);
     state.activeTurnId = undefined;
   }
 
@@ -684,6 +703,25 @@ export class CodexEventHandler implements vscode.Disposable {
   private turnKey(threadId: string, turnId: string): string {
     return `${threadId}\u0000${turnId}`;
   }
+
+  private resetReconnectionState(turnKey: string): void {
+    this.reconnectionAttempts.delete(turnKey);
+    this.reconnectionAlerts.delete(turnKey);
+  }
+}
+
+function isReconnectionError(error: CodexProtocolError): boolean {
+  if (
+    [
+      'httpConnectionFailed',
+      'responseStreamConnectionFailed',
+      'responseStreamDisconnected',
+      'responseTooManyFailedAttempts',
+    ].includes(error.code ?? '')
+  ) {
+    return true;
+  }
+  return /reconnect|connection|stream disconnected|network|timeout/i.test(error.message);
 }
 
 export function classifyCodexError(

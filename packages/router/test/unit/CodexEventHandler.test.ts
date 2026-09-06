@@ -159,6 +159,28 @@ describe('CodexEventHandler', () => {
     expect(delivered[0]).toMatchObject({ title: '[模型服务错误]', level: 'error' });
   });
 
+  it('waits for five failed reconnect attempts before alerting', async () => {
+    handler = new CodexEventHandler(
+      notifications as unknown as NotificationHandler,
+      { codexPreviewLength: 32 } as Configuration,
+      metadata as unknown as CodexMetadataResolver,
+      undefined,
+      undefined,
+      { reconnectionAlertThreshold: 5 },
+    );
+    await handler.handle(protocol('turn/started'));
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await handler.handle(
+        protocol('error', {
+          occurrence_id: `reconnect-${attempt}`,
+          will_retry: true,
+          error: { message: 'temporary disconnect', code: 'responseStreamDisconnected' },
+        }),
+      );
+      expect(delivered).toHaveLength(attempt === 5 ? 1 : 0);
+    }
+  });
+
   it('notifies only on safety UI off-to-on transitions for the active turn', async () => {
     await handler.handle(protocol('turn/started'));
     await handler.handle(protocol('model/safetyBuffering/updated', { show_buffering_ui: true }));
@@ -459,6 +481,45 @@ describe('CodexEventHandler', () => {
     await handler.handle(retryable);
 
     expect(notifications.handle).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows a new reconnect alert after a different retryable error resets the sequence', async () => {
+    handler = new CodexEventHandler(
+      notifications as unknown as NotificationHandler,
+      { codexPreviewLength: 32 } as Configuration,
+      metadata as unknown as CodexMetadataResolver,
+      undefined,
+      undefined,
+      { reconnectionAlertThreshold: 2 },
+    );
+    await handler.handle(protocol('turn/started'));
+    for (const occurrence_id of ['reconnect-1', 'reconnect-2']) {
+      await handler.handle(
+        protocol('error', {
+          occurrence_id,
+          will_retry: true,
+          error: { message: 'temporary disconnect', code: 'responseStreamDisconnected' },
+        }),
+      );
+    }
+    await handler.handle(
+      protocol('error', {
+        occurrence_id: 'service-retry',
+        will_retry: true,
+        error: { message: 'model overloaded', code: 'serverOverloaded' },
+      }),
+    );
+    for (const occurrence_id of ['reconnect-3', 'reconnect-4']) {
+      await handler.handle(
+        protocol('error', {
+          occurrence_id,
+          will_retry: true,
+          error: { message: 'temporary disconnect', code: 'responseStreamDisconnected' },
+        }),
+      );
+    }
+
+    expect(notifications.handle).toHaveBeenCalledTimes(3);
   });
 
   it('reports a terminal error immediately and does not repeat it at failed completion', async () => {

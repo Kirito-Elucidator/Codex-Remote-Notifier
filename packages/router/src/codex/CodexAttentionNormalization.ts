@@ -32,6 +32,7 @@ export interface CodexAttentionClock {
 export interface CodexAttentionNormalizationOptions {
   notifySuccessfulTurns?: boolean;
   notifyRetryableErrors?: boolean;
+  reconnectionAlertThreshold?: number;
 }
 
 const systemClock: CodexAttentionClock = {
@@ -56,6 +57,8 @@ interface TurnState {
   resolvedRequests: Set<string>;
   returnTarget: string;
   stagedFailure?: FailureDetail;
+  reconnectionAttempts: number;
+  reconnectionAlerted?: boolean;
 }
 
 type ExactTurnState = TurnState & { foregroundThreadKey: string };
@@ -373,6 +376,7 @@ class InvocationActor {
             requests: new Map(),
             resolvedRequests: new Set(),
             returnTarget: observation.returnTarget,
+            reconnectionAttempts: 0,
           });
           return true;
         }
@@ -418,6 +422,7 @@ class InvocationActor {
           requests: new Map(),
           resolvedRequests: new Set(),
           returnTarget: observation.returnTarget,
+          reconnectionAttempts: 0,
         });
         this.exactTurnKeys.add(observation.turnKey);
         return true;
@@ -673,6 +678,15 @@ class InvocationActor {
     const turn = this.activeTerminalTurn(scope, state, observation.turnKey);
     if (turn === undefined) return true;
 
+    if (isReconnectionError(observation.errorKind, observation.canonicalBody)) {
+      turn.reconnectionAttempts += 1;
+      const threshold = Math.max(1, this.options.reconnectionAlertThreshold ?? 1);
+      if (turn.reconnectionAttempts < threshold || turn.reconnectionAlerted) return true;
+    } else {
+      turn.reconnectionAttempts = 0;
+      turn.reconnectionAlerted = undefined;
+    }
+
     const detail: FailureDetail = {
       errorKind: observation.errorKind,
       ...(observation.canonicalBody === undefined
@@ -712,6 +726,9 @@ class InvocationActor {
       mutations: [{ kind: 'create', record }],
     };
     if (!(await this.applyPresentation(exchange))) return false;
+    if (isReconnectionError(observation.errorKind, observation.canonicalBody)) {
+      turn.reconnectionAlerted = true;
+    }
     state.outcomes.add(outcomeKey);
     return true;
   }
@@ -1181,6 +1198,7 @@ class InvocationActor {
       requests: new Map(),
       resolvedRequests: new Set(),
       returnTarget: terminal.returnTarget,
+      reconnectionAttempts: 0,
     };
     return this.createFailure(
       scope,
@@ -1576,6 +1594,20 @@ function failurePresentation(detail: FailureDetail | undefined): {
     default:
       return { generic: true, title: 'Codex failed' };
   }
+}
+
+function isReconnectionError(errorKind: string, body?: string): boolean {
+  if (
+    [
+      'httpConnectionFailed',
+      'responseStreamConnectionFailed',
+      'responseStreamDisconnected',
+      'responseTooManyFailedAttempts',
+    ].includes(errorKind)
+  ) {
+    return true;
+  }
+  return /reconnect|connection|stream disconnected|network|timeout/i.test(body ?? '');
 }
 
 function retainedObservationBytes(scopes: Map<string, ScopeState>): number {
