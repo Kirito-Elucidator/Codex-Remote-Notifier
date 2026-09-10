@@ -132,6 +132,29 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
     }
   });
 
+  it('delivers loopback events directly despite inherited proxy settings', async () => {
+    const result = await runHook(
+      {
+        hook_event_name: 'Stop',
+        session_id: 'session-proxy',
+      },
+      {
+        HTTP_PROXY: 'http://127.0.0.1:1',
+        HTTPS_PROXY: 'http://127.0.0.1:1',
+        ALL_PROXY: 'http://127.0.0.1:1',
+        NO_PROXY: '',
+        http_proxy: 'http://127.0.0.1:1',
+        https_proxy: 'http://127.0.0.1:1',
+        all_proxy: 'http://127.0.0.1:1',
+        no_proxy: '',
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0].payload.session_id).toBe('session-proxy');
+  });
+
   it('preserves exact Unicode through the simulated Remote SSH hook route', async () => {
     const fixture = '中文🙂e\u0301<&>涓枃棰勮';
 

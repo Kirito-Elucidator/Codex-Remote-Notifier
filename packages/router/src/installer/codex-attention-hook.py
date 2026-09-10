@@ -235,6 +235,8 @@ def _send(body: dict[str, Any], deadline: float) -> None:
     # Escaping keeps isolated damaged UTF-16 units field-local while the UTF-8
     # envelope stays valid. JSON parsing restores every accepted scalar exactly.
     data = json.dumps(body, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    # Endpoints are loopback-only; never expose local bearer tokens to a proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     for url, token in _endpoints():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -250,7 +252,7 @@ def _send(body: dict[str, Any], deadline: float) -> None:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
+            with opener.open(
                 request, timeout=min(HTTP_TIMEOUT_SECONDS, remaining)
             ) as response:
                 if response.status == 202:
