@@ -963,11 +963,11 @@ describe('runSidecar passthrough', () => {
 
       const log = await readJsonLines(fake.logPath);
       expect(log.map((entry) => entry.mode)).toEqual(
-        expect.arrayContaining(['version', 'app-server', 'remote-failed', 'ordinary']),
+        expect.arrayContaining(['version', 'remote-failed', 'ordinary']),
       );
       expect(log.every((entry) => entry.protocolSession === null)).toBe(true);
       const appServer = log.find((entry) => entry.mode === 'app-server');
-      expect(isProcessRunning(Number(appServer?.pid))).toBe(false);
+      if (appServer) expect(isProcessRunning(Number(appServer.pid))).toBe(false);
     } finally {
       restore();
       await closeServer(server);

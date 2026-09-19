@@ -1149,15 +1149,16 @@ export function resolveNpmNodeRuntime(
   currentExecutable = process.execPath,
   platform = process.platform,
 ): string {
-  return isNodeRuntime(currentExecutable)
+  return isNodeRuntime(currentExecutable, platform)
     ? currentExecutable
     : platform === 'win32'
       ? 'node.exe'
       : 'node';
 }
 
-function isNodeRuntime(executable: string): boolean {
-  const name = path.basename(executable).toLowerCase();
+function isNodeRuntime(executable: string, platform = process.platform): boolean {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const name = pathApi.basename(executable).toLowerCase();
   return name === 'node' || name === 'node.exe';
 }
 
