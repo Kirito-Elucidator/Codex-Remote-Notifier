@@ -2,7 +2,7 @@
   "name": "remote-notifier-codex-router",
   "displayName": "Remote Notifier Codex (Router)",
   "description": "Route OpenAI Codex CLI protocol events and Hook fallbacks to reliable Windows notifications with click-to-focus navigation",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",

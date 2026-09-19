@@ -48,7 +48,7 @@ sidecar 旁读 app-server 结构化事件；旧版本、普通终端和不支持
 此外还增加了以下能力：
 
 - 根据 `session_id` 从 Codex 状态数据库或 `session_index.jsonl` 读取重命名后的会话名。
-- 通知正文显示主机名、会话名和回答摘要；未重命名时直接显示回答摘要。
+- 通知正文优先显示主机名和会话名；未重命名时改为显示回答摘要。
 - 可配置摘要长度，默认截取前 16 个可见字符，并正确处理中文和组合字符。
 - 精确模式不读取 transcript，也不依赖计时器或终端文字识别；sidecar 只旁读白名单字段，
   不记录提示词、令牌或原始协议。
@@ -179,7 +179,7 @@ Remote SSH 场景下，Router 和 Hook 在服务器侧接收 Codex 事件；Pres
 
 ```powershell
 code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.21.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.22.vsix --force
 ```
 
 Remote SSH 场景使用下面两条命令。将 `YOUR_SSH_HOST` 替换为 Windows
@@ -191,7 +191,7 @@ code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
 
 # Router 安装到指定 SSH 主机
 code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.21.vsix --force
+  .\remote-notifier-codex-router-1.0.22.vsix --force
 ```
 
 普通的 `code --install-extension` 安装到本机；增加
@@ -243,7 +243,7 @@ profile、显式 `--remote`、未知参数及不支持的版本会保持原命�
 已重命名的会话：
 
 ```text
-主机名 · 会话名 · 回答前 16 个可见字符
+主机名 · 会话名
 ```
 
 未重命名的会话：
@@ -366,8 +366,8 @@ Additional enhancements include:
 
 - Resolving renamed Codex sessions from the state database or
   `session_index.jsonl` using `session_id`.
-- Showing the host, renamed session, and final-answer preview in each
-  notification, with a direct answer preview for unnamed sessions.
+- Showing the host and renamed session when available, with a direct
+  final-answer preview for unnamed sessions.
 - Configurable Unicode-aware preview truncation, defaulting to 16 visible
   characters.
 - No timers, terminal text recognition, or transcript access in exact mode.
@@ -538,7 +538,7 @@ local-only setup, run:
 
 ```powershell
 code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.21.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.22.vsix --force
 ```
 
 For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
@@ -550,7 +550,7 @@ code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
 
 # Install the Router on the specified SSH host
 code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.21.vsix --force
+  .\remote-notifier-codex-router-1.0.22.vsix --force
 ```
 
 Plain `code --install-extension` installs locally. The
@@ -613,7 +613,7 @@ versions retain their original command semantics and use Hooks.
 Renamed session:
 
 ```text
-host · session name · first 16 visible characters of the answer
+host · session name
 ```
 
 Unnamed session:

@@ -26,6 +26,7 @@ type ForegroundSource = ConnectionQualificationEvidence['foregroundSource'];
 interface AuditedThread {
   id: string;
   sessionId: string;
+  sessionTitle?: string;
   source: ForegroundSource;
   parentId: string | null;
 }
@@ -68,6 +69,7 @@ export class CodexAttentionProtocolCapture {
   private boundForegroundThread?: BoundForegroundThread;
   private foregroundThreadCandidate?: ForegroundThreadCandidate;
   private foregroundThreadId?: string;
+  private foregroundSessionTitle?: string;
   private initialization?: BoundedInitialization;
   private initializeRequestId?: string;
   private initializeResponseId?: string;
@@ -243,6 +245,20 @@ export class CodexAttentionProtocolCapture {
       observations.push(...this.qualify());
       observations.push(...this.emitPendingTurn());
       return observations;
+    }
+
+    if (message.method === 'thread/name/updated') {
+      const params = isRecord(message.params) ? message.params : undefined;
+      if (params === undefined) return [];
+      const threadId = boundedIdentifier(params.threadId);
+      if (threadId === undefined || threadId !== this.foregroundThreadId) return [];
+      if (params.threadName === null) {
+        this.foregroundSessionTitle = undefined;
+        return [];
+      }
+      const sessionTitle = boundedProtocolText(params.threadName);
+      if (sessionTitle !== undefined) this.foregroundSessionTitle = sessionTitle;
+      return [];
     }
 
     if (message.method === 'turn/started') {
@@ -499,6 +515,7 @@ export class CodexAttentionProtocolCapture {
     }
 
     const preview = successPreview(turn.items);
+    const canonicalBody = notificationBody(this.foregroundSessionTitle, preview?.text);
     return [
       {
         kind: 'terminal-result',
@@ -507,7 +524,7 @@ export class CodexAttentionProtocolCapture {
         result: 'success',
         occurrenceKey: `${turnId}:success`,
         canonicalTitle: preview?.plan ? 'Codex plan completed' : 'Codex completed',
-        ...(preview === undefined ? {} : { canonicalBody: preview.text }),
+        ...(canonicalBody === undefined ? {} : { canonicalBody }),
       },
     ];
   }
@@ -542,6 +559,7 @@ export class CodexAttentionProtocolCapture {
     )
       return;
     this.foregroundThreadId = bound.id;
+    this.foregroundSessionTitle = candidate.sessionTitle;
     this.qualificationEvidence = {
       runtimeVersion,
       clientName: this.initialization.clientName,
@@ -741,7 +759,14 @@ function auditedThread(thread: Record<string, unknown>): AuditedThread | undefin
   const normalizedParentId =
     parentId === undefined || parentId === null ? null : boundedIdentifier(parentId);
   if (normalizedParentId === undefined) return undefined;
-  return { id, sessionId, source, parentId: normalizedParentId };
+  const sessionTitle = boundedProtocolText(thread.name);
+  return {
+    id,
+    sessionId,
+    source,
+    parentId: normalizedParentId,
+    ...(sessionTitle === undefined ? {} : { sessionTitle }),
+  };
 }
 
 function foregroundSource(value: unknown): ForegroundSource | undefined {
@@ -826,6 +851,12 @@ function successPreview(items: unknown): { plan: boolean; text: string } | undef
     return preview.length > 0 ? { plan: item.type === 'plan', text: preview } : undefined;
   }
   return undefined;
+}
+
+function notificationBody(sessionTitle: string | undefined, detail: string | undefined) {
+  const body = sessionTitle ?? detail;
+  if (body === undefined || body.length === 0) return undefined;
+  return boundCanonicalUtf8(body, ATTENTION_EXCHANGE_LIMITS.canonicalBodyBytes);
 }
 
 function turnStatusResult(value: unknown): 'failure' | 'interrupted' | 'success' | undefined {

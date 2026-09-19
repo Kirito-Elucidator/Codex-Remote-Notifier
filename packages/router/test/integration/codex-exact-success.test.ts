@@ -102,11 +102,14 @@ describe('exact foreground success', () => {
     capture.observeClientText('{"id":2,"method":"thread/start","params":{}}');
     const observations = [
       ...capture.observeServerText(
-        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
+        '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","name":"Original session","parentThreadId":null,"source":"cli"}}}',
       ),
       ...capture.observeServerText('{"id":2,"result":{"thread":{"id":"thread-1"}}}'),
       ...capture.observeServerText(
         '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
+      ),
+      ...capture.observeServerText(
+        '{"method":"thread/name/updated","params":{"threadId":"thread-1","threadName":"Renamed session"}}',
       ),
       ...capture.observeServerText(
         '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"exact success"}]}}}',
@@ -135,7 +138,7 @@ describe('exact foreground success', () => {
             kind: 'create',
             record: expect.objectContaining({
               activationId: expect.stringMatching(/^[0-9a-f]{32}$/),
-              canonicalBody: 'exact success',
+              canonicalBody: 'Renamed session',
               canonicalTitle: 'Codex completed',
               revision: 1,
             }),

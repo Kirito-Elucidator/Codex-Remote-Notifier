@@ -63,6 +63,34 @@ describe('CodexEventHandler', () => {
     handler.dispose();
   });
 
+  it('shows only the session title when the session has been renamed', async () => {
+    await handler.handle(protocol('turn/started'));
+    await handler.handle(
+      protocol('turn/completed', { status: 'completed', preview: 'Answer preview' }),
+    );
+
+    expect(delivered).toEqual([
+      expect.objectContaining({ message: `${os.hostname()} | Session title` }),
+    ]);
+  });
+
+  it('shows the answer preview when the session has not been renamed', async () => {
+    metadata.resolvePreviewParts.mockResolvedValueOnce({
+      sessionTitle: undefined,
+      answer: 'Answer preview',
+      cwdName: 'repo',
+    });
+
+    await handler.handle(protocol('turn/started'));
+    await handler.handle(
+      protocol('turn/completed', { status: 'completed', preview: 'Answer preview' }),
+    );
+
+    expect(delivered).toEqual([
+      expect.objectContaining({ message: `${os.hostname()} | Answer preview` }),
+    ]);
+  });
+
   it('notifies for completed async questions without forwarding question text or replaying alerts', async () => {
     const capture = new CodexProtocolCapture('instance-1', []);
     capture.observeServerMessage({

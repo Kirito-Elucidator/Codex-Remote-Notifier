@@ -814,7 +814,7 @@ describe('runSidecar passthrough', () => {
         exactObservations.find((observation) => observation.kind === 'terminal-result'),
       ).toMatchObject({
         result: 'success',
-        canonicalBody: 'audited success',
+        canonicalBody: 'Fake session',
       });
       expect(
         exactObservations.find((observation) => observation.kind === 'invocation-end'),
@@ -884,7 +884,7 @@ describe('runSidecar passthrough', () => {
         observations.find((observation) => observation.kind === 'terminal-result'),
       ).toMatchObject({
         result: 'success',
-        canonicalBody: 'buffered after TUI exit',
+        canonicalBody: 'Fake session',
       });
     } finally {
       restore();

@@ -249,6 +249,8 @@ export class CodexEventHandler implements vscode.Disposable {
         event.session_id,
         event.cwd,
         stripPlanTags(rawAnswer),
+        undefined,
+        true,
       );
       if (this.isProtocolAuthoritativeHook(event)) return;
       await this.presentCodex({
@@ -406,7 +408,13 @@ export class CodexEventHandler implements vscode.Disposable {
     if (this.options.notifySuccessfulTurns !== false) {
       await this.presentCodex({
         title: event.plan_complete ? '[计划完成]' : '[任务完成]',
-        message: await this.buildMessage(event.thread_id, state.cwd, event.preview),
+        message: await this.buildMessage(
+          event.thread_id,
+          state.cwd,
+          event.preview,
+          undefined,
+          true,
+        ),
         level: 'information',
         sessionId: event.thread_id,
         turnId: event.turn_id,
@@ -618,6 +626,7 @@ export class CodexEventHandler implements vscode.Disposable {
     cwd: string | undefined,
     answer?: string,
     answerLimit?: number,
+    preferSessionTitle = false,
   ): Promise<string> {
     const state = sessionId ? this.threads.get(sessionId) : undefined;
     const parts = await this.metadata.resolvePreviewParts(sessionId, state?.cwd ?? cwd, answer);
@@ -625,7 +634,11 @@ export class CodexEventHandler implements vscode.Disposable {
     const title = truncateCanonicalText(parts.sessionTitle ?? state?.sessionTitle, limit);
     const response = truncateCanonicalText(parts.answer, answerLimit ?? limit);
     const fallback = truncateCanonicalText(parts.cwdName, limit) ?? 'Codex';
-    const preview = title ? [title, response].filter(Boolean) : [response ?? fallback];
+    const preview = title
+      ? preferSessionTitle
+        ? [title]
+        : [title, response].filter(Boolean)
+      : [response ?? fallback];
     return `${os.hostname()} | ${preview.join(' | ')}`;
   }
 

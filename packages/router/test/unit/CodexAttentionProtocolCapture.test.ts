@@ -192,6 +192,26 @@ describe('CodexAttentionProtocolCapture', () => {
     ]);
   });
 
+  it('uses the latest renamed session title in a success notification', () => {
+    const capture = qualifiedCapture();
+
+    expect(
+      capture.observeServerText(
+        '{"method":"thread/name/updated","params":{"threadId":"thread-1","threadName":"Renamed session"}}',
+      ),
+    ).toEqual([]);
+    expect(
+      capture.observeServerText(
+        '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[{"type":"agentMessage","text":"Task complete"}]}}}',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'terminal-result',
+        canonicalBody: 'Renamed session',
+      }),
+    ]);
+  });
+
   it('stages a non-retrying error and emits one failed terminal boundary', () => {
     const capture = qualifiedCapture();
 

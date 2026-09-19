@@ -29,8 +29,8 @@ auto-configure command and select Codex; the fallback helper is installed at
 `~/.local/bin/codex-attention-hook`. Use
 `Remote Notifier: Remove Codex notification configuration` to remove the hooks,
 helper, and shim PATH injection owned by this extension. Completed
-turn notifications show both the renamed session and answer preview when both
-are available.
+turn notifications show the renamed session when available, otherwise they
+show the answer preview.
 
 For Codex notifications, the Router also matches the hook process ancestry to
 the VS Code terminal process and stores a `session_id` mapping. Clicking the
@@ -116,7 +116,7 @@ installation is:
 ```powershell
 code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
 code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.21.vsix --force
+  .\remote-notifier-codex-router-1.0.22.vsix --force
 ```
 
 Replace `YOUR_SSH_HOST` with the `Host` alias from the Windows SSH config. Then
