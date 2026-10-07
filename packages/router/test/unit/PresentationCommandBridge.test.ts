@@ -4,6 +4,7 @@ import { commands } from 'vscode';
 import {
   COMMAND_EXCHANGE_PRESENTATION,
   COMMAND_SHOW_NOTIFICATION,
+  createCodexReturnTarget,
   NotificationPresenter,
   PresentationExchange,
 } from 'remote-notifier-shared';
@@ -107,5 +108,45 @@ describe('PresentationCommandBridge', () => {
         vi.fn().mockResolvedValue({ kind: 'applied', transactionId: 'different' }),
       ).exchange(exchange),
     ).rejects.toThrow(/transaction/i);
+  });
+
+  it('binds every Codex return target to the originating window, including reconciled records', async () => {
+    const originCommand = `remoteNotifier.focusCodexSession.${'a'.repeat(32)}`;
+    const record = {
+      ...exchange.mutations[0].record,
+      returnTarget: createCodexReturnTarget({ sessionId: 'shared-session' }),
+    };
+    const execute = vi.fn(async (_command, input) => ({
+      kind: 'applied',
+      transactionId: input.transactionId,
+    }));
+    const bridge = new PresentationCommandBridge(execute, originCommand);
+    await bridge.exchange({ ...exchange, mutations: [{ kind: 'create', record }] });
+    expect(execute).toHaveBeenLastCalledWith(
+      COMMAND_EXCHANGE_PRESENTATION,
+      expect.objectContaining({
+        mutations: [
+          {
+            kind: 'create',
+            record: {
+              ...record,
+              returnTarget: createCodexReturnTarget({ sessionId: 'shared-session', originCommand }),
+            },
+          },
+        ],
+      }),
+    );
+    await bridge.exchange({ kind: 'reconcile', transactionId: 'reload', records: [record] });
+    expect(execute).toHaveBeenLastCalledWith(
+      COMMAND_EXCHANGE_PRESENTATION,
+      expect.objectContaining({
+        records: [
+          {
+            ...record,
+            returnTarget: createCodexReturnTarget({ sessionId: 'shared-session', originCommand }),
+          },
+        ],
+      }),
+    );
   });
 });

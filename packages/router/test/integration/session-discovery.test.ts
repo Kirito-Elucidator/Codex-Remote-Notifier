@@ -5,6 +5,7 @@ import * as os from 'os';
 import { SessionManager } from '../../src/session/SessionManager';
 import { createMockExtensionContext } from '../helpers/vscode-mock';
 import { SessionInfo } from 'remote-notifier-shared';
+import { workspace } from 'vscode';
 
 describe('SessionManager Integration', () => {
   let sessionManager: SessionManager;
@@ -233,5 +234,51 @@ describe('SessionManager Integration', () => {
     await expect(fs.access(scopedPath)).rejects.toThrow();
     const legacy: SessionInfo = JSON.parse(await fs.readFile(legacyPath, 'utf-8'));
     expect(legacy.token).toBe('another-window');
+  });
+
+  it('isolates same-workspace windows and refreshes the same file after reload', async () => {
+    const context = createMockExtensionContext();
+    const first = new SessionManager(context as never, { routingId: 'a'.repeat(32) });
+    const second = new SessionManager(context as never, { routingId: 'b'.repeat(32) });
+    const reloaded = new SessionManager(context as never, { routingId: 'a'.repeat(32) });
+    expect(first.getSessionFilePath()).not.toBe(second.getSessionFilePath());
+    expect(reloaded.getSessionFilePath()).toBe(first.getSessionFilePath());
+  });
+
+  it('keeps the inherited locator after workspace folders change', () => {
+    const context = createMockExtensionContext();
+    const options = { routingId: 'a'.repeat(32) };
+    const first = new SessionManager(context as never, options);
+    workspace.workspaceFolders.push({
+      uri: { fsPath: '/additional', toString: () => '/additional' },
+    });
+    try {
+      expect(new SessionManager(context as never, options).getSessionFilePath()).toBe(
+        first.getSessionFilePath(),
+      );
+    } finally {
+      workspace.workspaceFolders.pop();
+    }
+  });
+
+  it('keeps the window locator across shutdown and publishes a complete replacement on reload', async () => {
+    const context = createMockExtensionContext();
+    const scoped = path.join(testDir, 'window.json');
+    const options = {
+      routingId: 'a'.repeat(32),
+      sessionFilePath: scoped,
+      legacySessionFilePath: path.join(testDir, 'legacy.json'),
+    };
+    const old = new SessionManager(context as never, options);
+    await old.initialize(5100);
+    await old.dispose();
+    expect(JSON.parse(await fs.readFile(scoped, 'utf-8')).port).toBe(5100);
+    const reloaded = new SessionManager(context as never, options);
+    await reloaded.initialize(5200);
+    expect(JSON.parse(await fs.readFile(scoped, 'utf-8'))).toMatchObject({
+      port: 5200,
+      token: reloaded.token,
+    });
+    await reloaded.dispose();
   });
 });

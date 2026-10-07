@@ -1,5 +1,3 @@
-import { randomBytes } from 'crypto';
-
 import * as vscode from 'vscode';
 
 import {
@@ -29,6 +27,7 @@ import { CommandPresenter } from './presenter/CommandPresenter';
 import { PresentationCommandBridge } from './presenter/PresentationCommandBridge';
 import { NotificationServer } from './server/NotificationServer';
 import { SessionManager } from './session/SessionManager';
+import { resolveWindowRoutingId } from './session/WindowRoutingIdentity';
 import { CodexTerminalFocusRegistry } from './terminal/CodexTerminalFocusRegistry';
 import { StatusBar } from './ui/StatusBar';
 
@@ -49,8 +48,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const vscodePresenter = new VscodePresenter();
   const presenter = new CommandPresenter(vscodePresenter, log);
-  const terminalFocus = new CodexTerminalFocusRegistry(context.workspaceState, log);
-  const codexFocusCommand = `${COMMAND_FOCUS_CODEX_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
+  const routingId = await resolveWindowRoutingId(context, log);
+  const terminalFocus = new CodexTerminalFocusRegistry(context.workspaceState, log, undefined, {
+    scopeId: routingId,
+  });
+  const codexFocusCommand = `${COMMAND_FOCUS_CODEX_SESSION_PREFIX}${routingId}`;
   const handler = new NotificationHandler(presenter, config, terminalFocus, codexFocusCommand);
   const codexMonitoring = new CodexMonitoringStatus(log);
   const codexEvents = new CodexEventHandler(handler, config, undefined, log, codexMonitoring, {
@@ -58,13 +60,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     reconnectionAlertThreshold: 5,
   });
   const codexAttention = new CodexAttentionNormalizationRegistry(
-    new PresentationCommandBridge(),
+    new PresentationCommandBridge(undefined, codexFocusCommand),
     (change) => codexMonitoring.update(change),
     undefined,
     { notifySuccessfulTurns: true, notifyRetryableErrors: true, reconnectionAlertThreshold: 5 },
   );
   const sessionManager = new SessionManager(context, {
     codexPreviewLength: config.codexPreviewLength,
+    routingId,
   });
   const codexProtocolShim = new CodexProtocolShimManager(context, log);
   const codexHookInstaller = new CodexAttentionHookInstaller(log);

@@ -6,7 +6,6 @@ import * as vscode from 'vscode';
 
 import {
   CodexFocusResult,
-  COMMAND_FOCUS_CODEX_SESSION,
   COMMAND_FOCUS_CODEX_SESSION_PREFIX,
   NotificationPayload,
   parseCodexReturnTarget,
@@ -67,10 +66,10 @@ export class NotificationFocusBroker implements vscode.Disposable {
     this.log?.appendLine(`[NotificationFocusBroker] Listening on 127.0.0.1:${this.port}`);
   }
 
-  createLaunchUri(payload: NotificationPayload): string {
+  async createLaunchUri(payload: NotificationPayload): Promise<string> {
     const baseUri = `${vscode.env.uriScheme}://${EXTENSION_ID}${ACTIVATION_PATH}`;
     const sessionId = this.parseSessionId(payload.session_id ?? null);
-    if (payload.source !== 'codex' || !sessionId) return baseUri;
+    if (payload.source !== 'codex' || !sessionId) return this.externalUri(baseUri);
 
     const focusCommand = this.parseFocusCommand(payload.codex_focus_command);
     const query = new URLSearchParams({ session_id: sessionId });
@@ -83,7 +82,7 @@ export class NotificationFocusBroker implements vscode.Disposable {
       query.set('port', String(this.port));
       query.set('activation', activation);
     }
-    return `${baseUri}?${query.toString()}`;
+    return this.externalUri(`${baseUri}?${query.toString()}`);
   }
 
   handleUri(uri: vscode.Uri): void {
@@ -127,16 +126,15 @@ export class NotificationFocusBroker implements vscode.Disposable {
 
   async claimReturnTarget(returnTarget: string): Promise<boolean> {
     const target = parseCodexReturnTarget(returnTarget);
-    if (target === undefined) return false;
-    const commands = target.originCommand
-      ? [target.originCommand, COMMAND_FOCUS_CODEX_SESSION]
-      : [COMMAND_FOCUS_CODEX_SESSION];
+    if (target?.originCommand === undefined) return false;
+    const commands = [target.originCommand];
     for (const command of commands) {
       try {
         const result = await vscode.commands.executeCommand<CodexFocusResult>(command, {
           session_id: target.sessionId,
         });
         if (!result?.ok) continue;
+        await new Promise<void>((resolve) => setTimeout(resolve, this.activationDelayMs));
         try {
           await vscode.commands.executeCommand('workbench.action.focusWindow');
         } catch (error) {
@@ -219,23 +217,20 @@ export class NotificationFocusBroker implements vscode.Disposable {
   }
 
   private async focusSession(sessionId?: string, focusCommand?: string): Promise<void> {
-    try {
-      await vscode.commands.executeCommand('workbench.action.focusWindow');
-    } catch (error) {
-      this.log?.appendLine(`[NotificationFocusBroker] Failed to focus VS Code window: ${error}`);
+    if (!sessionId) {
+      await this.focusWindow();
+      return;
     }
-    if (!sessionId) return;
 
     const preferredCommand = this.parseFocusCommand(focusCommand);
-    const commands = preferredCommand
-      ? [preferredCommand, COMMAND_FOCUS_CODEX_SESSION]
-      : [COMMAND_FOCUS_CODEX_SESSION];
+    const commands = preferredCommand ? [preferredCommand] : [];
     for (const command of commands) {
       try {
         const result = await vscode.commands.executeCommand<CodexFocusResult>(command, {
           session_id: sessionId,
         });
         if (result?.ok) {
+          await this.focusWindow();
           this.log?.appendLine(
             `[NotificationFocusBroker] Focused Codex session ${sessionId} in terminal "${result.terminal_name ?? ''}"`,
           );
@@ -254,6 +249,23 @@ export class NotificationFocusBroker implements vscode.Disposable {
     await vscode.window.showWarningMessage(
       'Remote Notifier: The original Codex terminal is closed or could not be located.',
     );
+  }
+
+  private async focusWindow(): Promise<void> {
+    try {
+      await vscode.commands.executeCommand('workbench.action.focusWindow');
+    } catch (error) {
+      this.log?.appendLine(`[NotificationFocusBroker] Failed to focus VS Code window: ${error}`);
+    }
+  }
+
+  private async externalUri(raw: string): Promise<string> {
+    try {
+      return (await vscode.env.asExternalUri(vscode.Uri.parse(raw))).toString();
+    } catch (error) {
+      this.log?.appendLine(`[NotificationFocusBroker] Window-bound URI unavailable: ${error}`);
+      return raw;
+    }
   }
 
   private forwardActivation(port: number, activation: string): Promise<ForwardResult> {

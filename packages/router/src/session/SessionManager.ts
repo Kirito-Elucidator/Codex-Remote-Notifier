@@ -21,6 +21,7 @@ export interface SessionManagerOptions {
   sessionFilePath?: string;
   legacySessionFilePath?: string;
   codexPreviewLength?: number;
+  routingId?: string;
 }
 
 export class SessionManager implements vscode.Disposable {
@@ -31,6 +32,7 @@ export class SessionManager implements vscode.Disposable {
   private workspaceKey: string;
   private envCollection: vscode.EnvironmentVariableCollection;
   private codexPreviewLength: number;
+  private readonly retainScopedSession: boolean;
 
   get token(): string {
     return this._token;
@@ -41,12 +43,17 @@ export class SessionManager implements vscode.Disposable {
     options?: SessionManagerOptions,
   ) {
     this._token = this.generateToken();
+    this.retainScopedSession = options?.routingId !== undefined;
     this.workspaceFolders = this.getWorkspaceFolders();
     this.workspaceKey = this.createWorkspaceKey(this.workspaceFolders);
     const sessionDirectory = path.join(os.homedir(), SESSION_DIR);
     this.sessionFilePath =
       options?.sessionFilePath ??
-      path.join(sessionDirectory, SESSION_SCOPES_DIR, `${this.workspaceKey}.json`);
+      path.join(
+        sessionDirectory,
+        SESSION_SCOPES_DIR,
+        `${options?.routingId ?? randomBytes(16).toString('hex')}.json`,
+      );
     this.legacySessionFilePath =
       options?.legacySessionFilePath ??
       (options?.sessionFilePath
@@ -57,9 +64,6 @@ export class SessionManager implements vscode.Disposable {
   }
 
   async initialize(port: number): Promise<void> {
-    await Promise.all(
-      this.sessionFilePaths().map((filePath) => this.cleanupStaleSession(filePath)),
-    );
     await this.writeSessionFile(port);
     this.setEnvironmentVariables(port);
   }
@@ -78,7 +82,9 @@ export class SessionManager implements vscode.Disposable {
 
   async dispose(): Promise<void> {
     await Promise.all(
-      this.sessionFilePaths().map((filePath) => this.removeOwnedSessionFile(filePath)),
+      this.sessionFilePaths()
+        .filter((filePath) => !this.retainScopedSession || filePath !== this.sessionFilePath)
+        .map((filePath) => this.removeOwnedSessionFile(filePath)),
     );
     this.envCollection.clear();
   }
@@ -106,7 +112,13 @@ export class SessionManager implements vscode.Disposable {
     await Promise.all(
       this.sessionFilePaths().map(async (filePath) => {
         await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-        await fs.writeFile(filePath, JSON.stringify(info, null, 2), { mode: 0o600 });
+        const temporary = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
+        try {
+          await fs.writeFile(temporary, JSON.stringify(info, null, 2), { mode: 0o600 });
+          await fs.rename(temporary, filePath);
+        } finally {
+          await fs.unlink(temporary).catch(() => {});
+        }
       }),
     );
   }
@@ -120,27 +132,6 @@ export class SessionManager implements vscode.Disposable {
       }
     } catch {
       // File may not exist, that's fine
-    }
-  }
-
-  private async cleanupStaleSession(filePath: string): Promise<void> {
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      const info: SessionInfo = JSON.parse(content);
-      if (!this.isProcessRunning(info.pid)) {
-        await fs.unlink(filePath);
-      }
-    } catch {
-      // No existing session file or parse error
-    }
-  }
-
-  private isProcessRunning(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
     }
   }
 

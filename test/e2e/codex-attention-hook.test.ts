@@ -279,6 +279,35 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
     expect(received[0].payload.session_id).toBe('session-reloaded');
   });
 
+  it('does not let a different window legacy session override inherited routing', async () => {
+    const wrongWindow: unknown[] = [];
+    const other = http.createServer((request, response) => {
+      wrongWindow.push(request.url);
+      request.resume();
+      response.writeHead(202).end();
+    });
+    await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
+    const legacy = path.join(testHome, '.remote-notifier', 'session.json');
+    await fs.mkdir(path.dirname(legacy), { recursive: true });
+    await fs.writeFile(
+      legacy,
+      JSON.stringify({ port: (other.address() as net.AddressInfo).port, token: 'other-window' }),
+    );
+    try {
+      await runHook(
+        { hook_event_name: 'Stop', session_id: 'correct-window' },
+        {
+          REMOTE_NOTIFIER_SESSION_FILE: '',
+        },
+      );
+      expect(wrongWindow).toHaveLength(0);
+      expect(received[0].payload.session_id).toBe('correct-window');
+    } finally {
+      await fs.unlink(legacy);
+      await new Promise<void>((resolve) => other.close(() => resolve()));
+    }
+  });
+
   it('fails open with valid no-op JSON and respects its internal deadline when Router is offline', async () => {
     const result = await runHook(
       {
@@ -297,6 +326,26 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
     expect(result.stdout.trim()).toBe('{"continue":true}');
     expect(result.stderr).toBe('');
     expect(result.elapsedMs).toBeLessThan(1500);
+  });
+
+  it('does not send an unowned event to the global last-active window record', async () => {
+    const legacy = path.join(testHome, '.remote-notifier', 'session.json');
+    await fs.mkdir(path.dirname(legacy), { recursive: true });
+    await fs.writeFile(legacy, JSON.stringify({ port, token }));
+    try {
+      const result = await runHook(
+        { hook_event_name: 'Stop', session_id: 'unowned-session' },
+        {
+          REMOTE_NOTIFIER_SESSION_FILE: '',
+          REMOTE_NOTIFIER_URL: '',
+          REMOTE_NOTIFIER_TOKEN: '',
+        },
+      );
+      expect(result.stdout.trim()).toBe('{"continue":true}');
+      expect(received).toHaveLength(0);
+    } finally {
+      await fs.unlink(legacy);
+    }
   });
 
   it('drops oversized stdin with valid no-op JSON instead of blocking Codex', async () => {

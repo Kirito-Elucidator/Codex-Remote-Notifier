@@ -164,10 +164,7 @@ def _event_url(raw_url: str) -> str | None:
 
 def _endpoints() -> list[tuple[str, str]]:
     endpoints: list[tuple[str, str]] = []
-    session_paths = [
-        os.environ.get("REMOTE_NOTIFIER_SESSION_FILE"),
-        str(Path("~/.remote-notifier/session.json").expanduser()),
-    ]
+    session_paths = [os.environ.get("REMOTE_NOTIFIER_SESSION_FILE")]
     for session_path in session_paths:
         session = _read_small_json(session_path)
         port = session.get("port")
@@ -181,6 +178,7 @@ def _endpoints() -> list[tuple[str, str]]:
     event_url = _event_url(raw_url) if raw_url else None
     if event_url and token and (event_url, token) not in endpoints:
         endpoints.append((event_url, token))
+    # With no inherited route, ownership is unknown. Never choose the last active window.
     return endpoints
 
 

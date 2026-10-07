@@ -27,8 +27,9 @@ export class SystemPresenter implements NotificationPresenter {
 
   constructor(
     private readonly log?: vscode.OutputChannel,
-    private readonly launchUriFactory: (payload: NotificationPayload) => string = () =>
-      'vscode://ddyndo.remote-notifier-codex/notification',
+    private readonly launchUriFactory: (
+      payload: NotificationPayload,
+    ) => string | Promise<string> = () => 'vscode://ddyndo.remote-notifier-codex/notification',
   ) {
     this.soundPlayer = new SoundPlayer(log);
     this.windowsReminder = new WindowsReminderPresenter(log);
@@ -71,7 +72,7 @@ export class SystemPresenter implements NotificationPresenter {
           message: displayable.body,
           iconPath,
           silent: !soundEnabled || Boolean(soundPath),
-          launchUri: this.launchUriFactory(payload),
+          launchUri: await this.launchUriFactory(payload),
           urgentWhenFullscreen: config.get<boolean>('codexFullscreenUrgentNotifications', true),
         });
         this.log?.appendLine('[SystemPresenter] Windows reminder notification sent successfully');

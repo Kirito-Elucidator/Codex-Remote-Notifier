@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { commands } from 'vscode';
+import { commands, env, window } from 'vscode';
 
 import {
   COMMAND_FOCUS_CODEX_SESSION,
@@ -33,7 +33,7 @@ describe('NotificationFocusBroker', () => {
   it('creates a per-notification activation URI for Codex sessions', async () => {
     const broker = await createBroker();
 
-    const launchUri = broker.createLaunchUri({
+    const launchUri = await broker.createLaunchUri({
       message: 'Done',
       source: 'codex',
       session_id: 'session-1',
@@ -48,13 +48,14 @@ describe('NotificationFocusBroker', () => {
     expect(parsed.searchParams.get('activation')).toMatch(/^[0-9a-f]{64}$/);
     expect(parsed.searchParams.get('session_id')).toBe('session-1');
     expect(parsed.searchParams.get('focus_command')).toBe(instanceCommand);
+    expect(parsed.searchParams.get('windowId')).toBe('17');
   });
 
   it('routes a click from the topmost window back to the originating window broker', async () => {
     const origin = await createBroker();
     const topmost = await createBroker();
     const uri = asVscodeUri(
-      origin.createLaunchUri({
+      await origin.createLaunchUri({
         message: 'Done',
         source: 'codex',
         session_id: 'session-origin',
@@ -100,7 +101,7 @@ describe('NotificationFocusBroker', () => {
     const origin = await createBroker();
     const topmost = await createBroker(topmostLog as never);
     const uri = asVscodeUri(
-      origin.createLaunchUri({
+      await origin.createLaunchUri({
         message: 'Done',
         source: 'codex',
         session_id: 'session-slow-origin',
@@ -134,7 +135,7 @@ describe('NotificationFocusBroker', () => {
   it('defers local focus until after the URI handler returns', async () => {
     const broker = await createBroker();
     const uri = asVscodeUri(
-      broker.createLaunchUri({
+      await broker.createLaunchUri({
         message: 'Done',
         source: 'codex',
         session_id: 'session-local',
@@ -168,7 +169,7 @@ describe('NotificationFocusBroker', () => {
     });
   });
 
-  it('falls back to the stable focus command when a persisted notification has a stale command', async () => {
+  it('reports a stale scoped command without guessing the current window after reload', async () => {
     const broker = await createBroker();
     vi.mocked(commands.executeCommand).mockImplementation(async (command) => {
       if (command === instanceCommand) throw new Error('command not found');
@@ -178,7 +179,7 @@ describe('NotificationFocusBroker', () => {
       return undefined;
     });
     const uri = asVscodeUri(
-      broker.createLaunchUri({
+      await broker.createLaunchUri({
         message: 'Done',
         source: 'codex',
         session_id: 'session-after-reload',
@@ -189,13 +190,16 @@ describe('NotificationFocusBroker', () => {
     broker.handleUri(uri as never);
 
     await vi.waitFor(() => {
-      expect(commands.executeCommand).toHaveBeenCalledWith(COMMAND_FOCUS_CODEX_SESSION, {
-        session_id: 'session-after-reload',
-      });
+      expect(window.showWarningMessage).toHaveBeenCalled();
     });
+    expect(commands.executeCommand).not.toHaveBeenCalledWith(
+      COMMAND_FOCUS_CODEX_SESSION,
+      expect.anything(),
+    );
+    expect(commands.executeCommand).not.toHaveBeenCalledWith('workbench.action.focusWindow');
   });
 
-  it('claims an opaque broker target through the origin command and then generic fallback', async () => {
+  it('does not claim an opaque broker target through a generic fallback', async () => {
     const broker = await createBroker();
     vi.mocked(commands.executeCommand).mockImplementation(async (command) => {
       if (command === instanceCommand) return { ok: false, reason: 'session-not-mapped' };
@@ -212,21 +216,17 @@ describe('NotificationFocusBroker', () => {
           sessionId: 'remote-session-1',
         }),
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
 
     const commandCalls = vi.mocked(commands.executeCommand).mock.calls;
-    expect(commandCalls).toEqual([
-      [instanceCommand, { session_id: 'remote-session-1' }],
-      [COMMAND_FOCUS_CODEX_SESSION, { session_id: 'remote-session-1' }],
-      ['workbench.action.focusWindow'],
-    ]);
+    expect(commandCalls).toEqual([[instanceCommand, { session_id: 'remote-session-1' }]]);
   });
 
   it('keeps a successful target claim when foreground window focus fails', async () => {
     const log = { appendLine: vi.fn() };
     const broker = await createBroker(log);
     vi.mocked(commands.executeCommand).mockImplementation(async (command) => {
-      if (command === COMMAND_FOCUS_CODEX_SESSION) {
+      if (command === instanceCommand) {
         return { ok: true, reason: 'focused', terminal_name: 'Remote Codex' };
       }
       if (command === 'workbench.action.focusWindow') throw new Error('window no longer exists');
@@ -234,11 +234,35 @@ describe('NotificationFocusBroker', () => {
     });
 
     await expect(
-      broker.claimReturnTarget(createCodexReturnTarget({ sessionId: 'remote-session-2' })),
+      broker.claimReturnTarget(
+        createCodexReturnTarget({ sessionId: 'remote-session-2', originCommand: instanceCommand }),
+      ),
     ).resolves.toBe(true);
     expect(log.appendLine).toHaveBeenCalledWith(
       expect.stringContaining('Focus-window command failed after broker target claim'),
     );
+  });
+
+  it('does not let another window claim a target when the originating command is unavailable', async () => {
+    const broker = await createBroker();
+    vi.mocked(commands.executeCommand).mockImplementation(async (command) => {
+      if (command === instanceCommand) throw new Error('command not found after reload');
+      if (command === COMMAND_FOCUS_CODEX_SESSION) {
+        return { ok: true, reason: 'focused', terminal_name: 'Wrong window copy' };
+      }
+      return undefined;
+    });
+
+    await expect(
+      broker.claimReturnTarget(
+        createCodexReturnTarget({ originCommand: instanceCommand, sessionId: 'shared-session' }),
+      ),
+    ).resolves.toBe(false);
+    expect(commands.executeCommand).not.toHaveBeenCalledWith(
+      COMMAND_FOCUS_CODEX_SESSION,
+      expect.anything(),
+    );
+    expect(commands.executeCommand).not.toHaveBeenCalledWith('workbench.action.focusWindow');
   });
 
   it('does not claim malformed opaque broker targets', async () => {
@@ -251,7 +275,7 @@ describe('NotificationFocusBroker', () => {
   it('keeps session fallback data when the loopback broker could not start', async () => {
     const broker = new NotificationFocusBroker(undefined, 0);
     brokers.push(broker);
-    const launchUri = broker.createLaunchUri({
+    const launchUri = await broker.createLaunchUri({
       message: 'Done',
       source: 'codex',
       session_id: 'session-no-broker',
@@ -281,9 +305,7 @@ describe('NotificationFocusBroker', () => {
     } as never);
 
     await vi.waitFor(() => {
-      expect(commands.executeCommand).toHaveBeenCalledWith(COMMAND_FOCUS_CODEX_SESSION, {
-        session_id: 'session-safe',
-      });
+      expect(window.showWarningMessage).toHaveBeenCalled();
     });
     expect(commands.executeCommand).not.toHaveBeenCalledWith(
       'workbench.action.closeWindow',
@@ -302,6 +324,34 @@ describe('NotificationFocusBroker', () => {
     expect(commands.executeCommand).not.toHaveBeenCalledWith(
       COMMAND_FOCUS_CODEX_SESSION,
       expect.anything(),
+    );
+  });
+
+  it('does not claim an unscoped session-only target across multiple windows', async () => {
+    const broker = await createBroker();
+    expect(
+      await broker.claimReturnTarget(createCodexReturnTarget({ sessionId: 'shared-session' })),
+    ).toBe(false);
+    expect(commands.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('passes the complete activation URI through the host without altering the resolved URI', async () => {
+    const broker = await createBroker();
+    vi.mocked(env.asExternalUri).mockResolvedValueOnce({
+      toString: () => 'vscode://opaque-host/result?host-state=private',
+    } as never);
+    expect(
+      await broker.createLaunchUri({
+        message: 'Done',
+        source: 'codex',
+        session_id: 'session-external',
+        codex_focus_command: instanceCommand,
+      }),
+    ).toBe('vscode://opaque-host/result?host-state=private');
+    expect(env.asExternalUri).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toString: expect.any(Function),
+      }),
     );
   });
 

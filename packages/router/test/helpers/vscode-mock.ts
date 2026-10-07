@@ -72,6 +72,12 @@ export function clearMockConfig(): void {
 
 export const env = {
   uriScheme: 'vscode',
+  machineId: 'test-machine',
+  asExternalUri: vi.fn(async (uri: { toString(): string }) => {
+    const resolved = new URL(uri.toString());
+    resolved.searchParams.set('windowId', '17');
+    return { toString: () => resolved.toString() };
+  }),
   clipboard: {
     writeText: vi.fn().mockResolvedValue(undefined),
     readText: vi.fn().mockResolvedValue(''),
