@@ -361,6 +361,18 @@ describe('Codex attention hook', { timeout: 30_000 }, () => {
     expect(received).toHaveLength(0);
   });
 
+  it('tolerates a child exiting before consuming stdin', async () => {
+    const result = await runProcess(
+      python,
+      ['-c', 'import os; os._exit(0)'],
+      Buffer.alloc(2 * 1024 * 1024),
+      process.env,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+  });
+
   it('keeps the Windows wrapper output valid even when Python output is suppressed', async () => {
     if (process.platform !== 'win32') {
       return;
@@ -438,6 +450,10 @@ function runProcess(
     let stderr = '';
     child.stdout.on('data', (chunk) => (stdout += chunk.toString()));
     child.stderr.on('data', (chunk) => (stderr += chunk.toString()));
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      // A bounded reader can exit before the parent finishes writing oversized input.
+      if (error.code !== 'EPIPE' && error.code !== 'EOF') reject(error);
+    });
     child.on('error', reject);
     child.on('close', (code) =>
       resolve({
