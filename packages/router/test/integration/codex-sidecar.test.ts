@@ -9,7 +9,7 @@ import { PassThrough } from 'stream';
 import WebSocket from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CodexProtocolCapture } from '../../src/codex/CodexProtocolCapture';
+import { CodexProtocolCapture, JsonLineFramer } from '../../src/codex/CodexProtocolCapture';
 import {
   CodexAttentionRouterClient,
   CodexRouterClient,
@@ -23,6 +23,24 @@ describe('CodexWebSocketBridge', () => {
 
   afterEach(async () => {
     await Promise.all(bridges.splice(0).map((bridge) => bridge.close().catch(() => {})));
+  });
+
+  it('waits for the actual RPC request across split transport frames', async () => {
+    const stream = new PassThrough();
+    const received = onceRequest(stream, 'thread/start');
+    const settled = vi.fn();
+    void received.then(settled);
+
+    stream.write('{"method":"initialized"}\n');
+    await delay(1);
+    expect(settled).not.toHaveBeenCalled();
+
+    stream.write('{"id":2,"method":"thread/sta');
+    await delay(1);
+    expect(settled).not.toHaveBeenCalled();
+    stream.write('rt","params":{}}\n');
+
+    await expect(received).resolves.toContain('"method":"thread/start"');
   });
 
   it('authenticates one client and forwards protocol text exactly in both directions', async () => {
@@ -210,9 +228,10 @@ describe('CodexWebSocketBridge', () => {
     appServer.stdout.write(
       '{"id":1,"result":{"userAgent":"codex_cli_rs/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}\n',
     );
+    const threadStart = onceRequest(appServer.stdin, 'thread/start');
     client.send('{"method":"initialized"}');
     client.send('{"id":2,"method":"thread/start","params":{"cwd":"/repo"}}');
-    await onceText(appServer.stdin);
+    await threadStart;
     appServer.stdout.write(
       [
         '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
@@ -308,9 +327,10 @@ describe('CodexWebSocketBridge', () => {
     appServer.stdout.write(
       '{"id":1,"result":{"userAgent":"codex_cli_rs/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}\n',
     );
+    const threadStart = onceRequest(appServer.stdin, 'thread/start');
     client.send('{"method":"initialized"}');
     client.send('{"id":2,"method":"thread/start","params":{}}');
-    await onceText(appServer.stdin);
+    await threadStart;
     appServer.stdout.write(
       [
         '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
@@ -1140,9 +1160,10 @@ async function startActiveAttentionBridge(
   appServer.stdout.write(
     '{"id":1,"result":{"userAgent":"codex_cli_rs/0.147.0","codexHome":"/home/test/.codex","platformFamily":"unix","platformOs":"linux"}}\n',
   );
+  const threadStart = onceRequest(appServer.stdin, 'thread/start');
   client.send('{"method":"initialized"}');
   client.send('{"id":2,"method":"thread/start","params":{}}');
-  await onceText(appServer.stdin);
+  await threadStart;
   appServer.stdout.write(
     [
       '{"method":"thread/started","params":{"thread":{"id":"thread-1","sessionId":"session-root","parentThreadId":null,"source":"cli"}}}',
@@ -1150,7 +1171,9 @@ async function startActiveAttentionBridge(
       '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}',
     ].join('\n') + '\n',
   );
-  await waitFor(() => attention.post.mock.calls.length === 3);
+  await waitFor(() =>
+    attention.post.mock.calls.some(([, observation]) => observation.kind === 'turn-start'),
+  );
   return { appServer, bridge, client };
 }
 
@@ -1188,6 +1211,27 @@ function expectUnauthorized(address: string): Promise<void> {
 
 function onceText(stream: PassThrough): Promise<string> {
   return new Promise((resolve) => stream.once('data', (chunk) => resolve(chunk.toString())));
+}
+
+function onceRequest(stream: PassThrough, method: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const framer = new JsonLineFramer();
+    const onData = (chunk: Buffer): void => {
+      try {
+        for (const line of framer.push(chunk)) {
+          if (JSON.parse(line).method === method) {
+            stream.off('data', onData);
+            resolve(line);
+            return;
+          }
+        }
+      } catch (error) {
+        stream.off('data', onData);
+        reject(error);
+      }
+    };
+    stream.on('data', onData);
+  });
 }
 
 function onceClose(client: WebSocket): Promise<number> {
