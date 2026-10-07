@@ -27,6 +27,7 @@ import {
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_DISCOVERY_POLL_MS = 25;
+const ACTIVATION_TIMEOUT_MS = 10_000;
 
 export interface BrokerConnectionInfo {
   epochReset: boolean;
@@ -351,7 +352,7 @@ class BrokerClientConnection {
         activationId,
       },
       (message) => 'requestId' in message && message.requestId === requestId,
-      DEFAULT_CONNECT_TIMEOUT_MS,
+      ACTIVATION_TIMEOUT_MS,
     );
     if (response.kind !== 'activation-result') throw new Error('Invalid activation response');
     return response.status;

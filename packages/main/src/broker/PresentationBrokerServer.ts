@@ -27,7 +27,7 @@ import {
 import { PresentationActivationRegistry } from './PresentationActivationRegistry';
 import { PresentationLedger } from './PresentationLedger';
 
-const DEFAULT_NAVIGATION_TIMEOUT_MS = 1_500;
+const DEFAULT_NAVIGATION_TIMEOUT_MS = 8_000;
 
 export interface NativePresentationAdapterPort {
   exchange(input: NativePresentationExchange): Promise<void>;
@@ -71,6 +71,8 @@ export class PresentationBrokerServer {
       pending: Set<Socket>;
       resolve: (focused: boolean) => void;
       timer: NodeJS.Timeout;
+      retryTimer: NodeJS.Timeout;
+      returnTarget: string;
     }
   >();
   private activeExchanges = 0;
@@ -366,8 +368,7 @@ export class PresentationBrokerServer {
   }
 
   private async broadcastReturnTarget(returnTarget: string): Promise<boolean> {
-    const clients = [...this.compatibleClients.entries()];
-    if (clients.length === 0) return false;
+    if (!this.isRunning || this.stopPromise !== undefined) return false;
     const requestId = randomBytes(16).toString('hex');
     return await new Promise<boolean>((resolve) => {
       const timer = setTimeout(
@@ -375,17 +376,30 @@ export class PresentationBrokerServer {
         this.navigationTimeoutMs,
       );
       timer.unref();
+      const retryTimer = setInterval(() => this.offerReturnTarget(requestId), 200);
+      retryTimer.unref();
       this.focusAttempts.set(requestId, {
-        pending: new Set(clients.map(([socket]) => socket)),
+        pending: new Set(),
         resolve,
         timer,
+        retryTimer,
+        returnTarget,
       });
-      for (const [socket, channel] of clients) {
-        void channel
-          .send({ kind: 'focus-offer', requestId, returnTarget })
-          .catch(() => this.acceptFocusResult(socket, requestId, false));
-      }
+      this.offerReturnTarget(requestId);
     });
+  }
+
+  private offerReturnTarget(requestId: string): void {
+    const attempt = this.focusAttempts.get(requestId);
+    if (!attempt) return;
+    // A reload can disconnect the only owner. Retry ownership, never pick a different target.
+    for (const [socket, channel] of this.compatibleClients) {
+      if (attempt.pending.has(socket)) continue;
+      attempt.pending.add(socket);
+      void channel
+        .send({ kind: 'focus-offer', requestId, returnTarget: attempt.returnTarget })
+        .catch(() => this.acceptFocusResult(socket, requestId, false));
+    }
   }
 
   private acceptFocusResult(socket: Socket, requestId: string, focused: boolean): void {
@@ -395,20 +409,17 @@ export class PresentationBrokerServer {
       this.finishFocusAttempt(requestId, true);
       return;
     }
-    if (attempt.pending.size === 0) this.finishFocusAttempt(requestId, false);
   }
 
   private removeFocusClient(socket: Socket): void {
-    for (const [requestId, attempt] of this.focusAttempts) {
-      if (!attempt.pending.delete(socket)) continue;
-      if (attempt.pending.size === 0) this.finishFocusAttempt(requestId, false);
-    }
+    for (const attempt of this.focusAttempts.values()) attempt.pending.delete(socket);
   }
 
   private finishFocusAttempt(requestId: string, focused: boolean): void {
     const attempt = this.focusAttempts.get(requestId);
     if (attempt === undefined) return;
     clearTimeout(attempt.timer);
+    clearInterval(attempt.retryTimer);
     this.focusAttempts.delete(requestId);
     attempt.resolve(focused);
   }
@@ -435,6 +446,7 @@ export class PresentationBrokerServer {
     beforeDisconnect?: () => Promise<void>,
   ): Promise<void> {
     this.cancelIdleExit();
+    for (const requestId of this.focusAttempts.keys()) this.finishFocusAttempt(requestId, false);
     const deadline = Date.now() + this.drainTimeoutMs;
     this.server.close();
     await waitFor(() => this.activeExchanges === 0, deadline);

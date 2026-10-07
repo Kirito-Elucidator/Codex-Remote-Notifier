@@ -130,7 +130,7 @@ function createPresentationEndpoint(
   if (process.platform !== 'win32') return createUnavailablePresentationEndpoint();
   try {
     const paths = createDefaultBrokerRuntimePaths();
-    return new PresentationBrokerClient({
+    const client = new PresentationBrokerClient({
       paths,
       launch: async () => {
         launchDetachedPresentationBroker({
@@ -148,6 +148,11 @@ function createPresentationEndpoint(
         );
       },
     });
+    // Every open window must be eligible for clicks, even before it produces a new notification.
+    void client
+      .start()
+      .catch((error) => log.appendLine(`[PresentationBroker] Initial connection failed: ${error}`));
+    return client;
   } catch (error) {
     log.appendLine(`[PresentationBroker] unavailable: ${error}`);
     return createUnavailablePresentationEndpoint();

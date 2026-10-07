@@ -193,6 +193,35 @@ describe('native presentation broker activation', () => {
     expect(events.some((event) => event.startsWith('claim:'))).toBe(false);
   });
 
+  it('waits for the originating window to reconnect during reload without accepting another window', async () => {
+    const paths = await runtimePaths();
+    const events: string[] = [];
+    const adapter = createAdapter(events);
+    const server = trackServer(
+      new PresentationBrokerServer({
+        paths,
+        navigationTimeoutMs: 500,
+        presentationAdapter: adapter,
+      }),
+    );
+    await server.start();
+    const wrong = trackClient(createClaimingClient(paths, 'other-session', events));
+    await wrong.start();
+    const sender = trackClient(new PresentationBrokerClient({ paths, launch: vi.fn() }));
+    await sender.exchange(
+      create('create-reload-gap', createRecord('reload-gap', 1, 'origin-session')),
+    );
+    const activation = activationFor(adapter, 'reload-gap');
+    const returning = sender.redeemActivation(server.presentationEpoch, activation);
+    await vi.waitFor(() => expect(events).toContain('claim:other-session:origin-session'));
+    const reloaded = trackClient(
+      createClaimingClient(paths, 'origin-session', events, 'after-reload'),
+    );
+    await reloaded.start();
+    expect(await returning).toBe('focused');
+    expect(events).toContain('claim:after-reload:origin-session');
+  });
+
   it('acknowledges one waiting presentation without resolving or reviving its request', async () => {
     const paths = await runtimePaths();
     const events: string[] = [];
