@@ -38,6 +38,16 @@ export class StatusBar implements vscode.Disposable {
       this.item.tooltip = base;
       return;
     }
+    if (
+      this.monitoring.exact === 0 &&
+      this.monitoring.compatibility === 0 &&
+      this.monitoring.unavailable === 0 &&
+      this.monitoring.degraded === 0
+    ) {
+      this.item.text = '$(bell) Notifier: Awaiting Events';
+      this.item.tooltip = `${base}\nNo active Codex monitoring source is observed`;
+      return;
+    }
     const label = monitoringLabel(this.monitoring.monitoring);
     this.item.text = `$(bell) Notifier: ${label}`;
     this.item.tooltip = `${base}\nCodex monitoring: ${label} (exact ${this.monitoring.exact}, compatibility ${this.monitoring.compatibility}, unavailable ${this.monitoring.unavailable}, degraded ${this.monitoring.degraded})`;
@@ -51,7 +61,7 @@ function monitoringLabel(monitoring: CodexMonitoringSummary['monitoring']): stri
     case 'compatibility':
       return 'Compatibility';
     case 'unavailable':
-      return 'Notifier unavailable';
+      return 'Monitoring unavailable';
     case 'degraded':
       return 'Monitoring degraded';
   }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { window, StatusBarAlignment } from 'vscode';
+import { CodexMonitoringStatus } from '../../src/codex/CodexMonitoringStatus';
 import { StatusBar } from '../../src/ui/StatusBar';
 
 describe('StatusBar', () => {
@@ -53,9 +54,29 @@ describe('StatusBar', () => {
     );
   });
 
+  it('awaits events instead of reporting an outage before observing a source', () => {
+    const monitoring = new CodexMonitoringStatus();
+    monitoring.setOnChange((summary) => statusBar.updateMonitoring(summary));
+
+    expect(mockItem.text).toBe('$(bell) Notifier: Awaiting Events');
+    expect(String(mockItem.tooltip)).toContain('No active Codex monitoring source is observed');
+    expect(String(mockItem.tooltip)).not.toContain('unavailable');
+  });
+
+  it('awaits events after a completed Hook turn without claiming the Router is unavailable', () => {
+    const monitoring = new CodexMonitoringStatus();
+    monitoring.setOnChange((summary) => statusBar.updateMonitoring(summary));
+    monitoring.observeHook('foreground-session');
+    expect(mockItem.text).toBe('$(bell) Notifier: Compatibility');
+
+    monitoring.retireHook('foreground-session');
+
+    expect(mockItem.text).toBe('$(bell) Notifier: Awaiting Events');
+  });
+
   it.each([
     ['exact', 'Exact'],
-    ['unavailable', 'Notifier unavailable'],
+    ['unavailable', 'Monitoring unavailable'],
     ['degraded', 'Monitoring degraded'],
   ] as const)('renders %s monitoring honestly', (monitoring, label) => {
     statusBar.updateMonitoring({
