@@ -62,6 +62,26 @@ describe('CodexProtocolShimManager', () => {
     expect(fs.writeFile).not.toHaveBeenCalled();
   });
 
+  it('keeps a context-aware launcher when exact monitoring is disabled', async () => {
+    const context = createMockExtensionContext();
+    const manager = new CodexProtocolShimManager(context as never);
+
+    await manager.enable('compatibility');
+
+    expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
+      'REMOTE_NOTIFIER_CODEX_PROTOCOL_MONITORING',
+      '0',
+    );
+    expect(context.environmentVariableCollection.replace).toHaveBeenCalledWith(
+      'REMOTE_NOTIFIER_CODEX_LAUNCHER',
+      expect.stringMatching(/codex-shim[\\/]codex(?:\.cmd)?$/),
+    );
+    expect(context.environmentVariableCollection.prepend).toHaveBeenCalledWith(
+      'PATH',
+      expect.stringContaining(manager.shimDirectory),
+    );
+  });
+
   it('removes PATH injection and optionally deletes both shims', async () => {
     const context = createMockExtensionContext();
     const manager = new CodexProtocolShimManager(context as never);
@@ -71,6 +91,12 @@ describe('CodexProtocolShimManager', () => {
     expect(context.environmentVariableCollection.delete).toHaveBeenCalledWith('PATH');
     expect(context.environmentVariableCollection.delete).toHaveBeenCalledWith(
       shared.ENV_CODEX_HOOK_AVAILABLE,
+    );
+    expect(context.environmentVariableCollection.delete).toHaveBeenCalledWith(
+      shared.ENV_CODEX_PROTOCOL_MONITORING,
+    );
+    expect(context.environmentVariableCollection.delete).toHaveBeenCalledWith(
+      shared.ENV_CODEX_LAUNCHER,
     );
     expect(fs.unlink).toHaveBeenCalledTimes(2);
   });

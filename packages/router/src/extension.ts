@@ -33,6 +33,7 @@ import { StatusBar } from './ui/StatusBar';
 
 let log: vscode.OutputChannel;
 const CODEX_PROTOCOL_MIGRATION_KEY = 'codexProtocolMonitoring.migrationDecision';
+const CODEX_LAUNCHER_DISABLED_KEY = 'codex.launcherDisabled';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   log = vscode.window.createOutputChannel('Remote Notifier');
@@ -73,14 +74,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const codexHookInstaller = new CodexAttentionHookInstaller(log);
   const codexProvider = new CodexAutoConfigProvider(log, codexHookInstaller, {
     onConfigured: async () => {
+      await context.globalState.update(CODEX_LAUNCHER_DISABLED_KEY, false);
       await context.globalState.update(CODEX_PROTOCOL_MIGRATION_KEY, true);
-      if (!config.codexProtocolMonitoring) return;
+      if (!config.codexProtocolMonitoring) {
+        await codexProtocolShim.enable('compatibility');
+        return;
+      }
       await codexProtocolShim.enable();
       vscode.window.showInformationMessage(
         'Remote Notifier: Exact Codex protocol monitoring will be active in new integrated terminals.',
       );
     },
-    onUnconfigured: () => codexProtocolShim.disable(true),
+    onUnconfigured: async () => {
+      await context.globalState.update(CODEX_LAUNCHER_DISABLED_KEY, true);
+      await codexProtocolShim.disable(true);
+    },
   });
   const server = new NotificationServer(handler, config, codexEvents, codexAttention);
 
@@ -232,8 +240,12 @@ async function initializeCodexProtocolMonitoring(
   shim: CodexProtocolShimManager,
 ): Promise<void> {
   try {
-    if (!config.codexProtocolMonitoring || !(await provider.isConfigured())) {
+    if (context.globalState.get<boolean>(CODEX_LAUNCHER_DISABLED_KEY, false)) {
       await shim.disable(false);
+      return;
+    }
+    if (!config.codexProtocolMonitoring || !(await provider.isConfigured())) {
+      await shim.enable('compatibility');
       return;
     }
 
@@ -251,7 +263,7 @@ async function initializeCodexProtocolMonitoring(
       await context.globalState.update(CODEX_PROTOCOL_MIGRATION_KEY, enabled);
     }
     if (enabled) await shim.enable();
-    else await shim.disable(false);
+    else await shim.enable('compatibility');
   } catch (error) {
     log.appendLine(`[Router] Failed to initialize Codex protocol monitoring: ${error}`);
   }
@@ -264,11 +276,18 @@ async function updateCodexProtocolSetting(
   shim: CodexProtocolShimManager,
 ): Promise<void> {
   try {
-    if (!config.codexProtocolMonitoring) {
+    if (context.globalState.get<boolean>(CODEX_LAUNCHER_DISABLED_KEY, false)) {
       await shim.disable(false);
       return;
     }
-    if (!(await provider.isConfigured())) return;
+    if (!config.codexProtocolMonitoring) {
+      await shim.enable('compatibility');
+      return;
+    }
+    if (!(await provider.isConfigured())) {
+      await shim.enable('compatibility');
+      return;
+    }
     await context.globalState.update(CODEX_PROTOCOL_MIGRATION_KEY, true);
     await shim.enable();
     vscode.window.showInformationMessage(

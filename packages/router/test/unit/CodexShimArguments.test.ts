@@ -100,6 +100,9 @@ describe('Codex shim argument planning', () => {
     [['--future-option'], 'unknown option'],
     [['--oss'], 'OSS provider'],
     [['exec', 'echo hello'], 'not an interactive'],
+    [['agents'], 'not an interactive'],
+    [['queue', 'thread-id', 'hello'], 'not an interactive'],
+    [['migrate-rollouts'], 'not an interactive'],
     [['e', 'echo hello'], 'not an interactive'],
     [['a'], 'not an interactive'],
     [['resume', 'one', 'two', 'three'], 'too many positional'],
@@ -126,5 +129,14 @@ describe('Codex shim argument planning', () => {
     expect(isCodexProtocolVersion('codex-cli 0.146.1-beta.1')).toBe(true);
     expect(isCodexProtocolVersion('codex-cli 1.0.0')).toBe(true);
     expect(isCodexProtocolVersion('unknown')).toBe(false);
+  });
+
+  it('accepts explicit daemon isolation without forwarding it to app-server', () => {
+    expect(planCodexInvocation(['--no-daemon', 'resume', 'thread-id'], '/work')).toMatchObject({
+      mode: 'protocol',
+      command: 'resume',
+      appServerArgs: ['app-server', '--stdio'],
+      tuiArgs: ['--no-daemon', 'resume', 'thread-id'],
+    });
   });
 });

@@ -3,7 +3,12 @@ import * as path from 'path';
 
 import * as vscode from 'vscode';
 
-import { ENV_CODEX_HOOK_AVAILABLE, fileExists } from 'remote-notifier-shared';
+import {
+  ENV_CODEX_HOOK_AVAILABLE,
+  ENV_CODEX_LAUNCHER,
+  ENV_CODEX_PROTOCOL_MONITORING,
+  fileExists,
+} from 'remote-notifier-shared';
 
 const UNIX_SHIM_NAME = 'codex';
 const WINDOWS_SHIM_NAME = 'codex.cmd';
@@ -26,20 +31,27 @@ export class CodexProtocolShimManager {
     this.sidecarPath = path.join(context.extensionPath, 'dist', SIDECAR_NAME);
   }
 
-  async enable(): Promise<void> {
+  async enable(mode: 'protocol' | 'compatibility' = 'protocol'): Promise<void> {
     await this.install();
     const collection = this.context.environmentVariableCollection;
     collection.delete('PATH');
     collection.prepend('PATH', `${this.shimDirectory}${path.delimiter}`);
     collection.replace(ENV_CODEX_HOOK_AVAILABLE, '1');
+    collection.replace(ENV_CODEX_PROTOCOL_MONITORING, mode === 'protocol' ? '1' : '0');
+    collection.replace(
+      ENV_CODEX_LAUNCHER,
+      process.platform === 'win32' ? this.windowsShimPath : this.unixShimPath,
+    );
     this.log?.appendLine(
-      `[CodexProtocolShim] Enabled for new integrated terminals via ${this.shimDirectory}`,
+      `[CodexProtocolShim] ${mode} launcher enabled for new integrated terminals via ${this.shimDirectory}`,
     );
   }
 
   async disable(removeFiles = false): Promise<void> {
     this.context.environmentVariableCollection.delete('PATH');
     this.context.environmentVariableCollection.delete(ENV_CODEX_HOOK_AVAILABLE);
+    this.context.environmentVariableCollection.delete(ENV_CODEX_PROTOCOL_MONITORING);
+    this.context.environmentVariableCollection.delete(ENV_CODEX_LAUNCHER);
     if (removeFiles) {
       await Promise.all([
         unlinkIfPresent(this.unixShimPath),

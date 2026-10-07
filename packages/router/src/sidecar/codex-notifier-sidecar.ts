@@ -17,7 +17,9 @@ import { parseObservationExchangeReceipt } from 'remote-notifier-shared/attentio
 import {
   ENV_CODEX_HOOK_AVAILABLE,
   ENV_CODEX_INVOCATION_ID,
+  ENV_CODEX_PROTOCOL_MONITORING,
   ENV_CODEX_PROTOCOL_SESSION,
+  ENV_SESSION_FILE,
 } from 'remote-notifier-shared/constants';
 
 import { CodexAttentionProtocolCapture } from '../codex/CodexAttentionProtocolCapture';
@@ -26,6 +28,7 @@ import { CodexProtocolCapture, JsonLineFramer } from '../codex/CodexProtocolCapt
 import {
   injectRemoteArguments,
   isCodexProtocolVersion,
+  isCodexSharedDaemonVersion,
   planCodexInvocation,
 } from '../codex/CodexShimArguments';
 
@@ -713,6 +716,20 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
   }
 
   const version = await captureCodexOutput(launcher, ['--version'], environment).catch(() => '');
+  if (environment[ENV_CODEX_PROTOCOL_MONITORING] === '0') {
+    const args =
+      environment[ENV_SESSION_FILE] &&
+      isCodexSharedDaemonVersion(version) &&
+      !invocation.tuiArgs.includes('--no-daemon')
+        ? ['--no-daemon', ...invocation.tuiArgs]
+        : invocation.tuiArgs;
+    // Shared daemons do not inherit this terminal's window-scoped Hook route.
+    return runCodex(launcher, args, {
+      cwd: process.cwd(),
+      env: environment,
+      stdio: 'inherit',
+    });
+  }
   if (!isCodexProtocolVersion(version)) {
     return runCodex(launcher, invocation.tuiArgs, {
       cwd: process.cwd(),

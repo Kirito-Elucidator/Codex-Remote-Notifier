@@ -757,6 +757,82 @@ describe('runSidecar passthrough', () => {
     }
   });
 
+  it.each([
+    { name: 'shared daemon', version: '0.160.0', route: true, args: [], expected: ['--no-daemon'] },
+    { name: 'older Codex', version: '0.159.2', route: true, args: [], expected: [] },
+    { name: 'no inherited route', version: '0.160.0', route: false, args: [], expected: [] },
+    {
+      name: 'explicit isolation',
+      version: '0.160.0',
+      route: true,
+      args: ['--no-daemon', 'resume', 'foreground-thread'],
+      expected: ['--no-daemon', 'resume', 'foreground-thread'],
+    },
+  ])(
+    'keeps Hook context in compatibility mode: $name',
+    async ({ version, route, args, expected }) => {
+      const fake = await createFakeCodex();
+      const events: Array<Record<string, unknown>> = [];
+      const server = createEventServer(events);
+      await listen(server);
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('test server did not bind');
+      const restore = replaceEnvironment({
+        REMOTE_NOTIFIER_CODEX_REAL: fake.launcher,
+        REMOTE_NOTIFIER_CODEX_PROTOCOL_MONITORING: '0',
+        REMOTE_NOTIFIER_SESSION_FILE: route ? path.join(fake.root, 'window.json') : undefined,
+        REMOTE_NOTIFIER_URL: `http://127.0.0.1:${address.port}/notify`,
+        REMOTE_NOTIFIER_TOKEN: 'router-token',
+        FAKE_CODEX_VERSION: version,
+        FAKE_CODEX_LOG: fake.logPath,
+        FAKE_PASSTHROUGH_EXIT_CODE: '0',
+        NODE_PATH: path.resolve('node_modules'),
+      });
+      try {
+        await expect(
+          runSidecar(['--shim-dir', path.join(fake.root, 'shim'), '--', ...args]),
+        ).resolves.toEqual({
+          code: 0,
+          signal: null,
+        });
+        const calls = await readJsonLines(fake.logPath);
+        expect(calls.map((entry) => entry.mode)).toEqual(['version', 'ordinary']);
+        expect(calls.at(-1)?.args).toEqual(expected);
+        expect(calls.at(-1)?.sessionFile).toBe(route ? path.join(fake.root, 'window.json') : null);
+        expect(events).toEqual([]);
+      } finally {
+        restore();
+        await closeServer(server);
+        await fs.rm(fake.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([['login', 'status'], ['agents'], ['queue', 'thread-id', 'hello']])(
+    'does not isolate administrative or shared-daemon commands %j',
+    async (...args) => {
+      const fake = await createFakeCodex();
+      const restore = replaceEnvironment({
+        REMOTE_NOTIFIER_CODEX_REAL: fake.launcher,
+        REMOTE_NOTIFIER_CODEX_PROTOCOL_MONITORING: '0',
+        REMOTE_NOTIFIER_SESSION_FILE: path.join(fake.root, 'window.json'),
+        FAKE_CODEX_LOG: fake.logPath,
+        FAKE_PASSTHROUGH_EXIT_CODE: '0',
+        NODE_PATH: path.resolve('node_modules'),
+      });
+      try {
+        await expect(
+          runSidecar(['--shim-dir', path.join(fake.root, 'shim'), '--', ...args]),
+        ).resolves.toEqual({ code: 0, signal: null });
+        const calls = await readJsonLines(fake.logPath);
+        expect(calls).toEqual([expect.objectContaining({ mode: 'ordinary', args })]);
+      } finally {
+        restore();
+        await fs.rm(fake.root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('runs the exact bridge, forwards sanitized events, cleans up, and preserves the TUI exit code', async () => {
     const fake = await createFakeCodex();
     const events: Array<Record<string, unknown>> = [];
@@ -1180,7 +1256,7 @@ async function createFakeCodex(): Promise<{
       '};',
       "if (args.length === 1 && args[0] === '--version') {",
       "  log('version');",
-      "  process.stdout.write('codex-cli 0.145.0\\n');",
+      "  process.stdout.write('codex-cli ' + (process.env.FAKE_CODEX_VERSION || '0.145.0') + '\\n');",
       "} else if (args[0] === 'app-server') {",
       "  log('app-server', { pid: process.pid });",
       "  let pending = '';",
@@ -1244,7 +1320,7 @@ async function createFakeCodex(): Promise<{
       "    setTimeout(() => { log('remote-timeout', { messages }); process.exit(43); }, 5000).unref();",
       '  }',
       '} else {',
-      "  log('ordinary');",
+      "  log('ordinary', { args, sessionFile: process.env.REMOTE_NOTIFIER_SESSION_FILE || null });",
       '  process.exit(Number(process.env.FAKE_PASSTHROUGH_EXIT_CODE || 0));',
       '}',
       '',

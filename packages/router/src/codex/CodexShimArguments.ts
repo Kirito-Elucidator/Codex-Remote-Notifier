@@ -17,6 +17,7 @@ export interface CodexPassthroughInvocation {
 export type CodexInvocationPlan = CodexProtocolInvocation | CodexPassthroughInvocation;
 
 const NON_INTERACTIVE_COMMANDS = new Set([
+  'agents',
   'exec',
   'e',
   'review',
@@ -31,6 +32,8 @@ const NON_INTERACTIVE_COMMANDS = new Set([
   'completion',
   'update',
   'doctor',
+  'queue',
+  'migrate-rollouts',
   'sandbox',
   'debug',
   'apply',
@@ -70,6 +73,7 @@ const BOOLEAN_OPTIONS = new Set([
   '--dangerously-bypass-hook-trust',
   '--search',
   '--no-alt-screen',
+  '--no-daemon',
 ]);
 
 const APP_SERVER_OPTIONS = new Set(['--config', '--enable', '--disable', '--strict-config']);
@@ -206,6 +210,13 @@ export function isCodexProtocolVersion(versionOutput: string): boolean {
   if (!version) return false;
   const [major, minor, patch] = version.split('.').map(Number);
   return major > 0 || minor > 145 || (minor === 145 && patch >= 0);
+}
+
+export function isCodexSharedDaemonVersion(versionOutput: string): boolean {
+  const version = parseCodexProtocolVersion(versionOutput);
+  if (!version) return false;
+  const [major, minor] = version.split('.').map(Number);
+  return major > 0 || minor >= 160;
 }
 
 export function isAuditedCodexProtocolVersion(versionOutput: string): boolean {
