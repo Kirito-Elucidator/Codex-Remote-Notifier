@@ -70,6 +70,7 @@ const PROTOCOL_METHODS = new Set<CodexProtocolMethod>([
   'session/started',
   'session/ended',
   'thread/started',
+  'thread/name/updated',
   'turn/started',
   'turn/completed',
   'agent/queuedQuestions',
@@ -219,6 +220,7 @@ function parseProtocolEvent(payload: Record<string, unknown>): CodexEventParseRe
   if (
     [
       'thread/started',
+      'thread/name/updated',
       'turn/started',
       'turn/completed',
       'model/safetyBuffering/updated',

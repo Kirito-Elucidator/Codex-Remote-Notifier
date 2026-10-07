@@ -1,5 +1,4 @@
 import { createHash } from 'crypto';
-import * as os from 'os';
 
 import type * as vscode from 'vscode';
 
@@ -40,6 +39,7 @@ interface ThreadState {
   safetyBufferingVisible: boolean;
   cwd?: string;
   sessionTitle?: string;
+  transcriptPath?: string;
   instanceId?: string;
 }
 
@@ -120,6 +120,10 @@ export class CodexEventHandler implements vscode.Disposable {
       case 'thread/started':
         this.onThreadStarted(event);
         return;
+      case 'thread/name/updated':
+        if (event.thread_id)
+          this.getThreadState(event.thread_id).sessionTitle = event.session_title;
+        return;
       case 'turn/started':
         this.onTurnStarted(event);
         return;
@@ -177,6 +181,9 @@ export class CodexEventHandler implements vscode.Disposable {
       // Recover Hook fallback if a previous sidecar could not deliver session/ended.
       this.authoritativeSessions.delete(sessionId);
       this.threads.delete(sessionId);
+    }
+    if (sessionId && event.transcript_path) {
+      this.getThreadState(sessionId).transcriptPath = event.transcript_path;
     }
     if (this.isProtocolAuthoritativeHook(event)) {
       this.log?.appendLine(
@@ -629,9 +636,14 @@ export class CodexEventHandler implements vscode.Disposable {
     preferSessionTitle = false,
   ): Promise<string> {
     const state = sessionId ? this.threads.get(sessionId) : undefined;
-    const parts = await this.metadata.resolvePreviewParts(sessionId, state?.cwd ?? cwd, answer);
+    const parts = await this.metadata.resolvePreviewParts(
+      sessionId,
+      state?.cwd ?? cwd,
+      answer,
+      state?.transcriptPath,
+    );
     const limit = normalizePreviewLength(this.config.codexPreviewLength);
-    const title = truncateCanonicalText(parts.sessionTitle ?? state?.sessionTitle, limit);
+    const title = truncateCanonicalText(state?.sessionTitle ?? parts.sessionTitle, limit);
     const response = truncateCanonicalText(parts.answer, answerLimit ?? limit);
     const fallback = truncateCanonicalText(parts.cwdName, limit) ?? 'Codex';
     const preview = title
@@ -639,7 +651,7 @@ export class CodexEventHandler implements vscode.Disposable {
         ? [title]
         : [title, response].filter(Boolean)
       : [response ?? fallback];
-    return `${os.hostname()} | ${preview.join(' | ')}`;
+    return preview.join(' | ');
   }
 
   private currentTurnState(

@@ -114,6 +114,17 @@ export class CodexProtocolCapture {
     }
 
     switch (method) {
+      case 'thread/name/updated': {
+        const threadId = readString(params.threadId);
+        if (!threadId || this.descendantThreadIds.has(threadId)) return [];
+        if (params.threadName !== null && typeof params.threadName !== 'string') return [];
+        return [
+          this.event('thread/name/updated', {
+            thread_id: threadId,
+            session_title: boundedText(params.threadName, MAX_PREVIEW_LENGTH) ?? '',
+          }),
+        ];
+      }
       case 'thread/started': {
         if (!isRecord(params.thread)) return [];
         const threadId = readString(params.thread.id);

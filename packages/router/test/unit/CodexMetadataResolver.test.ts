@@ -204,6 +204,27 @@ describe('CodexMetadataResolver', () => {
       cwdName: undefined,
     });
   });
+
+  it('reads a renamed session from the invocation home, not the extension host home', async () => {
+    const invocationHome = path.join(testDirectory, 'custom-home');
+    await fs.mkdir(invocationHome);
+    await fs.writeFile(
+      path.join(invocationHome, 'session_index.jsonl'),
+      JSON.stringify({
+        id: 'thread-custom',
+        thread_name: 'Renamed custom session',
+      }) + '\n',
+    );
+    const resolver = new CodexMetadataResolver(codexHome);
+    expect(
+      await resolver.resolvePreviewParts(
+        'thread-custom',
+        undefined,
+        'Initial paragraph',
+        path.join(invocationHome, 'sessions', '2026', '09', '30', 'rollout.jsonl'),
+      ),
+    ).toMatchObject({ sessionTitle: 'Renamed custom session' });
+  });
 });
 
 describe('Codex visible text helpers', () => {

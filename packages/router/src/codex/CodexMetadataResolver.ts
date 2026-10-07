@@ -101,8 +101,14 @@ export class CodexMetadataResolver {
     sessionId: string | undefined,
     cwd: string | undefined,
     answer: string | undefined,
+    transcriptPath?: string,
   ): Promise<CodexPreviewParts> {
-    const sessionTitle = sessionId ? await this.readSessionTitle(sessionId) : undefined;
+    const codexHome = transcriptCodexHome(transcriptPath);
+    const resolver =
+      codexHome && path.resolve(codexHome) !== this.codexHome
+        ? new CodexMetadataResolver(path.resolve(codexHome), this.sqliteQuery)
+        : this;
+    const sessionTitle = sessionId ? await resolver.readSessionTitle(sessionId) : undefined;
     const cwdName = cwd ? path.basename(path.resolve(cwd)) || cwd : undefined;
     return {
       sessionTitle,
@@ -162,6 +168,20 @@ export class CodexMetadataResolver {
       return [];
     }
   }
+}
+
+function transcriptCodexHome(transcriptPath: string | undefined): string | undefined {
+  if (!transcriptPath || !path.isAbsolute(transcriptPath)) return undefined;
+  let directory = path.dirname(transcriptPath);
+  for (let depth = 0; depth < 5; depth++) {
+    if (['sessions', 'archived_sessions'].includes(path.basename(directory))) {
+      return path.dirname(directory);
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  return undefined;
 }
 
 export function resolveCodexHome(

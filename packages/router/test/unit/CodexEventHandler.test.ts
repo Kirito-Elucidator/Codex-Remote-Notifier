@@ -69,9 +69,51 @@ describe('CodexEventHandler', () => {
       protocol('turn/completed', { status: 'completed', preview: 'Answer preview' }),
     );
 
-    expect(delivered).toEqual([
-      expect.objectContaining({ message: `${os.hostname()} | Session title` }),
-    ]);
+    expect(delivered).toEqual([expect.objectContaining({ message: 'Session title' })]);
+  });
+
+  it('uses the hook transcript location to find a rename in a custom Codex home', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'rn-custom-title-'));
+    const transcript = path.join(directory, 'sessions', '2026', '09', '30', 'rollout.jsonl');
+    await fs.mkdir(path.dirname(transcript), { recursive: true });
+    await fs.writeFile(
+      path.join(directory, 'session_index.jsonl'),
+      JSON.stringify({
+        id: 'custom-session',
+        thread_name: 'Custom renamed session',
+      }) + '\n',
+    );
+    await fs.writeFile(
+      transcript,
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: 'custom-turn',
+        },
+      }) + '\n',
+    );
+    handler.dispose();
+    handler = new CodexEventHandler(
+      notifications as unknown as NotificationHandler,
+      { codexPreviewLength: 32 } as Configuration,
+      new CodexMetadataResolver(path.join(directory, 'wrong-home')),
+    );
+    try {
+      await handler.handle({
+        version: 1,
+        kind: 'hook',
+        hook_event_name: 'Stop',
+        session_id: 'custom-session',
+        turn_id: 'custom-turn',
+        transcript_path: transcript,
+        last_assistant_message: 'Initial paragraph',
+      });
+      expect(delivered[0].message).toBe('Custom renamed session');
+    } finally {
+      handler.dispose();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('shows the answer preview when the session has not been renamed', async () => {
@@ -86,9 +128,29 @@ describe('CodexEventHandler', () => {
       protocol('turn/completed', { status: 'completed', preview: 'Answer preview' }),
     );
 
-    expect(delivered).toEqual([
-      expect.objectContaining({ message: `${os.hostname()} | Answer preview` }),
-    ]);
+    expect(delivered).toEqual([expect.objectContaining({ message: 'Answer preview' })]);
+  });
+
+  it('uses a live rename instead of the initial prompt stored as a metadata title', async () => {
+    const capture = new CodexProtocolCapture('instance-1', []);
+    const messages = [
+      { method: 'thread/started', params: { thread: { id: 'thread-1', name: 'Old name' } } },
+      { method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } },
+      { method: 'thread/name/updated', params: { threadId: 'thread-1', threadName: 'New name' } },
+      {
+        method: 'turn/completed',
+        params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } },
+      },
+    ];
+    metadata.resolvePreviewParts.mockResolvedValue({ sessionTitle: 'Initial prompt paragraph' });
+    for (const message of messages) {
+      for (const event of capture.observeServerMessage(message)) {
+        const parsed = parseCodexEvent(event);
+        expect(parsed.ok).toBe(true);
+        if (parsed.ok) await handler.handle(parsed.event);
+      }
+    }
+    expect(delivered).toEqual([expect.objectContaining({ message: 'New name' })]);
   });
 
   it('notifies for completed async questions without forwarding question text or replaying alerts', async () => {

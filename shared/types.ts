@@ -52,6 +52,7 @@ export type CodexProtocolMethod =
   | 'session/started'
   | 'session/ended'
   | 'thread/started'
+  | 'thread/name/updated'
   | 'turn/started'
   | 'turn/completed'
   | 'agent/queuedQuestions'
