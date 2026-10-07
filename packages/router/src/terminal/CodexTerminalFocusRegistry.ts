@@ -2,11 +2,21 @@ import * as vscode from 'vscode';
 
 import { CodexFocusRequest, CodexFocusResult } from 'remote-notifier-shared';
 
+import { readTerminalProcessIdentity } from './TerminalProcessIdentity';
+import { TmuxTarget, TmuxTerminalLocator } from './TmuxTerminalLocator';
+
 const STATE_KEY = 'codexTerminalFocus.mappings';
 const MAX_MAPPINGS = 100;
 
+interface RegistryOptions {
+  scopeId?: string;
+  processIdTimeoutMs?: number;
+}
+
 interface PersistedTerminalMapping {
-  processId: number;
+  processId?: number;
+  processIdentity?: string;
+  tmux?: TmuxTarget;
   updatedAt: number;
 }
 
@@ -17,12 +27,19 @@ export class CodexTerminalFocusRegistry implements vscode.Disposable {
   private readonly pendingAncestries = new Map<string, number[]>();
   private readonly closeSubscription: vscode.Disposable;
   private mappings: PersistedTerminalMappings;
+  private readonly stateKey: string;
+  private readonly revisions = new Map<string, object>();
+  private readonly processIdentities = new WeakMap<vscode.Terminal, Promise<string | undefined>>();
+  private disposed = false;
 
   constructor(
     private readonly workspaceState: vscode.Memento,
     private readonly log?: vscode.OutputChannel,
+    private readonly tmux = process.platform === 'linux' ? new TmuxTerminalLocator() : undefined,
+    private readonly options: RegistryOptions = {},
   ) {
-    this.mappings = workspaceState.get<PersistedTerminalMappings>(STATE_KEY, {});
+    this.stateKey = options.scopeId ? `${STATE_KEY}.${options.scopeId}` : STATE_KEY;
+    this.mappings = { ...workspaceState.get<PersistedTerminalMappings>(this.stateKey, {}) };
     this.closeSubscription = vscode.window.onDidCloseTerminal((terminal) => {
       void this.removeClosedTerminal(terminal);
     });
@@ -30,21 +47,43 @@ export class CodexTerminalFocusRegistry implements vscode.Disposable {
 
   async track(sessionId: string, processAncestry: number[]): Promise<void> {
     const candidates = this.normalizeProcessIds(processAncestry);
-    if (!sessionId || candidates.length === 0) return;
+    if (this.disposed || !sessionId || candidates.length === 0) return;
+    const revision = {};
+    this.revisions.set(sessionId, revision);
 
-    const terminal = await this.findTerminal(new Set(candidates));
+    const terminal = await this.findTerminal(candidates);
     if (!terminal) {
+      const target = await this.tmux?.find(candidates);
+      if (this.disposed || this.revisions.get(sessionId) !== revision) return;
+      this.terminalRefs.delete(sessionId);
+      if (target) {
+        this.mappings[sessionId] = { tmux: target, updatedAt: Date.now() };
+        this.pendingAncestries.delete(sessionId);
+        this.pruneMappings();
+        await this.persistSafely();
+        return;
+      }
+      delete this.mappings[sessionId];
       this.pendingAncestries.set(sessionId, candidates);
+      if (this.pendingAncestries.size > MAX_MAPPINGS) {
+        const oldest = this.pendingAncestries.keys().next().value!;
+        this.pendingAncestries.delete(oldest);
+        this.revisions.delete(oldest);
+      }
+      await this.persistSafely();
       this.log?.appendLine(`[CodexTerminalFocusRegistry] No terminal matched session ${sessionId}`);
       return;
     }
 
     const processId = await this.getProcessId(terminal);
-    if (!processId) return;
+    const processIdentity = processId
+      ? await this.getProcessIdentity(terminal, processId)
+      : undefined;
+    if (!processId || !this.isLive(terminal) || this.revisions.get(sessionId) !== revision) return;
 
     this.terminalRefs.set(sessionId, terminal);
     this.pendingAncestries.delete(sessionId);
-    this.mappings[sessionId] = { processId, updatedAt: Date.now() };
+    this.mappings[sessionId] = { processId, processIdentity, updatedAt: Date.now() };
     this.pruneMappings();
     await this.persistSafely();
     this.log?.appendLine(
@@ -58,23 +97,47 @@ export class CodexTerminalFocusRegistry implements vscode.Disposable {
     }
 
     const sessionId = request.session_id;
+    const revision = this.revisions.get(sessionId);
+    const tmuxTarget = this.mappings[sessionId]?.tmux;
+    if (tmuxTarget) {
+      const matches = new Set<vscode.Terminal>();
+      for (const client of (await this.tmux?.clients(tmuxTarget)) ?? []) {
+        const match = await this.findTerminal(client.ancestry);
+        if (match) matches.add(match);
+      }
+      if (matches.size !== 1 || !(await this.tmux?.activate(tmuxTarget))) {
+        return { ok: false, reason: 'terminal-not-found' };
+      }
+      const terminal = [...matches][0];
+      if (!this.isLive(terminal) || this.revisions.get(sessionId) !== revision) {
+        return { ok: false, reason: 'terminal-not-found' };
+      }
+      terminal.show(false);
+      return { ok: true, reason: 'focused', terminal_name: terminal.name };
+    }
     let terminal = this.terminalRefs.get(sessionId);
-    if (terminal && !vscode.window.terminals.includes(terminal)) {
+    if (terminal && !this.isLive(terminal)) {
       this.terminalRefs.delete(sessionId);
       terminal = undefined;
     }
 
     if (!terminal) {
       const mapping = this.mappings[sessionId];
-      if (mapping) {
-        terminal = await this.findTerminal(new Set([mapping.processId]));
+      if (mapping?.processId && mapping.processIdentity) {
+        terminal = await this.findTerminal([mapping.processId]);
+        if (
+          terminal &&
+          (await this.getProcessIdentity(terminal, mapping.processId)) !== mapping.processIdentity
+        ) {
+          terminal = undefined;
+        }
       }
     }
 
     if (!terminal) {
       const ancestry = this.pendingAncestries.get(sessionId);
       if (ancestry) {
-        terminal = await this.findTerminal(new Set(ancestry));
+        terminal = await this.findTerminal(ancestry);
       }
     }
 
@@ -87,9 +150,15 @@ export class CodexTerminalFocusRegistry implements vscode.Disposable {
     }
 
     const processId = await this.getProcessId(terminal);
+    const processIdentity = processId
+      ? await this.getProcessIdentity(terminal, processId)
+      : undefined;
+    if (!this.isLive(terminal) || this.revisions.get(sessionId) !== revision) {
+      return { ok: false, reason: 'terminal-not-found' };
+    }
     if (processId) {
       this.terminalRefs.set(sessionId, terminal);
-      this.mappings[sessionId] = { processId, updatedAt: Date.now() };
+      this.mappings[sessionId] = { processId, processIdentity, updatedAt: Date.now() };
       void this.persistSafely();
     }
     terminal.show(false);
@@ -100,27 +169,66 @@ export class CodexTerminalFocusRegistry implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.closeSubscription.dispose();
     this.terminalRefs.clear();
     this.pendingAncestries.clear();
+    this.revisions.clear();
   }
 
-  private async findTerminal(processIds: Set<number>): Promise<vscode.Terminal | undefined> {
-    for (const terminal of vscode.window.terminals) {
-      const processId = await this.getProcessId(terminal);
-      if (processId && processIds.has(processId)) return terminal;
+  private async findTerminal(processIds: number[]): Promise<vscode.Terminal | undefined> {
+    let nearest: vscode.Terminal | undefined;
+    let nearestIndex = processIds.length;
+    const terminals = [...vscode.window.terminals];
+    const ids = await Promise.all(terminals.map((terminal) => this.getProcessId(terminal)));
+    let ambiguous = false;
+    for (const [position, terminal] of terminals.entries()) {
+      if (!this.isLive(terminal)) continue;
+      const processId = ids[position];
+      const index = processId ? processIds.indexOf(processId) : -1;
+      if (index >= 0 && index < nearestIndex) {
+        nearest = terminal;
+        nearestIndex = index;
+        ambiguous = false;
+      } else if (index >= 0 && index === nearestIndex) {
+        ambiguous = true;
+      }
     }
-    return undefined;
+    return ambiguous ? undefined : nearest;
+  }
+
+  private isLive(terminal: vscode.Terminal): boolean {
+    return !this.disposed && vscode.window.terminals.includes(terminal);
+  }
+
+  private getProcessIdentity(
+    terminal: vscode.Terminal,
+    processId: number,
+  ): Promise<string | undefined> {
+    let identity = this.processIdentities.get(terminal);
+    if (!identity) {
+      identity = readTerminalProcessIdentity(processId);
+      this.processIdentities.set(terminal, identity);
+    }
+    return identity;
   }
 
   private async getProcessId(terminal: vscode.Terminal): Promise<number | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const processId = await terminal.processId;
+      const processId = await Promise.race([
+        terminal.processId,
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), this.options.processIdTimeoutMs ?? 1000);
+        }),
+      ]);
       return typeof processId === 'number' && Number.isSafeInteger(processId) && processId > 0
         ? processId
         : undefined;
     } catch {
       return undefined;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -165,12 +273,13 @@ export class CodexTerminalFocusRegistry implements vscode.Disposable {
         delete this.mappings[sessionId];
         this.terminalRefs.delete(sessionId);
         this.pendingAncestries.delete(sessionId);
+        this.revisions.delete(sessionId);
       });
   }
 
   private async persistSafely(): Promise<void> {
     try {
-      await this.workspaceState.update(STATE_KEY, { ...this.mappings });
+      await this.workspaceState.update(this.stateKey, { ...this.mappings });
     } catch (error) {
       this.log?.appendLine(
         `[CodexTerminalFocusRegistry] Failed to persist terminal mappings: ${error}`,
