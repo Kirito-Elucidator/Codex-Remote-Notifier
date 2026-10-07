@@ -2,7 +2,7 @@
   "name": "remote-notifier-codex",
   "displayName": "Remote Notifier Codex",
   "description": "Persistent Windows notifications for OpenAI Codex CLI with click-to-focus session routing across local VS Code and Remote SSH",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "publisher": "ddyndo",
   "author": "Damian Dyńdo",
   "license": "MIT",

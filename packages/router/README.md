@@ -32,6 +32,15 @@ helper, and shim PATH injection owned by this extension. Completed
 turn notifications show the renamed session when available, otherwise they
 show the answer preview.
 
+Disabling exact monitoring keeps a lightweight, window-aware launcher. On
+supported Codex 0.160+ interactive invocations it uses `--no-daemon`, ensuring
+Hook commands inherit their terminal's route rather than an unrelated shared
+daemon's environment. Custom absolute-path launchers can delegate through
+`REMOTE_NOTIFIER_CODEX_LAUNCHER` after setting `REMOTE_NOTIFIER_CODEX_REAL` and
+their own `CODEX_HOME`. Unsupported invocations retain their original behavior.
+`Awaiting Events` in the status bar means no active source is observed, not
+that notification transport is offline.
+
 For Codex notifications, the Router also matches the hook process ancestry to
 the VS Code terminal process and stores a `session_id` mapping. Clicking the
 Windows notification routes the activation back to the originating VS Code

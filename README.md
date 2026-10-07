@@ -178,8 +178,8 @@ Remote SSH 场景下，Router 和 Hook 在服务器侧接收 Codex 事件；Pres
 先在 PowerShell 中进入两个 VSIX 文件所在的下载目录。纯本机场景只需执行：
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.24.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.7.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.25.vsix --force
 ```
 
 Remote SSH 场景先在 Windows 执行下面两条命令。将 `YOUR_SSH_HOST` 替换为 Windows
@@ -190,13 +190,13 @@ Remote SSH 场景先在 Windows 执行下面两条命令。将 `YOUR_SSH_HOST` �
 code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
 
 # 将 Router 安装包传到指定 SSH 主机
-scp .\remote-notifier-codex-router-1.0.24.vsix YOUR_SSH_HOST:/tmp/
+scp .\remote-notifier-codex-router-1.0.25.vsix YOUR_SSH_HOST:/tmp/
 ```
 
 然后在该主机的 VS Code Remote SSH 集成终端中安装 Router：
 
 ```bash
-code --install-extension /tmp/remote-notifier-codex-router-1.0.24.vsix --force
+code --install-extension /tmp/remote-notifier-codex-router-1.0.25.vsix --force
 ```
 
 不要用 Windows 本机的 `code --remote ... --install-extension` 来判断远端安装成功：它可能只安装
@@ -239,7 +239,21 @@ Router 会把 helper 安装到：
 `PreToolUse` 和 `PermissionRequest` Hook。Router 同时只为新建集成终端注入私有 `codex`
 shim。支持的 `codex`、`codex resume` 和 `codex fork` 命令会启用精确旁路；TUI 内部
 `/resume` 会获得独立的临时 app-server 连接，因此不会与当前会话争用协议连接。
-profile、显式 `--remote`、未知参数及不支持的版本会保持原命令语义并自动走 Hook。
+profile、显式 `--remote`、未知参数及不支持的版本会保持原命令语义。
+
+关闭精确监测后，私有 shim 仍保留轻量 Hook 启动模式，不会开启协议旁路。对支持的
+Codex 0.160+ 交互命令，它使用 `--no-daemon`，避免共享 daemon 丢失当前窗口的 Hook
+路由变量。profile 等未分类命令不会自动改写；需要 Hook 提醒时应自行使用支持的
+`--no-daemon` 启动参数，并从新建集成终端恢复会话。该模式不提供非 Plan 异步提问的协议监测。
+
+自定义启动器若直接调用绝对路径，可在设置好 `CODEX_HOME` 后，将
+`REMOTE_NOTIFIER_CODEX_REAL` 设置为真实 Codex 路径，再调用当前终端的
+`REMOTE_NOTIFIER_CODEX_LAUNCHER`，原样传递参数。两个变量未就绪时保留原启动方式；
+不要全局固定某个窗口的 session 文件。
+
+状态栏 `Awaiting Events` 表示当前没有已观察到的活动监测源，包括启动后和 Hook turn
+结束后；这不代表 Router 或 Windows 弹窗服务离线。`Monitoring unavailable` 才表示已有
+监测源报告不可用。
 
 ### 通知正文
 
@@ -455,7 +469,7 @@ files lead existing terminals to the refreshed Router port. If the originating
 window or terminal is genuinely closed, the extension reports that it cannot
 be located instead of silently opening the wrong session.
 
-Upgrade both extensions together (Presenter 1.0.6, Router 1.0.24). Reload each
+Upgrade both extensions together (Presenter 1.0.7, Router 1.0.25). Reload each
 local and Remote SSH window, then start or resume Codex from a newly created
 integrated terminal once to migrate old routing variables. Later ordinary
 reloads keep the same window identity. Clicks during a temporary reload wait
@@ -553,8 +567,8 @@ First, change to the download directory containing both VSIX files. For a
 local-only setup, run:
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.24.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.7.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.25.vsix --force
 ```
 
 For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
@@ -565,13 +579,13 @@ For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
 code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
 
 # Transfer the Router package to the specified SSH host
-scp .\remote-notifier-codex-router-1.0.24.vsix YOUR_SSH_HOST:/tmp/
+scp .\remote-notifier-codex-router-1.0.25.vsix YOUR_SSH_HOST:/tmp/
 ```
 
 Then run this in that host's VS Code Remote SSH integrated terminal:
 
 ```bash
-code --install-extension /tmp/remote-notifier-codex-router-1.0.24.vsix --force
+code --install-extension /tmp/remote-notifier-codex-router-1.0.25.vsix --force
 ```
 
 Do not rely on a Windows `code --remote ... --install-extension` success message:
@@ -624,14 +638,33 @@ integrated terminals. Supported `codex`, `codex resume`, and `codex fork`
 invocations use exact monitoring. An in-TUI `/resume` picker receives a
 separate temporary app-server connection instead of competing with the active
 chat connection. Profiles, explicit `--remote`, unknown flags, and unsupported
-versions retain their original command semantics and use Hooks.
+versions retain their original command semantics.
+
+With exact monitoring disabled, the private shim retains a lightweight Hook
+launch mode without a protocol bridge. Supported Codex 0.160+ interactive
+commands use `--no-daemon` so a shared daemon cannot lose this window's Hook
+routing environment. Unclassified commands, including profiles, are not
+rewritten; use a supported `--no-daemon` invocation when Hook notifications are
+needed and resume from a newly created integrated terminal. Hook mode does not
+provide protocol monitoring of non-Plan async questions.
+
+Custom launchers that invoke an absolute binary can set `CODEX_HOME`, set
+`REMOTE_NOTIFIER_CODEX_REAL` to the real binary, then invoke the current
+terminal's `REMOTE_NOTIFIER_CODEX_LAUNCHER` with the original arguments. Retain
+the original launch path when these bindings are absent. Never hard-code a
+global window session file.
+
+The status bar shows `Awaiting Events` when no active monitoring source has
+been observed, including startup and completed Hook turns. This is not a
+Router or Windows presentation outage. `Monitoring unavailable` means an
+observed source has actually reported unavailable monitoring.
 
 ### Notification Body
 
 Renamed session:
 
 ```text
-host · session name
+session name
 ```
 
 Unnamed session:
