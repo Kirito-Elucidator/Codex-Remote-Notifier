@@ -44,11 +44,19 @@ message:** the local and Remote SSH workflows both bring the originating VS
 Code window forward and focus the existing terminal for that Codex session.
 This path has been validated end to end against a live Linux Remote SSH host.
 
-Each Router writes a workspace-scoped discovery record under
+Each Router writes a window-scoped discovery record under
 `~/.remote-notifier/sessions/`. Existing terminals whose inherited port became
-stale after a window reload can therefore select the Router whose workspace
-contains the hook `cwd`. The legacy `~/.remote-notifier/session.json` record is
-still written for compatibility with earlier helpers.
+stale after a window reload reread that exact window's refreshed locator.
+Windows with the same workspace are isolated. Locator updates are atomic, and
+the locator survives reload disposal. Codex never falls back to the last active
+window's global record. The legacy `~/.remote-notifier/session.json` record is
+still written for non-Codex helpers.
+
+After upgrading to Router 1.0.24 and Presenter 1.0.6, reload each VS Code window
+and start or resume Codex from a newly created integrated terminal once. This
+migrates old terminals to window-scoped locators. Subsequent ordinary reloads
+preserve the routing identity; neither session renames nor launcher-specific
+`CODEX_HOME` directories change it.
 
 This is a helper extension ("router") for the enhanced main extension built
 from the same source tree. It needs to be installed in a given workspace to
@@ -114,13 +122,18 @@ From the VSIX download directory in Windows PowerShell, the quickest Remote SSH
 installation is:
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
-code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.22.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
+scp .\remote-notifier-codex-router-1.0.24.vsix YOUR_SSH_HOST:/tmp/
 ```
 
-Replace `YOUR_SSH_HOST` with the `Host` alias from the Windows SSH config. Then
-open the Remote SSH window, press `Ctrl+Shift+P`, run
+Replace `YOUR_SSH_HOST` with the `Host` alias from the Windows SSH config. Install
+the uploaded Router package in that host's VS Code Remote SSH integrated terminal:
+
+```bash
+code --install-extension /tmp/remote-notifier-codex-router-1.0.24.vsix --force
+```
+
+Check that the Router appears under `SSH: <host>`, not only Local. Then press `Ctrl+Shift+P`, run
 `Developer: Reload Window`, and create a new terminal.
 
 Alternatively, press `Ctrl+Shift+P` and run `Extensions: Install from VSIX...`:

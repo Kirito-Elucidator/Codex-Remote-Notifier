@@ -48,7 +48,7 @@ sidecar 旁读 app-server 结构化事件；旧版本、普通终端和不支持
 此外还增加了以下能力：
 
 - 根据 `session_id` 从 Codex 状态数据库或 `session_index.jsonl` 读取重命名后的会话名。
-- 通知正文优先显示主机名和会话名；未重命名时改为显示回答摘要。
+- 通知正文优先显示会话名；未重命名时显示回答摘要，不再添加系统主机名。
 - 可配置摘要长度，默认截取前 16 个可见字符，并正确处理中文和组合字符。
 - 精确模式不读取 transcript，也不依赖计时器或终端文字识别；sidecar 只旁读白名单字段，
   不记录提示词、令牌或原始协议。
@@ -80,8 +80,8 @@ sidecar 旁读 app-server 结构化事件；旧版本、普通终端和不支持
   不创建抢焦点覆盖窗口。
 - 点击通知会回到产生该通知的 VS Code 窗口，并聚焦承载该 Codex session 的既有集成终端；
   不会创建新对话。
-- 多个 VS Code 窗口各自保存工作区 Router 记录；即使旧终端仍持有重载前的端口，Helper 也会按
-  Hook 的 `cwd` 找回对应工作区，不会把通知回退给最近打开的其他窗口。
+- 多个 VS Code 窗口各自保存窗口级 Router 记录，同目录窗口也互相隔离；终端按继承的窗口文件
+  读取重载后的端口，不按目录或最近打开的窗口猜测目标。
 - 主扩展和 Router 使用独立扩展 ID，避免被 Marketplace 上游版本自动覆盖。
 - Hook 仅执行本地脚本和本地路由，不增加模型上下文，也不消耗额外模型 token。
 
@@ -96,7 +96,7 @@ VS Code Remote SSH 连接的 Linux 服务器运行，点击通知都会尝试：
 3. 显示并聚焦这个已有终端，不启动新的 Codex 对话。
 
 会话 rename 只影响通知中的显示名称，不影响跳转依据。多个 VS Code 窗口使用独立 Focus Broker
-和 Router 命令；窗口重载后，Helper 还会通过工作区会话文件恢复到新的 Router 端口，避免把点击
+和稳定的 Router 命令；窗口重载后，Helper 通过该窗口的会话文件恢复到新的 Router 端口，避免把点击
 送到最近打开但不相关的窗口。如果原窗口或终端已经真正关闭，扩展会明确提示无法定位，不会静默
 打开错误的 session。
 
@@ -178,28 +178,31 @@ Remote SSH 场景下，Router 和 Hook 在服务器侧接收 Codex 事件；Pres
 先在 PowerShell 中进入两个 VSIX 文件所在的下载目录。纯本机场景只需执行：
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.22.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.24.vsix --force
 ```
 
-Remote SSH 场景使用下面两条命令。将 `YOUR_SSH_HOST` 替换为 Windows
+Remote SSH 场景先在 Windows 执行下面两条命令。将 `YOUR_SSH_HOST` 替换为 Windows
 `%USERPROFILE%\.ssh\config` 中的 `Host` 别名，例如 `public_jclou_4090_server`：
 
 ```powershell
 # Presenter 安装到 Windows 本机
-code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
 
-# Router 安装到指定 SSH 主机
-code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.22.vsix --force
+# 将 Router 安装包传到指定 SSH 主机
+scp .\remote-notifier-codex-router-1.0.24.vsix YOUR_SSH_HOST:/tmp/
 ```
 
-普通的 `code --install-extension` 安装到本机；增加
-`--remote ssh-remote+YOUR_SSH_HOST` 后，扩展才会安装到对应服务器。`--force` 可以覆盖已经安装的
-同版本 VSIX，适合安装修复后但版本号未变化的构建。第一次使用某个 SSH 主机时，请先在 VS Code
-中成功连接一次，再执行远端安装命令。
+然后在该主机的 VS Code Remote SSH 集成终端中安装 Router：
 
-两条命令执行成功后：
+```bash
+code --install-extension /tmp/remote-notifier-codex-router-1.0.24.vsix --force
+```
+
+不要用 Windows 本机的 `code --remote ... --install-extension` 来判断远端安装成功：它可能只安装
+到本机。请在扩展面板确认 Router 位于对应的 `SSH: <服务器名>`。`--force` 可以覆盖同版本 VSIX。
+
+安装完成后：
 
 1. 打开对应的本机或 Remote SSH 窗口。
 2. 按 `Ctrl+Shift+P`，执行 `Developer: Reload Window`
@@ -243,13 +246,13 @@ profile、显式 `--remote`、未知参数及不支持的版本会保持原命�
 已重命名的会话：
 
 ```text
-主机名 · 会话名
+会话名
 ```
 
 未重命名的会话：
 
 ```text
-主机名 · 回答前 16 个可见字符
+回答前 16 个可见字符
 ```
 
 ### 主要设置
@@ -420,10 +423,10 @@ Additional enhancements include:
 - Notification clicks that return to the originating VS Code window and focus
   the existing integrated terminal that owns the Codex session, without
   creating a new conversation.
-- Workspace-scoped Router records for multi-window recovery. If an existing
-  terminal still has a pre-reload port, the helper matches the hook `cwd` to
-  the correct workspace instead of falling back to the most recently opened
-  window.
+- Window-scoped Router records for multi-window recovery. If an existing
+  terminal still has a pre-reload port, the helper rereads its inherited window
+  locator. Same-workspace windows are isolated; Codex does not fall back to a
+  generic command or the most recently opened window.
 - Independent extension IDs that cannot be overwritten by the Marketplace
   versions.
 - Local-only hook processing with no additional model context or token usage.
@@ -440,11 +443,24 @@ Code Remote SSH, clicking the notification attempts to:
 3. Reveal and focus that terminal without starting a new Codex conversation.
 
 Renaming a session changes only its displayed label, not its routing identity.
+Live `/rename` events take precedence over older metadata. Hook notifications
+resolve the session index beside their transcript, including custom `CODEX_HOME`
+directories rather than assuming the extension host's default home.
+On Linux, tmux sessions are resolved through their pane and attached client to
+the owning integrated terminal. Detached, stale, or ambiguous targets are not
+silently redirected to another terminal.
 Per-window focus brokers and unique Router commands prevent another VS Code
-window from claiming the click. After a window reload, workspace-scoped session
+window from claiming the click. After a window reload, window-scoped session
 files lead existing terminals to the refreshed Router port. If the originating
 window or terminal is genuinely closed, the extension reports that it cannot
 be located instead of silently opening the wrong session.
+
+Upgrade both extensions together (Presenter 1.0.6, Router 1.0.24). Reload each
+local and Remote SSH window, then start or resume Codex from a newly created
+integrated terminal once to migrate old routing variables. Later ordinary
+reloads keep the same window identity. Clicks during a temporary reload wait
+up to eight seconds for the original window to reconnect; an unavailable or
+ambiguous target produces a failure message instead of redirecting elsewhere.
 
 ### Current Status
 
@@ -537,8 +553,8 @@ First, change to the download directory containing both VSIX files. For a
 local-only setup, run:
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.22.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.24.vsix --force
 ```
 
 For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
@@ -546,21 +562,23 @@ For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
 
 ```powershell
 # Install the Presenter on Windows
-code --install-extension .\remote-notifier-codex-1.0.5.vsix --force
+code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
 
-# Install the Router on the specified SSH host
-code --remote ssh-remote+YOUR_SSH_HOST --install-extension `
-  .\remote-notifier-codex-router-1.0.22.vsix --force
+# Transfer the Router package to the specified SSH host
+scp .\remote-notifier-codex-router-1.0.24.vsix YOUR_SSH_HOST:/tmp/
 ```
 
-Plain `code --install-extension` installs locally. The
-`--remote ssh-remote+YOUR_SSH_HOST` argument is what installs the Router on the
-server. `--force` replaces an already installed VSIX with the same version,
-which is useful for patched builds that do not change their version number. If
-this is the first time the host is used, connect to it successfully from VS
-Code once before running the remote installation command.
+Then run this in that host's VS Code Remote SSH integrated terminal:
 
-After both commands succeed:
+```bash
+code --install-extension /tmp/remote-notifier-codex-router-1.0.24.vsix --force
+```
+
+Do not rely on a Windows `code --remote ... --install-extension` success message:
+it may install only locally. Confirm the Router appears under `SSH: <host>` in
+the Extensions view. `--force` also replaces an installed VSIX of the same version.
+
+After installation succeeds:
 
 1. Open the relevant local or Remote SSH window.
 2. Press `Ctrl+Shift+P` and run `Developer: Reload Window`. Wait for a Remote SSH
@@ -660,7 +678,7 @@ code-notify -i ICON_CI -d system "CI" "Pipeline passed"
 ```
 
 The Router binds only to `127.0.0.1` and authenticates requests with a random
-bearer token. Session information remains in workspace-scoped files under
+bearer token. Session information remains in window-scoped files under
 `~/.remote-notifier/sessions/`, with `~/.remote-notifier/session.json` retained
 for backward compatibility, and is not sent through an external notification
 service.
