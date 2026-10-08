@@ -33,6 +33,11 @@ export class SessionManager implements vscode.Disposable {
   private envCollection: vscode.EnvironmentVariableCollection;
   private codexPreviewLength: number;
   private readonly retainScopedSession: boolean;
+  private terminalProcesses: NonNullable<SessionInfo['terminalProcesses']> = [];
+  private codexLauncher?: SessionInfo['codexLauncher'];
+  private writeTail: Promise<void> = Promise.resolve();
+  private writtenTokens = new Map<string, string>();
+  private disposed = false;
 
   get token(): string {
     return this._token;
@@ -81,6 +86,8 @@ export class SessionManager implements vscode.Disposable {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
+    await this.writeTail.catch(() => {});
     await Promise.all(
       this.sessionFilePaths()
         .filter((filePath) => !this.retainScopedSession || filePath !== this.sessionFilePath)
@@ -91,6 +98,16 @@ export class SessionManager implements vscode.Disposable {
 
   getSessionFilePath(): string {
     return this.sessionFilePath;
+  }
+
+  async publishCodexRouting(
+    port: number,
+    terminalProcesses: NonNullable<SessionInfo['terminalProcesses']>,
+    codexLauncher: NonNullable<SessionInfo['codexLauncher']>,
+  ): Promise<void> {
+    this.terminalProcesses = terminalProcesses;
+    this.codexLauncher = codexLauncher;
+    await this.writeSessionFile(port);
   }
 
   private generateToken(): string {
@@ -107,20 +124,44 @@ export class SessionManager implements vscode.Disposable {
       workspaceKey: this.workspaceKey,
       createdAt: new Date().toISOString(),
       codexPreviewLength: this.codexPreviewLength,
+      terminalProcesses: this.terminalProcesses,
+      ...(this.codexLauncher === undefined ? {} : { codexLauncher: this.codexLauncher }),
     };
 
-    await Promise.all(
-      this.sessionFilePaths().map(async (filePath) => {
-        await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-        const temporary = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
-        try {
-          await fs.writeFile(temporary, JSON.stringify(info, null, 2), { mode: 0o600 });
-          await fs.rename(temporary, filePath);
-        } finally {
-          await fs.unlink(temporary).catch(() => {});
-        }
-      }),
-    );
+    const write = this.writeTail
+      .catch(() => {})
+      .then(() =>
+        Promise.all(
+          this.sessionFilePaths().map(async (filePath) => {
+            if (this.disposed) return;
+            const ownedToken = this.writtenTokens.get(filePath);
+            if (
+              this.retainScopedSession &&
+              filePath === this.sessionFilePath &&
+              ownedToken !== undefined
+            ) {
+              try {
+                const current = JSON.parse(await fs.readFile(filePath, 'utf8')) as SessionInfo;
+                if (current.token !== ownedToken || current.pid !== process.pid) return;
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return;
+              }
+            }
+            await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+            const temporary = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
+            try {
+              await fs.writeFile(temporary, JSON.stringify(info, null, 2), { mode: 0o600 });
+              await fs.rename(temporary, filePath);
+              this.writtenTokens.set(filePath, info.token);
+            } finally {
+              await fs.unlink(temporary).catch(() => {});
+            }
+          }),
+        ),
+      )
+      .then(() => undefined);
+    this.writeTail = write;
+    await write;
   }
 
   private async removeOwnedSessionFile(filePath: string): Promise<void> {

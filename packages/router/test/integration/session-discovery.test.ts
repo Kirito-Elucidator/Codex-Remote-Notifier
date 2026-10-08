@@ -48,6 +48,30 @@ describe('SessionManager Integration', () => {
     expect(info.workspaceKey).toMatch(/^[0-9a-f]{32}$/);
   });
 
+  it('does not let a late publication from the old activation replace a reloaded window route', async () => {
+    const scoped = path.join(testDir, 'same-window.json');
+    const old = new SessionManager(createMockExtensionContext() as never, {
+      sessionFilePath: scoped,
+      legacySessionFilePath: path.join(testDir, 'old-legacy.json'),
+      routingId: 'window',
+    });
+    const current = new SessionManager(createMockExtensionContext() as never, {
+      sessionFilePath: scoped,
+      legacySessionFilePath: path.join(testDir, 'new-legacy.json'),
+      routingId: 'window',
+    });
+    await old.initialize(4000);
+    await current.initialize(5000);
+    await old.publishCodexRouting(4000, [{ pid: 123, identity: 'old-process' }], {
+      mode: 'compatibility',
+      sidecarPath: '/old/sidecar.js',
+      shimDirectory: '/old/shim',
+    });
+    expect(JSON.parse(await fs.readFile(scoped, 'utf8')).port).toBe(5000);
+    await old.dispose();
+    await current.dispose();
+  });
+
   it.skipIf(process.platform === 'win32')('sets correct file permissions (0600)', async () => {
     await sessionManager.initialize(4000);
     const stats = await fs.stat(sessionFilePath);

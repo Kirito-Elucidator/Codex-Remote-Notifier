@@ -22,6 +22,7 @@ export const window = {
   onDidChangeWindowState: vi.fn(() => ({ dispose: vi.fn() })),
   onDidChangeActiveTextEditor: vi.fn(() => ({ dispose: vi.fn() })),
   onDidCloseTerminal: vi.fn(() => ({ dispose: vi.fn() })),
+  onDidOpenTerminal: vi.fn(() => ({ dispose: vi.fn() })),
   registerUriHandler: vi.fn(() => ({ dispose: vi.fn() })),
   createOutputChannel: vi.fn(() => ({
     appendLine: vi.fn(),

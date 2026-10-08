@@ -126,6 +126,12 @@ export interface SessionInfo {
   workspaceKey?: string;
   createdAt: string;
   codexPreviewLength?: number;
+  terminalProcesses?: Array<{ pid: number; identity: string }>;
+  codexLauncher?: {
+    mode: 'protocol' | 'compatibility' | 'disabled';
+    sidecarPath: string;
+    shimDirectory: string;
+  };
 }
 
 export interface NotificationResponse {
