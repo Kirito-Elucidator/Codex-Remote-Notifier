@@ -18,8 +18,10 @@ anything.
 
 This is the Router component of the unofficial Codex-focused fork of
 [ripper37/remote-notifier v1.0.1](https://github.com/ripper37/remote-notifier/tree/v1.0.1).
-For Codex 0.145+, it installs a private transparent shim for newly created
-integrated terminals. Supported `codex`, `codex resume`, and `codex fork`
+For Codex 0.145+, it installs a private transparent shim for new integrated
+terminals and a startup-safe bootstrap for standard npm entry points. The
+bootstrap verifies terminal ancestry and process start identity before binding
+a route, including terminals created before extension activation. Supported `codex`, `codex resume`, and `codex fork`
 invocations run a same-lifetime sidecar that forwards app-server
 JSONL/WebSocket traffic unchanged and extracts only a notification whitelist.
 An in-TUI `/resume` picker gets an isolated temporary app-server connection, so
@@ -35,9 +37,12 @@ show the answer preview.
 Disabling exact monitoring keeps a lightweight, window-aware launcher. On
 supported Codex 0.160+ interactive invocations it uses `--no-daemon`, ensuring
 Hook commands inherit their terminal's route rather than an unrelated shared
-daemon's environment. Custom absolute-path launchers can delegate through
-`REMOTE_NOTIFIER_CODEX_LAUNCHER` after setting `REMOTE_NOTIFIER_CODEX_REAL` and
-their own `CODEX_HOME`. Unsupported invocations retain their original behavior.
+daemon's environment. Custom absolute-path launchers should set their own
+`CODEX_HOME` and proxy environment, then call `~/.local/bin/codex-notifier`
+(`.cmd` on Windows), passing `--real <original executable> --` and the original
+arguments. This does not rely on stale inherited launcher variables. Unverified
+routes pass through with a monitoring warning rather than guessing a window.
+Unsupported invocations retain their original behavior.
 `Awaiting Events` in the status bar means no active source is observed, not
 that notification transport is offline.
 
@@ -61,9 +66,9 @@ the locator survives reload disposal. Codex never falls back to the last active
 window's global record. The legacy `~/.remote-notifier/session.json` record is
 still written for non-Codex helpers.
 
-After upgrading to Router 1.0.24 and Presenter 1.0.6, reload each VS Code window
-and start or resume Codex from a newly created integrated terminal once. This
-migrates old terminals to window-scoped locators. Subsequent ordinary reloads
+After upgrading to Router 1.0.26 and Presenter 1.0.7, reload each VS Code window
+and restart or resume Codex once its current turn finishes. Existing terminals
+can be reused when the bootstrap is connected. Subsequent ordinary reloads
 preserve the routing identity; neither session renames nor launcher-specific
 `CODEX_HOME` directories change it.
 
@@ -131,26 +136,26 @@ From the VSIX download directory in Windows PowerShell, the quickest Remote SSH
 installation is:
 
 ```powershell
-code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
-scp .\remote-notifier-codex-router-1.0.24.vsix YOUR_SSH_HOST:/tmp/
+code --install-extension .\remote-notifier-codex-1.0.7.vsix --force
+scp .\remote-notifier-codex-router-1.0.26.vsix YOUR_SSH_HOST:/tmp/
 ```
 
 Replace `YOUR_SSH_HOST` with the `Host` alias from the Windows SSH config. Install
 the uploaded Router package in that host's VS Code Remote SSH integrated terminal:
 
 ```bash
-code --install-extension /tmp/remote-notifier-codex-router-1.0.24.vsix --force
+code --install-extension /tmp/remote-notifier-codex-router-1.0.26.vsix --force
 ```
 
 Check that the Router appears under `SSH: <host>`, not only Local. Then press `Ctrl+Shift+P`, run
-`Developer: Reload Window`, and create a new terminal.
+`Developer: Reload Window`. Restart or resume Codex after its current turn finishes.
 
 Alternatively, press `Ctrl+Shift+P` and run `Extensions: Install from VSIX...`:
 
 1. Install the main `remote-notifier-codex` VSIX under `Local`.
 2. Install this Router VSIX in the intended `Local` or `SSH: <host>` workspace.
 3. Run `Developer: Reload Window` and wait for Remote SSH to reconnect.
-4. Run `Terminal: Create New Terminal` before starting Codex or `code-notify`.
+4. Restart or resume Codex after its current turn finishes. Create a new terminal for `code-notify`.
 5. Run `Remote Notifier: Auto-configure notifications in current workspace for...`
    and select `Codex` when Codex lifecycle notifications are required.
 

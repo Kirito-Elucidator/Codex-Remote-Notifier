@@ -32,7 +32,7 @@ Codex 特化提供了可靠基础。
 
 ### 本 Fork 的 Codex 特化增强
 
-本 fork 不修改 Codex 本体。Codex 0.145+ 在新建集成终端中通过透明 shim 和 per-TUI
+本 fork 不修改 Codex 本体。Codex 0.145+ 在集成终端中通过透明启动器和 per-TUI
 sidecar 旁读 app-server 结构化事件；旧版本、普通终端和不支持的命令自动回退到轻量 Hook。
 两条链路都只通过本机 Router 显示系统通知。
 
@@ -80,8 +80,8 @@ sidecar 旁读 app-server 结构化事件；旧版本、普通终端和不支持
   不创建抢焦点覆盖窗口。
 - 点击通知会回到产生该通知的 VS Code 窗口，并聚焦承载该 Codex session 的既有集成终端；
   不会创建新对话。
-- 多个 VS Code 窗口各自保存窗口级 Router 记录，同目录窗口也互相隔离；终端按继承的窗口文件
-  读取重载后的端口，不按目录或最近打开的窗口猜测目标。
+- 多个 VS Code 窗口各自保存窗口级 Router 记录，同目录窗口也互相隔离；启动器按终端进程及
+  进程启动标识验证所属窗口，修复启动终端继承的过期路由，不按目录或最近打开的窗口猜测目标。
 - 主扩展和 Router 使用独立扩展 ID，避免被 Marketplace 上游版本自动覆盖。
 - Hook 仅执行本地脚本和本地路由，不增加模型上下文，也不消耗额外模型 token。
 
@@ -118,7 +118,8 @@ VS Code Remote SSH 连接的 Linux 服务器运行，点击通知都会尝试：
 Remote Notifier Codex 包含两个 VS Code 扩展、一个 per-TUI sidecar 和一个兼容 Hook：
 
 ```text
-新建 VS Code 集成终端中的 codex shim
+VS Code 集成终端中的 codex 启动器
+  -> 验证终端进程归属，绑定当前窗口路由
   -> sidecar -> codex app-server --stdio
   -> codex TUI --remote（前台，命令用法不变）
   -> 认证的 /codex/events
@@ -179,7 +180,7 @@ Remote SSH 场景下，Router 和 Hook 在服务器侧接收 Codex 事件；Pres
 
 ```powershell
 code --install-extension .\remote-notifier-codex-1.0.7.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.25.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.26.vsix --force
 ```
 
 Remote SSH 场景先在 Windows 执行下面两条命令。将 `YOUR_SSH_HOST` 替换为 Windows
@@ -190,13 +191,13 @@ Remote SSH 场景先在 Windows 执行下面两条命令。将 `YOUR_SSH_HOST` �
 code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
 
 # 将 Router 安装包传到指定 SSH 主机
-scp .\remote-notifier-codex-router-1.0.25.vsix YOUR_SSH_HOST:/tmp/
+scp .\remote-notifier-codex-router-1.0.26.vsix YOUR_SSH_HOST:/tmp/
 ```
 
 然后在该主机的 VS Code Remote SSH 集成终端中安装 Router：
 
 ```bash
-code --install-extension /tmp/remote-notifier-codex-router-1.0.25.vsix --force
+code --install-extension /tmp/remote-notifier-codex-router-1.0.26.vsix --force
 ```
 
 不要用 Windows 本机的 `code --remote ... --install-extension` 来判断远端安装成功：它可能只安装
@@ -208,7 +209,7 @@ code --install-extension /tmp/remote-notifier-codex-router-1.0.25.vsix --force
 2. 按 `Ctrl+Shift+P`，执行 `Developer: Reload Window`
    （中文界面为 `开发人员: 重新加载窗口`）。Remote SSH 窗口需要等待重新连接服务器；不要刷新
    浏览器页面。
-3. 关闭安装前打开的旧终端，执行 `Terminal: Create New Terminal`，再从新终端启动 Codex。
+3. 等仍在工作的 Codex 完成当前回合，再退出并启动或恢复会话。启动器接入后可以复用原终端。
 
 #### 备选：通过 VS Code 界面安装
 
@@ -218,15 +219,15 @@ code --install-extension /tmp/remote-notifier-codex-router-1.0.25.vsix --force
    VSIX；Remote SSH 使用时在本机窗口安装 Presenter，再在 `SSH: <服务器名>` 窗口安装 Router。
 2. 检查扩展位置：Presenter 应为 `Local`，Router 应为 `Local` 或当前的 `SSH: <服务器名>`。
 3. 在最终使用的窗口中按 `Ctrl+Shift+P`，执行 `Developer: Reload Window`。
-4. 窗口重新打开后新建集成终端，再继续配置 Codex 通知。
+4. 窗口重新打开后继续配置 Codex 通知，不必删除现有终端。
 
 ### 配置 Codex 通知
 
-1. 确认已经按上一节重新加载 VS Code 窗口，并在重新加载后新建了集成终端。
+1. 确认已经按上一节重新加载 VS Code 窗口。
 2. 按 `Ctrl+Shift+P` 打开命令面板，输入并执行
    `Remote Notifier: Auto-configure notifications in current workspace for...`。
 3. 选择 `Codex`。
-4. 如果 Codex 是在配置 Hook 之前启动的，请退出并从新终端重新启动或恢复 Codex session。
+4. 如果 Codex 是在配置 Hook 之前启动的，请等当前回合完成，再退出并启动或恢复 Codex session。
 5. Codex 首次检测到新 Hook 时，核对命令路径后进行一次信任审核。
 
 Router 会把 helper 安装到：
@@ -236,20 +237,23 @@ Router 会把 helper 安装到：
 ```
 
 并在 `$CODEX_HOME/hooks.json` 中幂等添加 `SessionStart`、`UserPromptSubmit`、`Stop`、
-`PreToolUse` 和 `PermissionRequest` Hook。Router 同时只为新建集成终端注入私有 `codex`
-shim。支持的 `codex`、`codex resume` 和 `codex fork` 命令会启用精确旁路；TUI 内部
+`PreToolUse` 和 `PermissionRequest` Hook。Router 为新终端注入私有 `codex` shim，并安装
+`~/.local/bin/codex-notifier`（Windows 为 `.cmd`）。标准 npm 入口在备份原文件后接入启动器，
+让扩展激活前已经创建的终端也能使用正确路由。自定义入口不会自动覆盖。
+支持的 `codex`、`codex resume` 和 `codex fork` 命令会启用精确旁路；TUI 内部
 `/resume` 会获得独立的临时 app-server 连接，因此不会与当前会话争用协议连接。
 profile、显式 `--remote`、未知参数及不支持的版本会保持原命令语义。
 
 关闭精确监测后，私有 shim 仍保留轻量 Hook 启动模式，不会开启协议旁路。对支持的
 Codex 0.160+ 交互命令，它使用 `--no-daemon`，避免共享 daemon 丢失当前窗口的 Hook
 路由变量。profile 等未分类命令不会自动改写；需要 Hook 提醒时应自行使用支持的
-`--no-daemon` 启动参数，并从新建集成终端恢复会话。该模式不提供非 Plan 异步提问的协议监测。
+`--no-daemon` 启动参数。该模式不提供非 Plan 异步提问的协议监测。
 
-自定义启动器若直接调用绝对路径，可在设置好 `CODEX_HOME` 后，将
-`REMOTE_NOTIFIER_CODEX_REAL` 设置为真实 Codex 路径，再调用当前终端的
-`REMOTE_NOTIFIER_CODEX_LAUNCHER`，原样传递参数。两个变量未就绪时保留原启动方式；
-不要全局固定某个窗口的 session 文件。
+自定义入口设置好 `CODEX_HOME` 和代理后，应调用稳定的 `~/.local/bin/codex-notifier`
+（Windows 为 `%USERPROFILE%\.local\bin\codex-notifier.cmd`），使用 `--real <真实路径> --`
+传递原参数。启动器尚未安装时保留原启动方式。不要依赖终端继承的 launcher 或 session 文件；
+扩展启动可能晚于终端创建。启动器仅在 VS Code 内验证终端进程归属，无法确认时保留 Codex
+原命令并明确提示本次未受监测，不猜测另一窗口。当前进程启动标识验证支持 Windows 和 Linux。
 
 状态栏 `Awaiting Events` 表示当前没有已观察到的活动监测源，包括启动后和 Hook turn
 结束后；这不代表 Router 或 Windows 弹窗服务离线。`Monitoring unavailable` 才表示已有
@@ -469,9 +473,9 @@ files lead existing terminals to the refreshed Router port. If the originating
 window or terminal is genuinely closed, the extension reports that it cannot
 be located instead of silently opening the wrong session.
 
-Upgrade both extensions together (Presenter 1.0.7, Router 1.0.25). Reload each
-local and Remote SSH window, then start or resume Codex from a newly created
-integrated terminal once to migrate old routing variables. Later ordinary
+Upgrade both extensions together (Presenter 1.0.7, Router 1.0.26). Reload each
+local and Remote SSH window, then restart or resume Codex after its current
+turn finishes. With the startup launcher connected, existing terminals can be reused. Later ordinary
 reloads keep the same window identity. Clicks during a temporary reload wait
 up to eight seconds for the original window to reconnect; an unavailable or
 ambiguous target produces a failure message instead of redirecting elsewhere.
@@ -499,7 +503,8 @@ ambiguous target produces a failure message instead of redirecting elsewhere.
 ### Architecture
 
 ```text
-codex shim in a newly created VS Code integrated terminal
+codex launcher in a VS Code integrated terminal
+  -> verify terminal process ownership and bind the current window route
   -> sidecar -> codex app-server --stdio
   -> foreground codex TUI --remote (same user command)
   -> authenticated /codex/events
@@ -568,7 +573,7 @@ local-only setup, run:
 
 ```powershell
 code --install-extension .\remote-notifier-codex-1.0.7.vsix --force
-code --install-extension .\remote-notifier-codex-router-1.0.25.vsix --force
+code --install-extension .\remote-notifier-codex-router-1.0.26.vsix --force
 ```
 
 For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
@@ -579,13 +584,13 @@ For Remote SSH, replace `YOUR_SSH_HOST` with a `Host` alias from the Windows
 code --install-extension .\remote-notifier-codex-1.0.6.vsix --force
 
 # Transfer the Router package to the specified SSH host
-scp .\remote-notifier-codex-router-1.0.25.vsix YOUR_SSH_HOST:/tmp/
+scp .\remote-notifier-codex-router-1.0.26.vsix YOUR_SSH_HOST:/tmp/
 ```
 
 Then run this in that host's VS Code Remote SSH integrated terminal:
 
 ```bash
-code --install-extension /tmp/remote-notifier-codex-router-1.0.25.vsix --force
+code --install-extension /tmp/remote-notifier-codex-router-1.0.26.vsix --force
 ```
 
 Do not rely on a Windows `code --remote ... --install-extension` success message:
@@ -597,8 +602,8 @@ After installation succeeds:
 1. Open the relevant local or Remote SSH window.
 2. Press `Ctrl+Shift+P` and run `Developer: Reload Window`. Wait for a Remote SSH
    window to reconnect; do not refresh a browser page.
-3. Close terminals opened before installation, run
-   `Terminal: Create New Terminal`, and start Codex from the new terminal.
+3. Wait for running Codex turns to finish, then exit and restart or resume
+   them. Existing terminals can be reused once the startup launcher is connected.
 
 #### Alternative: install through the VS Code interface
 
@@ -611,18 +616,17 @@ If the command line is unavailable, use this shorter interface workflow:
    either `Local` or the intended `SSH: <host>`.
 3. In the window that will be used, press `Ctrl+Shift+P` and run
    `Developer: Reload Window`.
-4. Create a new integrated terminal after the window reloads, then configure
-   Codex notifications.
+4. Configure Codex notifications after the window reloads. Existing terminals
+   do not need to be deleted.
 
 ### Configure Codex Notifications
 
-1. Confirm that the VS Code window has been reloaded and that a new integrated
-   terminal was created after the reload.
+1. Confirm that the VS Code window has been reloaded.
 2. Press `Ctrl+Shift+P` and run
    `Remote Notifier: Auto-configure notifications in current workspace for...`.
 3. Select `Codex`.
-4. If Codex was running before the hook was configured, exit it and start or
-   resume the session from the new terminal.
+4. If Codex was running before the hook was configured, wait for its current
+   turn to finish, then exit and restart or resume the session.
 5. Review and trust the hook once when Codex first detects it.
 
 The Router installs the helper at:
@@ -633,8 +637,11 @@ The Router installs the helper at:
 
 It idempotently adds `SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`,
 and `PermissionRequest` hooks to `$CODEX_HOME/hooks.json`. `CODEX_HOME` defaults
-to `~/.codex`. The Router also injects its private `codex` shim only into new
-integrated terminals. Supported `codex`, `codex resume`, and `codex fork`
+to `~/.codex`. The Router injects its private `codex` shim into new integrated
+terminals and installs `~/.local/bin/codex-notifier` (`.cmd` on Windows).
+Standard npm entry points are backed up and connected to the bootstrap, so
+terminals created before extension activation can also bind the correct route.
+Custom launchers are not automatically replaced. Supported `codex`, `codex resume`, and `codex fork`
 invocations use exact monitoring. An in-TUI `/resume` picker receives a
 separate temporary app-server connection instead of competing with the active
 chat connection. Profiles, explicit `--remote`, unknown flags, and unsupported
@@ -645,14 +652,18 @@ launch mode without a protocol bridge. Supported Codex 0.160+ interactive
 commands use `--no-daemon` so a shared daemon cannot lose this window's Hook
 routing environment. Unclassified commands, including profiles, are not
 rewritten; use a supported `--no-daemon` invocation when Hook notifications are
-needed and resume from a newly created integrated terminal. Hook mode does not
+needed. Hook mode does not
 provide protocol monitoring of non-Plan async questions.
 
-Custom launchers that invoke an absolute binary can set `CODEX_HOME`, set
-`REMOTE_NOTIFIER_CODEX_REAL` to the real binary, then invoke the current
-terminal's `REMOTE_NOTIFIER_CODEX_LAUNCHER` with the original arguments. Retain
-the original launch path when these bindings are absent. Never hard-code a
-global window session file.
+Custom launchers should set their `CODEX_HOME` and proxy environment, then call
+the stable `~/.local/bin/codex-notifier` (`%USERPROFILE%\.local\bin\codex-notifier.cmd`
+on Windows), passing `--real <original executable> --` followed by the original
+arguments. Keep the original launch path if the bootstrap is not installed.
+Do not rely on inherited launcher or session-file variables: extension activation
+can follow terminal creation. In VS Code, the bootstrap verifies terminal ancestry
+and process start identity. Unverified routes retain the original Codex command
+with an explicit monitoring warning rather than selecting another window.
+Process start identity verification currently supports Windows and Linux.
 
 The status bar shows `Awaiting Events` when no active monitoring source has
 been observed, including startup and completed Hook turns. This is not a
