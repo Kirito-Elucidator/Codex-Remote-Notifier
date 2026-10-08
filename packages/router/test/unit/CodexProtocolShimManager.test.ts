@@ -37,7 +37,7 @@ describe('CodexProtocolShimManager', () => {
     expect(fs.writeFile).toHaveBeenCalledWith(
       expect.stringMatching(/codex-shim[\\/]codex\.cmd$/),
       expect.stringMatching(
-        /where\.exe node\.exe[\s\S]+if errorlevel 1 goto electron_node[\s\S]+node\.exe [\s\S]+codex-notifier-sidecar\.js/,
+        /where\.exe node\.exe[\s\S]+if errorlevel 1 goto electron_node[\s\S]+node\.exe [\s\S]+codex-notifier-bootstrap\.js/,
       ),
       { mode: 0o755 },
     );

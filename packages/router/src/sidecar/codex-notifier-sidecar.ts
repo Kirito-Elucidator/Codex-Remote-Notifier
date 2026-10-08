@@ -46,7 +46,7 @@ const HTTP_TIMEOUT_MS = 500;
 const CLOSE_TIMEOUT_MS = 500;
 const LAUNCHER_LOOKUP_TIMEOUT_MS = 1000;
 const VERSION_PROBE_TIMEOUT_MS = 1500;
-const ANCESTRY_PROBE_TIMEOUT_MS = 750;
+const ANCESTRY_PROBE_TIMEOUT_MS = 3000;
 const ROUTER_DRAIN_TIMEOUT_MS = 5000;
 const SIDECAR_LEASE_MS = 6000;
 const SIDECAR_LEASE_RENEWAL_MS = 2000;
@@ -695,12 +695,15 @@ export class CodexWebSocketBridge {
   }
 }
 
-export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResult> {
+export async function runSidecar(
+  argv = process.argv.slice(2),
+  inheritedEnvironment = process.env,
+): Promise<ExitResult> {
   const separator = argv.indexOf('--');
   const sidecarArgs = separator < 0 ? [] : argv.slice(0, separator);
   const codexArgs = separator < 0 ? argv : argv.slice(separator + 1);
   const shimDirectory = readSidecarOption(sidecarArgs, '--shim-dir');
-  const environment = withoutShimPath(process.env, shimDirectory);
+  const environment = withoutShimPath(inheritedEnvironment, shimDirectory);
   const launcher = await resolveCodexLauncher(environment, shimDirectory);
   delete environment.REMOTE_NOTIFIER_CODEX_REAL;
   delete environment[ENV_CODEX_INVOCATION_ID];
@@ -867,30 +870,7 @@ export async function runSidecar(argv = process.argv.slice(2)): Promise<ExitResu
   return result;
 }
 
-async function main(): Promise<void> {
-  try {
-    const result = await runSidecar();
-    if (result.signal && process.platform !== 'win32') {
-      process.removeAllListeners(result.signal);
-      process.kill(process.pid, result.signal);
-      return;
-    }
-    process.exitCode = result.code ?? 1;
-  } catch (error) {
-    process.stderr.write(
-      `[remote-notifier] Codex shim failed open: ${
-        error instanceof Error ? error.message : String(error)
-      }\n`,
-    );
-    process.exitCode = 1;
-  }
-}
-
-if (require.main === module) {
-  void main();
-}
-
-async function resolveCodexLauncher(
+export async function resolveCodexLauncher(
   environment: NodeJS.ProcessEnv,
   shimDirectory?: string,
 ): Promise<Launcher> {
@@ -900,6 +880,12 @@ async function resolveCodexLauncher(
     : await locateCodexCommands(environment, shimDirectory);
   const executable = candidates[0];
   if (!executable) throw new Error('could not locate the original Codex executable');
+  if (path.extname(executable).toLowerCase() === '.js')
+    return { command: resolveNpmNodeRuntime(), prefixArgs: [executable] };
+  if (process.platform !== 'win32') {
+    const npmScript = await resolveUnixNpmScript(executable);
+    if (npmScript) return { command: resolveNpmNodeRuntime(), prefixArgs: [npmScript] };
+  }
 
   const npmScript = path.join(
     path.dirname(executable),
@@ -928,6 +914,22 @@ async function resolveCodexLauncher(
       ...(extension === '.cmd' || extension === '.bat' ? { commandShell: true } : {}),
     };
   }
+}
+
+async function resolveUnixNpmScript(executable: string): Promise<string | undefined> {
+  try {
+    let script = await fs.realpath(executable);
+    if (!/\/node_modules\/@openai\/codex\/bin\/codex\.js$/.test(script)) {
+      if ((await fs.stat(executable)).size > 8192) return undefined;
+      const entry = await fs.readFile(executable, 'utf8');
+      if (!entry.startsWith('#!/bin/sh\n# REMOTE_NOTIFIER_STARTUP_BOOTSTRAP\n')) return undefined;
+      script = await fs.realpath(`${executable}.before-remote-notifier-startup`);
+    }
+    if (/\/node_modules\/@openai\/codex\/bin\/codex\.js$/.test(script)) return script;
+  } catch {
+    // Native binaries and custom launchers are executed directly.
+  }
+  return undefined;
 }
 
 async function locateCodexCommands(
@@ -969,7 +971,11 @@ function spawnCodex(launcher: Launcher, args: string[], options: SpawnOptions): 
   return spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', commandLine], options);
 }
 
-function runCodex(launcher: Launcher, args: string[], options: SpawnOptions): Promise<ExitResult> {
+export function runCodex(
+  launcher: Launcher,
+  args: string[],
+  options: SpawnOptions,
+): Promise<ExitResult> {
   const child = spawnCodex(launcher, args, options);
   return waitForExit(child);
 }
@@ -1077,7 +1083,7 @@ function forwardSignals(child: ChildProcess): () => void {
   };
 }
 
-async function processAncestry(): Promise<number[]> {
+export async function processAncestry(): Promise<number[]> {
   if (process.platform === 'win32') {
     const script =
       '$p=Get-CimInstance Win32_Process; $m=@{}; $p|%{$m[[int]$_.ProcessId]=[int]$_.ParentProcessId};' +
@@ -1140,7 +1146,7 @@ function runSmallCommand(command: string, args: string[]): Promise<string> {
   });
 }
 
-function withoutShimPath(
+export function withoutShimPath(
   environment: NodeJS.ProcessEnv,
   shimDirectory?: string,
 ): NodeJS.ProcessEnv {

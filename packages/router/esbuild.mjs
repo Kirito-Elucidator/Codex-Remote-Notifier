@@ -12,16 +12,19 @@ function copyAssets() {
 }
 
 function verifySidecarBundle() {
-  const bundle = readFileSync(resolve(__dirname, 'dist/codex-notifier-sidecar.js'), 'utf8');
-  if (/require\((['"])vscode\1\)/.test(bundle)) {
-    throw new Error('Codex sidecar bundle must not depend on the VS Code extension host');
+  for (const name of ['codex-notifier-sidecar', 'codex-notifier-bootstrap']) {
+    const bundle = readFileSync(resolve(__dirname, `dist/${name}.js`), 'utf8');
+    if (/require\((['"])vscode\1\)/.test(bundle)) {
+      throw new Error('Codex launcher bundle must not depend on the VS Code extension host');
+    }
   }
 }
 
 const buildOptions = {
   entryPoints: {
     extension: 'src/extension.ts',
-    'codex-notifier-sidecar': 'src/sidecar/codex-notifier-sidecar.ts',
+    'codex-notifier-sidecar': 'src/sidecar/codex-notifier-sidecar-entry.ts',
+    'codex-notifier-bootstrap': 'src/sidecar/codex-notifier-bootstrap.ts',
   },
   bundle: true,
   outdir: 'dist',

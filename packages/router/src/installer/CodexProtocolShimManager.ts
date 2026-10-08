@@ -12,7 +12,7 @@ import {
 
 const UNIX_SHIM_NAME = 'codex';
 const WINDOWS_SHIM_NAME = 'codex.cmd';
-const SIDECAR_NAME = 'codex-notifier-sidecar.js';
+const SIDECAR_NAME = 'codex-notifier-bootstrap.js';
 const ELECTRON_NODE_MARKER = 'REMOTE_NOTIFIER_CODEX_ELECTRON_NODE_SHIM';
 
 export class CodexProtocolShimManager {
@@ -20,6 +20,7 @@ export class CodexProtocolShimManager {
   private readonly unixShimPath: string;
   private readonly windowsShimPath: string;
   private readonly sidecarPath: string;
+  private onModeChange?: (mode: 'protocol' | 'compatibility' | 'disabled') => void;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -42,12 +43,14 @@ export class CodexProtocolShimManager {
       ENV_CODEX_LAUNCHER,
       process.platform === 'win32' ? this.windowsShimPath : this.unixShimPath,
     );
+    this.onModeChange?.(mode);
     this.log?.appendLine(
       `[CodexProtocolShim] ${mode} launcher enabled for new integrated terminals via ${this.shimDirectory}`,
     );
   }
 
   async disable(removeFiles = false): Promise<void> {
+    this.onModeChange?.('disabled');
     this.context.environmentVariableCollection.delete('PATH');
     this.context.environmentVariableCollection.delete(ENV_CODEX_HOOK_AVAILABLE);
     this.context.environmentVariableCollection.delete(ENV_CODEX_PROTOCOL_MONITORING);
@@ -68,6 +71,10 @@ export class CodexProtocolShimManager {
       fileExists(this.sidecarPath),
     ]);
     return unixInstalled && windowsInstalled && sidecarInstalled;
+  }
+
+  setOnModeChange(callback: (mode: 'protocol' | 'compatibility' | 'disabled') => void): void {
+    this.onModeChange = callback;
   }
 
   private async install(): Promise<void> {

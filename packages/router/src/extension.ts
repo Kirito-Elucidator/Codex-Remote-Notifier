@@ -22,11 +22,13 @@ import { Configuration } from './config/Configuration';
 import { NotificationHandler } from './handler/NotificationHandler';
 import { CodeNotifyScriptInstaller } from './installer/CodeNotifyScriptInstaller';
 import { CodexAttentionHookInstaller } from './installer/CodexAttentionHookInstaller';
+import { CodexBootstrapInstaller } from './installer/CodexBootstrapInstaller';
 import { CodexProtocolShimManager } from './installer/CodexProtocolShimManager';
 import { CommandPresenter } from './presenter/CommandPresenter';
 import { PresentationCommandBridge } from './presenter/PresentationCommandBridge';
 import { NotificationServer } from './server/NotificationServer';
 import { SessionManager } from './session/SessionManager';
+import { TerminalRoutePublisher } from './session/TerminalRoutePublisher';
 import { resolveWindowRoutingId } from './session/WindowRoutingIdentity';
 import { CodexTerminalFocusRegistry } from './terminal/CodexTerminalFocusRegistry';
 import { StatusBar } from './ui/StatusBar';
@@ -71,11 +73,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     routingId,
   });
   const codexProtocolShim = new CodexProtocolShimManager(context, log);
+  const codexBootstrap = new CodexBootstrapInstaller(context, log);
   const codexHookInstaller = new CodexAttentionHookInstaller(log);
   const codexProvider = new CodexAutoConfigProvider(log, codexHookInstaller, {
     onConfigured: async () => {
       await context.globalState.update(CODEX_LAUNCHER_DISABLED_KEY, false);
       await context.globalState.update(CODEX_PROTOCOL_MIGRATION_KEY, true);
+      await codexBootstrap.install();
       if (!config.codexProtocolMonitoring) {
         await codexProtocolShim.enable('compatibility');
         return;
@@ -97,6 +101,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   await sessionManager.initialize(server.port);
   log.appendLine(`[Router] Session file written, env vars set`);
+  const terminalRoutes = new TerminalRoutePublisher(
+    sessionManager,
+    server.port,
+    {
+      sidecarPath: context.asAbsolutePath('dist/codex-notifier-sidecar.js'),
+      shimDirectory: codexProtocolShim.shimDirectory,
+    },
+    log,
+  );
+  codexProtocolShim.setOnModeChange((mode) => terminalRoutes.setMode(mode));
+  if (context.globalState.get<boolean>(CODEX_LAUNCHER_DISABLED_KEY, false))
+    terminalRoutes.setMode('disabled');
+  if (!context.globalState.get<boolean>(CODEX_LAUNCHER_DISABLED_KEY, false)) {
+    void codexBootstrap
+      .install()
+      .catch(() =>
+        log.appendLine(
+          '[CodexBootstrap] Installation failed; startup terminals may not be monitored',
+        ),
+      );
+  }
 
   const statusBar = new StatusBar(server.port);
   codexMonitoring.setOnChange((summary) => statusBar.updateMonitoring(summary));
@@ -138,6 +163,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log,
     server,
     codexEvents,
+    terminalRoutes,
     {
       dispose: () => {
         sessionManager.dispose().catch(() => {});
